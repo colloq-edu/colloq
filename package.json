@@ -4,6 +4,14 @@
   "version": "0.1.0",
   "description": "One link, one live notebook, one AI. Self-hosted workspace for technical seminars.",
   "license": "MIT",
+  "homepage": "https://colloq.ru",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sleep3r/colloq.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sleep3r/colloq/issues"
+  },
   "workspaces": [
     "server",
     "web",

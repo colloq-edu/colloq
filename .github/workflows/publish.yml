@@ -1,0 +1,297 @@
+# Публикация выпуска vX.Y.Z, который уже создал release-please. Два входа,
+# одни и те же задачи:
+#
+#   workflow_call      из release-please.yml, в том же прогоне, что создал
+#                      выпуск, — обычный путь: слили PR выпуска, и всё едет само;
+#   workflow_dispatch  перезапуск недостающих частей для существующего тега.
+#
+# Триггера `push: tags` нет нарочно. release-please создаёт тег личным токеном
+# владельца, а такой тег запускает workflow: с этим триггером выпуск
+# публиковался бы дважды, с двумя запросами одобрения PyPI. Путь оставлен один.
+#
+#   build           тег = package.json = CHANGELOG (scripts/version.mts check),
+#                   typecheck, вся сюита, колесо pip;
+#   github-release  колесо и python-SHA256SUMS — к выпуску, который создал
+#                   release-please. Сам выпуск здесь не создаётся: его заметки
+#                   пишет release-please из PR выпуска, а второй писатель
+#                   разошёлся бы с ним;
+#   pypi            колесо на PyPI — только при vars.PUBLISH_PYPI == 'true';
+#   image           образ для vast.ai в GHCR — только при vars.PUBLISH_IMAGES == 'true'.
+#
+# PyPI и GHCR выключены, пока владелец не включит их переменными репозитория:
+# туда ничего нельзя перезалить, и первый выпуск не должен случайно занять имя
+# пакета или тег образа. Шаги и настройка — RELEASING.md.
+#
+# Неизменяемый выпуск для k3s (release.json с digest-ами образов) — отдельный
+# ручной release.yml: ему нужны проверенная версия k3s и версии GPU-обвязки,
+# которые из тега не вывести. Он дописывает свои файлы в тот же GitHub Release.
+#
+# workflow_dispatch с тегом — перезапуск для недостающих частей: например,
+# включили PUBLISH_PYPI после выпуска. Уже опубликованное не перезаписывается —
+# колесо берётся то, что приложено к выпуску, а существующий тег образа
+# пропускается. Запускать его — с самого тега («Use workflow from: vX.Y.Z»):
+# см. шаг сверки в build.
+#
+# При вызове из release-please.yml ссылка прогона — main, а не тег. Поэтому
+# окружение pypi должно пускать и ветку main, а не только теги v*
+# (RELEASING.md). Trusted Publishing PyPI сверяет job_workflow_ref, то есть
+# этот файл, publish.yml, но официально вызов из другого workflow PyPI пока не
+# поддерживает (pypa/gh-action-pypi-publish предупреждает об этом). Откажет —
+# перезапуск с тега выше публикует недостающее отдельным прогоном.
+name: Publish
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag vX.Y.Z that release-please has just released
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag vX.Y.Z to publish the missing parts of
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Verify and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      commit: ${{ steps.meta.outputs.commit }}
+      wheel: ${{ steps.files.outputs.wheel }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          # Токен не остаётся в .git/config на время `npm ci` и тестов: дальше
+          # git только читает локальную историю.
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci --no-audit --no-fund
+      - name: Tag, package.json and changelog agree
+        id: meta
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Сверка — до того, как тег куда-либо запишется: пройдя её, он
+          # гарантированно имеет вид vX.Y.Z[-rc.N] и безопасен в выводах.
+          node --import tsx scripts/version.mts check --tag "$TAG"
+          # Тег — на проверяемом коммите, а не ветка с тем же именем.
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$(git rev-parse HEAD)"
+          # Публикует тег тот workflow, что лежит в самом теге. Перезапуск с
+          # тега («Use workflow from: vX.Y.Z») это гарантирует сам. Вызов из
+          # release-please.yml идёт с main: этот файл взят из $GITHUB_SHA
+          # (у вызванного workflow это коммит вызвавшего), а release-please
+          # ставит тег на коммит слияния PR выпуска — обычно тот же самый.
+          # Если в очереди прогонов тег достался другому коммиту main, годится
+          # и он, пока .github у них одинаковый: workflow тогда тот же. Иначе,
+          # как и ручной запуск с ветки, — отказ: публиковал бы чужой workflow.
+          if [ "$GITHUB_REF" != "refs/tags/$TAG" ]; then
+            if [ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ] && ! git diff --quiet "$GITHUB_SHA" HEAD -- .github; then
+              echo "::error::The workflows at $TAG differ from the ones running now. Run this workflow from the tag: gh workflow run publish.yml --ref $TAG -f tag=$TAG"
+              exit 1
+            fi
+          fi
+          version="$(node --import tsx scripts/version.mts current)"
+          prerelease=false
+          case "$version" in *-*) prerelease=true ;; esac
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "commit=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+      - run: npm run typecheck
+      - run: npm test
+      - name: Build the wheel (make wheel)
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          make wheel
+      - name: The installed wheel names the tagged version
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet python/dist/*.whl
+          got="$(COLLOQ_HOME="$RUNNER_TEMP/colloq-home" NO_COLOR=1 "$RUNNER_TEMP/venv/bin/colloq" --version)"
+          test "$got" = "$VERSION"
+          git diff --exit-code
+      - name: Release files
+        id: files
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp python/dist/*.whl out/
+          wheel="$(cd out && ls -- *.whl)"
+          (cd out && sha256sum "$wheel" > python-SHA256SUMS)
+          echo "wheel=$wheel" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: out/
+          if-no-files-found: error
+
+  github-release:
+    name: Attach the wheel to the GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: out
+      - name: Add the wheel to the release release-please created
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          WHEEL: ${{ needs.build.outputs.wheel }}
+        run: |
+          set -euo pipefail
+          # Выпуск создаёт release-please при слиянии PR выпуска, и заметки у
+          # него оттуда же. Его нет — значит, тег поставлен мимо release-please;
+          # создавать выпуск здесь — это второй писатель заметок, так что отказ.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG has no GitHub Release. Releases are created by release-please when its release pull request is merged; see RELEASING.md."
+            exit 1
+          fi
+          # release-please помечает предвыпуском только при prerelease: true,
+          # а оно пометило бы им и каждый 0.x. Поэтому -rc.N помечается здесь:
+          # иначе GitHub показал бы rc как «Latest».
+          if [ "$PRERELEASE" = true ] && [ "$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)" != true ]; then
+            gh release edit "$TAG" --prerelease
+          fi
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          if grep -qxF "$WHEEL" <<<"$assets"; then
+            echo "::notice::$TAG already carries $WHEEL; it stays the wheel of record."
+            exit 0
+          fi
+          # Без --clobber: файл с тем же именем (например, от release.yml) не
+          # перепишется, а откажет.
+          gh release upload "$TAG" "out/$WHEEL" out/python-SHA256SUMS
+
+  pypi:
+    name: Publish to PyPI
+    needs: [build, github-release]
+    if: vars.PUBLISH_PYPI == 'true'
+    runs-on: ubuntu-24.04
+    # Trusted Publishing: секрета нет, PyPI верит OIDC-токену этого workflow в
+    # этом окружении. Окружение `pypi` с обязательным ревьюером — последняя
+    # кнопка перед тем, что уже нельзя отозвать. id-token — только здесь.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/colloq/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # Колесо — то, что приложено к выпуску, а не пересобранное: на PyPI и на
+      # странице выпуска должен лежать один и тот же файл.
+      - name: Take the wheel attached to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --pattern '*.whl' --pattern python-SHA256SUMS --dir "$RUNNER_TEMP/release"
+          (cd "$RUNNER_TEMP/release" && sha256sum -c python-SHA256SUMS)
+          mkdir -p dist
+          cp "$RUNNER_TEMP/release/"*.whl dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          # Версию на PyPI не перезалить; повторный запуск просто её пропускает.
+          skip-existing: true
+          print-hash: true
+
+  image:
+    name: vast.ai image to GHCR
+    needs: build
+    if: vars.PUBLISH_IMAGES == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          persist-credentials: false
+      - name: Image name
+        id: image
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [ ! -f deploy/vast/Dockerfile ]; then
+            echo "::error::deploy/vast/Dockerfile is missing at this tag; nothing to publish"
+            exit 1
+          fi
+          name="ghcr.io/${OWNER,,}/colloq-vast"
+          tags="$name:$VERSION"
+          # latest — только у выпуска: rc не должен доставаться тому, кто
+          # вписал в шаблон vast «последний».
+          if [ "$PRERELEASE" != true ]; then tags="$tags,$name:latest"; fi
+          { echo "name=$name"; echo "tags=$tags"; } >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Skip a version that is already published
+        id: exists
+        env:
+          NAME: ${{ steps.image.outputs.name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          if docker buildx imagetools inspect "$NAME:$VERSION" >/dev/null 2>&1; then
+            echo "::notice::$NAME:$VERSION is already published; not rebuilding it."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      # OCI-метки (version, revision, source, licenses) пишет сам
+      # deploy/vast/Dockerfile из этих аргументов — здесь их не дублируем,
+      # чтобы у образа не было двух описаний. Ревизия — коммит тега, а не
+      # github.sha: при ручном перезапуске тот указывает на ветку.
+      - uses: docker/build-push-action@v6
+        if: steps.exists.outputs.skip != 'true'
+        with:
+          context: .
+          file: deploy/vast/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.image.outputs.tags }}
+          build-args: |
+            COLLOQ_VERSION=${{ needs.build.outputs.version }}
+            GIT_SHA=${{ needs.build.outputs.commit }}
+            SOURCE_URL=${{ github.server_url }}/${{ github.repository }}

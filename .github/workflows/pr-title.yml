@@ -1,0 +1,49 @@
+# Заголовок PR — Conventional Commit.
+#
+# PR сливаются squash-ом, и заголовок PR становится темой коммита в main. Из
+# этих тем release-please решает, какое число будет следующим и что попадёт в
+# CHANGELOG. Заголовок «Fix stuff» release-please просто не заметит: правка
+# уйдёт в main и не попадёт ни в заметки, ни в подъём версии.
+#
+# Отдельный файл, а не задача в ci.yml: заголовок меняют правкой PR (edited), и
+# в ci.yml этот тип события перезапускал бы всю сюиту и сборку образов, а его
+# concurrency ещё и отменял бы уже идущий прогон тестов.
+#
+# Ни checkout, ни токена: заголовок приходит из события и читается только из
+# переменной окружения — в тексте скрипта он был бы инъекцией из PR форка.
+name: PR title
+
+on:
+  pull_request:
+    # synchronize — хотя заголовок от пуша не меняется: обязательная проверка
+    # привязана к последнему коммиту PR, и без прогона на нём висела бы
+    # «ожидается».
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: Conventional Commit title
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: The title is a Conventional Commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # Типы — те, что знает release-please-config.json (changelog-sections).
+          # Область необязательна; «!» — ломающая правка. PR выпуска
+          # «chore(main): release 0.2.0» проходит так же.
+          types='feat|fix|perf|revert|docs|refactor|style|test|build|ci|chore'
+          if printf '%s' "$TITLE" | grep -Eq "^($types)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^ ]"; then
+            echo "ok: $TITLE"
+            exit 0
+          fi
+          echo "::error::The pull request title must be a Conventional Commit, for example 'fix(council): keep the queue after a restart' or 'feat(cli)!: drop the vast command'. Allowed types: ${types//|/, }. It becomes the squash commit on main, which release-please reads (CONTRIBUTING.md)."
+          echo "Got: $TITLE"
+          exit 1

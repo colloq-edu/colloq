@@ -1,0 +1,153 @@
+# Проверка каждого pull request и каждого пуша в main.
+#
+# До этого файла дерево не проверял никто: тесты и typecheck шли только внутри
+# ручного release.yml, то есть впервые — в день выпуска, когда тег уже в origin.
+# Здесь те же проверки, что у выпуска (publish.yml), только ничего не
+# публикуется: права — чтение, секретов нет, поэтому workflow безопасно
+# запускать и на PR из форков.
+#
+# Три задачи параллельно, потому что они про разное и падают по разным причинам:
+#   test     — версии сходятся, типы, вся сюита `npm test`;
+#   package  — колесо pip собирается, ставится в чистый venv и называет ту же
+#              версию, а сборка не пачкает отслеживаемые файлы;
+#   docker   — Dockerfile приложения, брокера, базового ядра и образа vast.ai
+#              (deploy/vast) собираются без push. Иначе поломку первых трёх
+#              находил бы только release.yml, а образа vast — только выпуск с
+#              PUBLISH_IMAGES, то есть уже после тега.
+#
+# Сюита НЕ требует демона Docker: тесты, которым нужен docker, подкладывают
+# свой поддельный бинарник в PATH (см. tests/README.md), а python3 есть на
+# ubuntu-раннере. Если однажды это изменится, упадёт здесь, а не у выпуска.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# persist-credentials: false у каждого checkout: иначе токен лежит в .git/config
+# всё время, пока `npm ci` исполняет чужие install-скрипты и `npm test` — код
+# из PR. Токен здесь только на чтение, но git после checkout в сеть не ходит,
+# и держать его на диске незачем.
+
+# Новый пуш в ту же ветку отменяет прошлый прогон: результат старого коммита
+# уже никому не нужен. В main — тоже: там важен последний коммит.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Typecheck and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # Первым — самое дешёвое: копии версии, манифест release-please, журнал
+      # и пробная правка release-please — новый воркспейс без строки в
+      # extra-files падает здесь, а не в PR выпуска. На самом PR выпуска (его
+      # открывает личный токен владельца, поэтому CI на нём идёт) это проверка
+      # подъёма, который он сделал.
+      - name: Version copies agree
+        run: node --import tsx scripts/version.mts check
+      - run: npm run typecheck
+      - run: npm test
+
+  package:
+    name: Build the pip wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci --no-audit --no-fund
+      - name: Build the wheel (make wheel)
+        run: |
+          # Дата сборки — дата коммита: два прогона одного коммита дают одно колесо.
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          make wheel
+      - name: The installed wheel names the package.json version
+        run: |
+          want="$(node --import tsx scripts/version.mts current)"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet python/dist/*.whl
+          # --version отвечает без npm install (python/colloq/__main__.py · TELLING).
+          got="$(COLLOQ_HOME="$RUNNER_TEMP/colloq-home" NO_COLOR=1 "$RUNNER_TEMP/venv/bin/colloq" --version)"
+          echo "package.json: $want · colloq --version: $got"
+          test "$got" = "$want"
+      - name: Python sources compile
+        run: python3 -m py_compile python/colloq/*.py scripts/*.py
+      # Сборка переписывает два отслеживаемых файла — _version.py и воркер
+      # pdf.js. Если они разошлись с тем, что в дереве, выпуск сделал бы
+      # коммит «грязным» уже после тега.
+      - name: Building leaves tracked files unchanged
+        run: git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: python/dist/*.whl
+          retention-days: 7
+          if-no-files-found: error
+
+  docker:
+    name: Build Docker images (no push)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: App (production target)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: production
+          push: false
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+      - name: Runtime broker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: broker
+          push: false
+          cache-from: type=gha,scope=app
+      - name: Base kernel environment
+        uses: docker/build-push-action@v6
+        with:
+          context: kernel
+          build-args: KERNEL_ENV=base
+          push: false
+          cache-from: type=gha,scope=kernel
+          cache-to: type=gha,mode=max,scope=kernel
+      # Та же платформа, что у publish.yml: машины vast — amd64.
+      - name: vast.ai image (deploy/vast)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/vast/Dockerfile
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=vast
+          cache-to: type=gha,mode=max,scope=vast

@@ -1,0 +1,88 @@
+name: Bug report
+description: Something in Colloq does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. **Security problems do not belong here**: see
+        [SECURITY.md](https://github.com/sleep3r/colloq/blob/main/SECURITY.md).
+
+        Before posting, remove secrets from everything you paste: API keys,
+        `SESSION_SECRET`, the setup token, teacher sign-in links, relay/cloud
+        tokens and kernel tokens.
+  - type: input
+    id: version
+    attributes:
+      label: Colloq version
+      description: |
+        Output of `colloq --version`. For a k3s release, the release version from
+        `release.json`; for a container image, its tag or digest; for a source
+        checkout, also `git rev-parse --short HEAD`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is Colloq installed?
+      options:
+        - pip package (colloq start)
+        - Source checkout (make dev / make run)
+        - Source checkout in Docker (make up)
+        - k3s release (scripts/cluster.sh)
+        - vast.ai (deploy/vast image or make vast-up)
+        - Other (describe below)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system of the machine running Colloq
+      description: Include the architecture and, if relevant, the Docker runtime (Docker Desktop, colima, Docker Engine).
+      placeholder: "macOS 15.5 arm64, colima 0.8 · Ubuntu 24.04 amd64, Docker 27"
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      description: For interface problems, the browser and version where it happens. Say if it happens only for students, teachers or on the projector.
+      placeholder: "Chrome 140 (student), Safari 18 on iPad (teacher)"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that shows the problem. Mention the room preset (Lab, Lecture, Council) and any rule you changed.
+      placeholder: |
+        1. Create a class with the Lecture preset
+        2. Open a cell to the room
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and diagnostics
+      description: |
+        Where to find them: `colloq logs` or `.colloq.log` in the state directory
+        (`~/.colloq` for pip), `make logs-run` for `make run`, `make cluster-logs`
+        on k3s, the browser console for interface errors. `colloq doctor --json`
+        and the output of `/api/health` help too. **Redact tokens and links.**
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find this one.
+          required: true
+        - label: I removed keys, tokens and private links from everything above.
+          required: true

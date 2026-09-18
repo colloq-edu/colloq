@@ -1,0 +1,67 @@
+name: Feature request
+description: Suggest a change to how Colloq works in class or on the server.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Colloq focuses on the live class. It deliberately does not provide an LMS,
+        course progress tracking, automated grading, SSO or video conferencing.
+        Requests in those areas are likely to be declined; integrations that keep
+        Colloq focused are welcome.
+  - type: textarea
+    id: situation
+    attributes:
+      label: The class situation
+      description: What were you trying to do, in which kind of class, and what got in the way? Concrete moments ("20 students, a Council exercise, I could not ...") help most.
+    validations:
+      required: true
+  - type: dropdown
+    id: who
+    attributes:
+      label: Who is this for?
+      multiple: true
+      options:
+        - Teacher
+        - Student
+        - Owner / admin panel
+        - Operator (installation, hosting, backups)
+        - Contributor (development, tests, CI)
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Notebook and editing
+        - Execution, kernels and environments
+        - Room rules and presets
+        - Lecture and PDF presentation
+        - Council
+        - Oracle (AI assistant)
+        - Files, terminal and uploads
+        - Publishing and link previews
+        - Admin panel, teachers and languages
+        - CLI and pip package
+        - Deployment (k3s, Vast, relay, tunnels)
+        - Documentation
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: How it should behave. Sketches and screenshots are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
+      description: Workarounds you use now, and other approaches you considered.
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to work on this myself (see CONTRIBUTING.md; please wait for agreement on the approach first).

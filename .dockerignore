@@ -32,3 +32,17 @@ kernel/environments/.*.built
 # Working notes and audit reports are not image build inputs.
 docs/superpowers/
 audit-*.pdf
+
+# Собранное, а не исходник: копия приложения внутри колеса pip
+# (python/colloq/_app, её пишет make pack), готовые колёса и пакеты, черновики
+# агентов и журналы с арендованных машин. Ни один Dockerfile их не копирует, а
+# контекст deploy/vast/Dockerfile — тот же корень, и без этих строк каждая его
+# сборка пересылала бы их демону зря.
+python/colloq/_app/
+python/dist/
+dist-pkg/
+scratchpad/
+logs/
+.colloq/
+# cloudflared, который colloq скачивает в каталог состояния (в клоне — сюда).
+/bin/

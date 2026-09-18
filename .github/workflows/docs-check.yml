@@ -1,0 +1,89 @@
+# Опубликованная документация совпадает со своими исходниками.
+#
+# site/docs/** — выход docs/build.py из docs/pages/**, и в дереве лежат оба.
+# pages.yml выкладывает site/ как есть и ничего не собирает, поэтому исходник,
+# поправленный без пересборки, до colloq.ru/docs не доезжает вовсе: в PR видно
+# новую статью, на сайте — старую, и расхождение никто не замечает, пока его
+# не найдёт читатель. Ровно так же молча пропадает правка сгенерированного HTML
+# руками: следующий, кто пересоберёт, её сотрёт. Здесь сборка повторяется на
+# чистом checkout, и любой след в site/docs — изменённый или новый файл —
+# роняет проверку со списком того, что разошлось.
+#
+# Только стандартная библиотека Python (см. шапку docs/build.py): ни npm, ни
+# pip, поэтому проверка дешёвая, без секретов и безопасна для PR из форков.
+name: Docs up to date
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "site/docs/**"
+      - ".github/workflows/docs-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "site/docs/**"
+      - ".github/workflows/docs-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Новый пуш в ту же ветку отменяет прошлый прогон — итог старого коммита уже
+# никому не нужен.
+concurrency:
+  group: docs-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: site/docs matches docs/build.py
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Токен в .git/config сборке не нужен: git после checkout в сеть не ходит.
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Build the docs
+        # build.py читает и пишет текст кодировкой локали (read_text() без
+        # encoding), а статьи — кириллица. Сейчас у раннера C.UTF-8 и всё
+        # сходится, но это свойство образа, а не сборки: образ с другой локалью
+        # уронил бы её на первом русском символе или записал бы файлы не в той
+        # кодировке — и проверка обвинила бы ни в чём не повинный PR.
+        env:
+          PYTHONUTF8: '1'
+        run: python3 docs/build.py
+      - name: Generated docs are committed
+        # --porcelain, а не git diff: новая статья — это НЕотслеживаемый файл
+        # в site/docs/en/, и git diff его не видит.
+        run: |
+          changed="$(git status --porcelain -- site/docs)"
+          if [ -n "$changed" ]; then
+            echo "::error::site/docs is out of date with docs/pages. Run 'python3 docs/build.py' and commit the regenerated site/docs together with the sources."
+            echo "$changed"
+            git diff --stat -- site/docs
+            exit 1
+          fi
+          echo "site/docs matches docs/pages."
+      - name: No Russian page without a source
+        # Статью убрали из docs/pages/ru — а её site/docs/<slug>.html остался
+        # в дереве и дальше отдаётся на colloq.ru/docs по старому адресу, из
+        # поиска и чужих ссылок. Шаг выше этого не видит: build.py подчищает
+        # осиротевшие страницы только в en/ (корень site/docs делят с ручными
+        # docs.css и docs.js, и сборка там ничего не удаляет), так что после
+        # пересборки файл просто не тронут и git status чист. Английскую
+        # сироту сборка удаляет сама, и её ловит проверка выше.
+        run: |
+          orphans=""
+          for f in site/docs/*.html; do
+            [ -e "docs/pages/ru/$(basename "$f")" ] || orphans="$orphans $f"
+          done
+          if [ -n "$orphans" ]; then
+            echo "::error::These pages have no source in docs/pages/ru and would stay published. Delete them (git rm) together with the source:$orphans"
+            exit 1
+          fi

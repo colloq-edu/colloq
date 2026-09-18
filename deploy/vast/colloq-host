@@ -1,0 +1,321 @@
+#!/usr/bin/env bash
+#
+# colloq-host — Colloq на машине с docker: поднять, обновить, снять копию.
+#
+#   colloq-host up                 поставить недостающее, вытянуть образ, запустить
+#   colloq-host update [ОБРАЗ]     перейти на другой образ; данные и ядра комнат остаются
+#   colloq-host status             готов ли инстанс вести пару
+#   colloq-host link               адрес для аудитории и ссылка входа владельца
+#   colloq-host logs               журнал Colloq (Ctrl+C — выйти)
+#   colloq-host backup             копия занятия в /workspace/colloq/backups/
+#   colloq-host restore [ФАЙЛЫ]    развернуть копию: остановить, развернуть, запустить
+#   colloq-host stop | start       остановить / запустить Colloq (ядра комнат живут дальше)
+#
+# Кладёт его на машину сам образ (`colloq-vast install-host`), и зовёт его
+# on-start шаблона vast (deploy/vast/onstart.sh). Работает от root.
+#
+# ЗАЧЕМ ОН ВООБЩЕ, ЕСЛИ ВСЁ В ОБРАЗЕ. На Vast VM образом шаблона может быть
+# только docker.io/vastai/kvm:* — свой образ vast поднимает лишь как обычный
+# Docker-инстанс, а там нет docker внутри, то есть нет своего контейнера у
+# комнаты (разбор — deploy/vast/README.md, «Design»). Значит, на VM кто-то
+# должен один раз сказать `docker run` с сокетом и каталогом состояния. Этот
+# файл и есть этот `docker run` — плюс то, что прежде делал ssh-скрипт
+# scripts/vast-legacy.sh: nvidia-container-toolkit, список карт, копии. Сборки
+# на арендованной машине больше нет: образ приезжает готовым.
+#
+# Настройки — /etc/colloq/colloq.env (0600): их пишет `up` из переменных
+# окружения, с которыми его позвали (on-start), и перечитывает `update`.
+# Переменные, которых при вызове нет (или они пусты), из файла не стираются.
+#
+# Образ — /etc/colloq/image, и тут правило обратное: COLLOQ_IMAGE из on-start
+# только ЗАВОДИТ файл, а дальше им владеет `update`. См. image() ниже.
+set -euo pipefail
+
+STATE="${COLLOQ_HOME:-/workspace/colloq}"
+CONF_DIR=/etc/colloq
+ENV_FILE="$CONF_DIR/colloq.env"
+IMAGE_FILE="$CONF_DIR/image"
+NAME="${COLLOQ_CONTAINER_NAME:-colloq}"
+NET="${KERNEL_NETWORK:-colloq}"
+PORT="${PORT:-3000}"
+
+say()  { printf '[colloq-host] %s\n' "$*"; }
+warn() { printf '[colloq-host] WARNING: %s\n' "$*" >&2; }
+die()  { printf '[colloq-host] ERROR: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "run as root: it manages docker, /etc/colloq and $STATE"
+
+# Что из окружения едет в контейнер. Список, а не «всё подряд»: окружение
+# on-start — это ещё и переменные vast, PATH и прочее, чему в сервере не место.
+# Ключи реестра (COLLOQ_REGISTRY_*) сюда не входят нарочно: они нужны docker
+# хоста, а не процессу, в который попадает код студента через ядро.
+APP_KEYS="PUBLIC_URL COLLOQ_TUNNEL COLLOQ_HOSTNAME RELAY_DOMAIN RELAY_ADDR RELAY_PORT RELAY_TOKEN
+CLOUDFLARE_TUNNEL_TOKEN OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL AI_PROVIDER AI_REASONING
+ADMIN_EMAIL INSTITUTION UI_LANGUAGE TZ SESSION_SECRET OPEN_SEMINAR_CREATION MAX_UPLOAD_MB MAX_SESSION_MB
+KERNEL_ENV KERNEL_PRELOAD KERNEL_IMAGE_REPO KERNEL_IMAGE_TAG KERNEL_MEM KERNEL_CPUS
+KERNEL_GPUS KERNEL_SHM PUBLIC_IPADDR VAST_TCP_PORT_3000"
+
+# ------------------------------------------------------------ настройки
+write_env() {
+  mkdir -p "$CONF_DIR"; chmod 0700 "$CONF_DIR"
+  touch "$ENV_FILE"; chmod 0600 "$ENV_FILE"
+  local key value tmp
+  tmp="$(mktemp "$CONF_DIR/.colloq.env.XXXXXX")"
+  cp "$ENV_FILE" "$tmp"
+  # KERNEL_MEM_<ОКРУЖЕНИЕ> — своя переменная на каждое окружение (pool.ts ·
+  # memoryLimit: gpu → KERNEL_MEM_GPU), и списком их не перечислить заранее:
+  # берём все такие, что есть в окружении вызова.
+  for key in $APP_KEYS $(compgen -e | grep -E '^KERNEL_MEM_[A-Z0-9_]+$' || true); do
+    # Пустое значение — «не задано», а не «стереть»: on-start шаблона
+    # объявляет все переменные, и пустые строки в нём не должны сносить то,
+    # что оператор дописал в файл руками после аренды. Убрать ключ — правкой
+    # файла.
+    value="${!key:-}"
+    [ -n "$value" ] || continue
+    # Формат --env-file у docker не знает кавычек и переносов: значение идёт
+    # как есть до конца строки. Перенос внутри значения сломал бы файл.
+    case "$value" in *$'\n'*) die "$key contains a newline; docker --env-file cannot carry it" ;; esac
+    grep -v "^${key}=" "$tmp" > "$tmp.next" || true
+    mv "$tmp.next" "$tmp"
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  done
+  chmod 0600 "$tmp"; mv -f "$tmp" "$ENV_FILE"
+}
+
+env_value() {
+  grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true
+}
+
+# Образ, которым живёт инстанс. Названный явно (`update ОБРАЗ`) — пишется в
+# файл; COLLOQ_IMAGE из окружения — только если файла ещё нет, то есть на
+# первом `up`. Иначе перезагрузка VM после `colloq-host update` откатывала бы
+# инстанс: on-start идёт с тем образом, что стоял в шаблоне при аренде, `up`
+# записал бы его поверх, а старый сервер поднялся бы на базе, которую новый
+# уже перевёл вперёд.
+image() {
+  local named="${1:-}"
+  if [ -n "$named" ]; then
+    mkdir -p "$CONF_DIR"; printf '%s\n' "$named" > "$IMAGE_FILE"
+  elif [ ! -s "$IMAGE_FILE" ] && [ -n "${COLLOQ_IMAGE:-}" ]; then
+    mkdir -p "$CONF_DIR"; printf '%s\n' "$COLLOQ_IMAGE" > "$IMAGE_FILE"
+  fi
+  [ -s "$IMAGE_FILE" ] || die "no image named: set COLLOQ_IMAGE=ghcr.io/<owner>/colloq-vast:<version>"
+  head -1 "$IMAGE_FILE"
+}
+
+# ------------------------------------------------------------- машина
+#
+# Обычная Vast VM (ubuntu_cli) приходит с docker и драйвером; остальное
+# ставится, только если его нет. Тот же набор и те же причины, что у
+# scripts/vast-legacy.sh, минус сборка: Node, npm и исходники машине больше не
+# нужны.
+apt_quiet() {
+  command -v apt-get >/dev/null 2>&1 || return 1
+  # Машина одноразовая: автообновления ей ни к чему, а их замок на dpkg ронял
+  # установку на следующем шаге (13.09.2026). Гасим и ждём, пока отпустят.
+  systemctl disable --now unattended-upgrades apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+  local _
+  for _ in $(seq 1 200); do
+    fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1 || break
+    sleep 3
+  done
+  DEBIAN_FRONTEND=noninteractive apt-get "$@"
+}
+
+ensure_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    say "installing docker"
+    curl -fsSL https://get.docker.com | sh >/dev/null
+  fi
+  systemctl enable --now docker >/dev/null 2>&1 || true
+  local _
+  for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && return 0; sleep 2; done
+  die "the docker daemon does not answer"
+}
+
+ensure_gpu() {
+  command -v nvidia-smi >/dev/null 2>&1 || { say "no NVIDIA GPU on this machine; GPU environments will refuse to start"; return 0; }
+  nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/[colloq-host]   gpu /' || true
+  # Драйвер есть, но без nvidia-container-toolkit docker карту в контейнер не
+  # отдаёт: ядро поднимется без CUDA, и узнают об этом на паре по
+  # torch.cuda.is_available() == False.
+  if ! docker info 2>/dev/null | grep -qi nvidia; then
+    say "installing nvidia-container-toolkit"
+    apt_quiet update -qq || die "no apt-get: install nvidia-container-toolkit by hand"
+    apt_quiet install -y -qq curl gnupg ca-certificates >/dev/null
+    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+      | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+      > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    apt_quiet update -qq
+    apt_quiet install -y -qq nvidia-container-toolkit >/dev/null
+    nvidia-ctk runtime configure --runtime=docker >/dev/null
+    systemctl restart docker
+    ensure_docker
+  fi
+  # Срезы для комнат — номера карт, в том виде, в каком их понимает docker.
+  # Заданный руками список (MIG, часть карт) не трогаем.
+  if [ -z "$(env_value KERNEL_GPUS)" ]; then
+    local gpus
+    gpus="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | paste -sd, - || true)"
+    if [ -n "$gpus" ]; then
+      printf 'KERNEL_GPUS=%s\n' "$gpus" >> "$ENV_FILE"
+      say "rooms on GPU environments get one of: $gpus"
+    fi
+  fi
+}
+
+registry_login() {
+  [ -n "${COLLOQ_REGISTRY_TOKEN:-}" ] || return 0
+  local registry="${1%%/*}"
+  printf '%s' "$COLLOQ_REGISTRY_TOKEN" \
+    | docker login "$registry" -u "${COLLOQ_REGISTRY_USER:-colloq}" --password-stdin >/dev/null \
+    || die "docker login $registry failed"
+  say "logged in to $registry"
+}
+
+# ------------------------------------------------------------- контейнер
+#
+# Отпечаток настроек и образа — меткой на контейнере: повторный on-start
+# (перезагрузка VM) при тех же настройках не трогает живой инстанс, а
+# изменившиеся пересоздают его. Файлы и база — в $STATE и переживают это.
+#
+# Файл — отсортированным: write_env переносит каждый переписанный ключ в конец,
+# а ensure_gpu дописывает KERNEL_GPUS последним, так что порядок строк меняется
+# от загрузки к загрузке при тех же значениях. Без sort вторая загрузка
+# GPU-машины (и любой `up` руками с частью переменных) пересоздавала бы живой
+# контейнер — посреди пары это обрыв у всей группы.
+config_sum() {
+  { image; docker image inspect -f '{{.Id}}' "$(image)" 2>/dev/null; sort "$ENV_FILE"; printf '%s %s\n' "$(bind_addr)" "$PORT"; } \
+    | sha256sum | cut -c1-16
+}
+
+bind_addr() {
+  # Наружу Colloq выходит туннелем, а порт на публичном адресе машины — вторая
+  # дверь в ту же комнату (см. deploy/colloq-legacy.service, BIND_ADDR). Петля
+  # по умолчанию; всем интерфейсам — только прямому режиму или по просьбе.
+  if [ -n "${COLLOQ_BIND:-}" ]; then printf '%s' "$COLLOQ_BIND"
+  elif [ "$(env_value COLLOQ_TUNNEL)" = direct ]; then printf '0.0.0.0'
+  else printf '127.0.0.1'
+  fi
+}
+
+run_container() {
+  local img sum dockercfg=()
+  img="$(image)"
+  sum="$(config_sum)"
+  if docker container inspect "$NAME" >/dev/null 2>&1; then
+    if [ "$(docker inspect -f '{{index .Config.Labels "colloq.config"}}' "$NAME")" = "$sum" ]; then
+      docker start "$NAME" >/dev/null 2>&1 || true
+      say "$NAME is already running with these settings"
+      return 0
+    fi
+    say "replacing $NAME (new image or settings); room kernels keep running"
+    docker stop -t 30 "$NAME" >/dev/null 2>&1 || true
+    docker rm "$NAME" >/dev/null
+  fi
+  docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
+  mkdir -p "$STATE"
+  # Учётка реестра — копией внутрь: ядра окружений из закрытого реестра
+  # вытягивает CLI в контейнере, и ему нужен свой config.json (точка входа
+  # переложит его в ~/.docker пользователя node).
+  if [ -s /root/.docker/config.json ]; then
+    dockercfg=(-v /root/.docker/config.json:/run/colloq/docker-config.json:ro)
+  fi
+  docker run -d --name "$NAME" \
+    --restart unless-stopped \
+    --network "$NET" \
+    --stop-timeout 30 \
+    --log-opt max-size=50m --log-opt max-file=5 \
+    -p "$(bind_addr):${PORT}:${PORT}" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$STATE:$STATE" \
+    "${dockercfg[@]}" \
+    --env-file "$ENV_FILE" \
+    -e "COLLOQ_HOME=$STATE" -e "PORT=$PORT" -e "KERNEL_NETWORK=$NET" \
+    --label colloq.kind=app --label "colloq.config=$sum" \
+    "$img" >/dev/null
+  say "started $NAME from $img"
+}
+
+wait_ready() {
+  local _
+  for _ in $(seq 1 120); do
+    if docker exec "$NAME" curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/api/livez" 2>/dev/null; then
+      docker exec "$NAME" colloq-vast link || true
+      say "the default environment is prepared in the background; watch: colloq-host logs"
+      say "ready for a class when this is green: colloq-host status"
+      return 0
+    fi
+    [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = true ] || break
+    sleep 2
+  done
+  docker logs --tail 60 "$NAME" >&2 || true
+  die "$NAME did not come up; the log is above"
+}
+
+up() {
+  ensure_docker
+  write_env
+  ensure_gpu
+  local img; img="$(image)"
+  if [ -n "${COLLOQ_IMAGE:-}" ] && [ "$COLLOQ_IMAGE" != "$img" ]; then
+    warn "keeping $img, the image colloq-host update chose; COLLOQ_IMAGE=$COLLOQ_IMAGE only names the first one. To switch: colloq-host update <image>"
+  fi
+  registry_login "$img"
+  if [ "${COLLOQ_PULL:-1}" != 0 ]; then
+    say "pulling $img"
+    docker pull -q "$img" >/dev/null || die "could not pull $img"
+  fi
+  run_container
+  wait_ready
+}
+
+update() {
+  local img; img="$(image "${1:-}")"
+  registry_login "$img"
+  [ "${COLLOQ_PULL:-1}" = 0 ] || docker pull -q "$img" >/dev/null || die "could not pull $img"
+  run_container
+  wait_ready
+}
+
+restore() {
+  local img; img="$(image)"
+  local tty=(); [ -t 0 ] && tty=(-it)
+  say "stopping $NAME: a database is never swapped under a running server"
+  docker stop -t 30 "$NAME" >/dev/null 2>&1 || true
+  docker run --rm "${tty[@]}" -v "$STATE:$STATE" -e "COLLOQ_HOME=$STATE" -e "REPLACE=${REPLACE:-}" \
+    "$img" restore "$@" || { docker start "$NAME" >/dev/null 2>&1 || true; die "restore failed; $NAME is back as it was"; }
+  docker start "$NAME" >/dev/null
+  wait_ready
+}
+
+cmd="${1:-help}"; [ "$#" -eq 0 ] || shift
+case "$cmd" in
+  up) up ;;
+  update) update "$@" ;;
+  status) docker exec "$NAME" colloq-vast status ;;
+  link) docker exec "$NAME" colloq-vast link ;;
+  logs) exec docker logs -f --tail 200 "$NAME" ;;
+  backup) docker exec "$NAME" colloq-vast backup ;;
+  restore) restore "$@" ;;
+  stop) docker stop -t 30 "$NAME" ;;
+  start) docker start "$NAME" >/dev/null && wait_ready ;;
+  help|-h|--help) cat <<'USAGE'
+colloq-host — run Colloq (image colloq-vast) on this machine's Docker
+
+  colloq-host up                 install what is missing, pull the image, start
+  colloq-host update [IMAGE]     switch to another image; data and room kernels stay
+  colloq-host status             is the instance ready for a class
+  colloq-host link               the class address and the owner link
+  colloq-host logs               follow the log (Ctrl+C to leave)
+  colloq-host backup             a backup into /workspace/colloq/backups/
+  colloq-host restore [FILES]    stop, restore a backup, start again
+  colloq-host stop | start       stop / start Colloq (room kernels keep running)
+
+Settings: /etc/colloq/colloq.env (written by `up` from its environment).
+USAGE
+  ;;
+  *) die "unknown command: $cmd (colloq-host help)" ;;
+esac
