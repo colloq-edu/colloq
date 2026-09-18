@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
+import { StringDecoder } from 'node:string_decoder'
 
 export interface ManagedProcess {
   child: ChildProcess
@@ -18,6 +19,13 @@ export class Processes {
     private env: NodeJS.ProcessEnv,
     private log?: number,
   ) {}
+  /**
+   * onLine — слушатель строк stdout ребёнка: вернул true — строка его, и на
+   * экран она не идёт (в журнал идёт всё как есть). Так супервизор слышит
+   * строку-метку host.sh под --share, не показывая её человеку. Без
+   * слушателя поток идёт кусками, как шёл: построчная буферизация нужна
+   * только тому, кто просил.
+   */
   start(
     name: string,
     command: string,
@@ -25,6 +33,7 @@ export class Processes {
     quiet = false,
     extraEnv: NodeJS.ProcessEnv = {},
     cwd = this.root,
+    onLine?: (line: string) => boolean,
   ): ManagedProcess {
     const child = spawn(command, args, {
       cwd,
@@ -37,10 +46,27 @@ export class Processes {
       [child.stdout, process.stdout],
       [child.stderr, process.stderr],
     ] as const) {
+      const lines =
+        stream === child.stdout && onLine ? { rest: '', decoder: new StringDecoder('utf8') } : null
       stream?.on('data', (chunk: Buffer) => {
-        if (!quiet) target.write(chunk)
         if (this.log !== undefined) fs.writeSync(this.log, chunk)
+        if (!lines) {
+          if (!quiet) target.write(chunk)
+          return
+        }
+        // Декодер, а не toString: буква из двух байт, разрезанная между
+        // кусками, иначе превратилась бы в два знака вопроса.
+        const text = lines.rest + lines.decoder.write(chunk)
+        const parts = text.split('\n')
+        lines.rest = parts.pop() ?? ''
+        for (const line of parts) if (!onLine!(line) && !quiet) target.write(line + '\n')
       })
+      if (lines)
+        stream?.on('end', () => {
+          lines.rest += lines.decoder.end()
+          if (lines.rest && !onLine!(lines.rest) && !quiet) target.write(lines.rest)
+          lines.rest = ''
+        })
     }
     item.done = new Promise((resolve) => {
       let finished = false

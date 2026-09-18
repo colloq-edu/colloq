@@ -1,23 +1,21 @@
 /**
  * Окружения ядра — какой Python и какие пакеты видит занятие.
  *
- * Шесть команд: env list, env show, env new, env build, env use, env freeze.
+ * Четыре команды: env list, env show, env new, env use. Все четыре работают
+ * с одними файлами — читают и пишут через ctx.io — и не запускают ни одного
+ * процесса. Цели env-* в Makefile делают то же самое, но звать их отсюда
+ * нечем: CLI едет в колесе pip вместе с приложением, а Makefile в колесо не
+ * едет. Совпадать с ними команды обязаны устройством файлов и экраном, а не
+ * вызовом.
  *
- * Четыре первые — list, show, new, use — обещаны преподавателю, который
- * поставил пакет (`pip install colloq`), и потому сделаны НАТИВНЫМИ: читают и
- * пишут файлы через ctx.io, а make не зовут вовсе. Раньше все четыре
- * делегировали в Makefile, и из колеса это кончалось строкой
- *
- *     make: *** No rule to make target `env-list'.  Stop.
- *
- * — потому что в пакет едет приложение, а не мастерская: ни Makefile, ни
- * scripts/ там нет и не будет. Обещание аудитории и делегирование в make
- * несовместимы, и разрешается это в пользу обещания.
- *
- * env build и env freeze остались делегатами и остались в мастерской. Про
- * env build подробности у самой команды: у него есть нативный близнец, но он
- * живёт в супервизоре запуска и переиспользовать его отсюда нельзя, а
- * преподавателю он не нужен — образ собирается сам, при первом colloq start.
+ * Образа окружения здесь не собирает никто, и это решение, а не пробел.
+ * Собирает colloq start, перед занятием (launch-prepare.ts · prepare): там
+ * цепочка `# colloq: from`, отпечаток исходников, склейка двух каталогов в
+ * один контекст docker и прогресс в .colloq.log. Вторая сборка отсюда
+ * оказалась бы третьей копией рядом с запуском и панелью
+ * (server/src/environments.ts · buildCommand), а три копии разъезжаются на
+ * первой же правке Dockerfile. Поэтому `env use` только переписывает
+ * KERNEL_ENV, а о цене — минутах сборки — честно предупреждает словами.
  *
  * ГДЕ ЛЕЖАТ ОКРУЖЕНИЯ — главное решение группы, и оно такое.
  *
@@ -31,10 +29,11 @@
  *     потому что переопределить cv под свой курс — законное желание.
  *
  * Имя в путь превращает ровно одна функция — envFile(); всё остальное зовёт
- * её. Второй ответ на вопрос «где лежит cv» развёл бы список с показом и
- * показ со сборкой, причём молча.
+ * её. Второй ответ на вопрос «где лежит cv» развёл бы список с показом, а
+ * показ — с тем, что потом соберёт запуск, причём молча.
  *
- * node:child_process и node:fs импортировать нельзя: только ctx.sh и ctx.io.
+ * node:child_process и node:fs импортировать нельзя: только ctx.io, а
+ * ctx.sh — ради одной строки --dry-run.
  */
 import type { Command, Ctx } from '../registry.js'
 import { joinPath, type Io } from '../env.js'
@@ -55,7 +54,7 @@ const NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 /** Строка, которую в списке пакетов не видно: комментарий, пусто, ключ pip. */
 const NOT_A_PACKAGE = /^[ \t]*(#|-|$)/
 
-/** Комментарий и пустая строка — то, что прячет env-show. */
+/** Комментарий и пустая строка — то, что прячет и цель env-show. */
 const NOT_A_LINE = /^[ \t]*(#|$)/
 
 /** Два каталога окружений: привезённый с продуктом и свой. */
@@ -135,17 +134,9 @@ function textOf(ctx: Ctx, path: string): string | null {
   return text === null ? null : text.replace(/\r/g, '')
 }
 
-/** Имя окружения: позиционным или парой NAME=… — работают обе формы. */
+/** Имя окружения из первого позиционного — сразу через сито имени. */
 function wantName(ctx: Ctx, usage: string): string {
-  const positional = (ctx.positionals[0] ?? '').trim()
-  const variable = (ctx.makeVars.NAME ?? '').trim()
-  if (positional && variable && positional !== variable) {
-    throw new UsageError(
-      'environment named twice: ' + positional + ' and NAME=' + variable,
-      'keep one of them: ' + usage,
-    )
-  }
-  const name = positional || variable
+  const name = (ctx.positionals[0] ?? '').trim()
   if (!name) throw new UsageError('no environment given', 'Usage: ' + usage)
   checkName(name)
   return name
@@ -159,12 +150,7 @@ function checkName(name: string): void {
   )
 }
 
-/** NAME= уходит make только тогда, когда человек не передал пару сам. */
-function nameVar(ctx: Ctx, name: string): string | undefined {
-  return ctx.makeVars.NAME === undefined ? name : undefined
-}
-
-/** Нет файла окружения — отказ здесь, до сборки и до вопросов. */
+/** Нет файла окружения — отказ здесь, до вопросов и до записи. */
 function needFile(ctx: Ctx, name: string, fix: string): void {
   if (ctx.io.exists(envFile(ctx, name))) return
   throw new PreconditionError(
@@ -191,17 +177,9 @@ function needFile(ctx: Ctx, name: string, fix: string): void {
  */
 const PYTHONS: readonly string[] = PYTHON_VERSIONS
 
-/** Версия Python из --python или из пары PYTHON=…; пусто — значит умолчание. */
+/** Версия Python из --python; пусто — значит умолчание. */
 function wantPython(ctx: Ctx): string | undefined {
-  const flag = ((ctx.values.python as string | undefined) ?? '').trim()
-  const variable = (ctx.makeVars.PYTHON ?? '').trim()
-  if (flag && variable && flag !== variable) {
-    throw new UsageError(
-      'Python version named twice: ' + flag + ' and PYTHON=' + variable,
-      'keep one of them',
-    )
-  }
-  const value = flag || variable
+  const value = ((ctx.values.python as string | undefined) ?? '').trim()
   if (!value) return undefined
   if (!PYTHONS.includes(value)) {
     throw new UsageError(
@@ -226,14 +204,14 @@ function defaultPython(ctx: Ctx): string {
  * разным отношением к ней. Списку важнее показать список: одно окружение,
  * сославшееся на себя, не должно гасить экран целиком, — он берёт то, что
  * прочиталось, и молчит. Показу и переключению важнее сказать правду: строить
- * такое окружение всё равно нечем, и узнать об этом лучше сразу, а не через
- * девять минут сборки, которая упадёт.
+ * такое окружение всё равно нечем, и узнать об этом лучше сейчас, чем на
+ * colloq start перед парой, когда сборка упадёт.
  *
- * Меры ровно те же, что у `make env-build` и у launch-config.ts ·
- * kernelInputs: петля, потолок в восемь звеньев, имя-не-имя, пропавший
- * родитель. Своя реализация, а не вызов kernelInputs, по двум причинам:
- * та ходит в настоящую файловую систему мимо ctx.io (в тестах группы её нет)
- * и знает один каталог окружений из двух.
+ * Меры ровно те же, что у сборки в запуске (launch-config.ts · kernelInputs)
+ * и у цели env-build в Makefile: петля, потолок в восемь звеньев,
+ * имя-не-имя, пропавший родитель. Своя реализация, а не вызов kernelInputs,
+ * по двум причинам: та ходит в настоящую файловую систему мимо ctx.io (в
+ * тестах группы её нет) и знает один каталог окружений из двух.
  */
 type Chain = { names: string[]; trouble?: string }
 
@@ -291,36 +269,7 @@ function needChain(ctx: Ctx, name: string, fix: string): Chain {
   return chain
 }
 
-/**
- * Увидит ли `make env-build` это окружение — и всю его цепочку.
- *
- * Цель читает ровно один каталог, $(ENV_DIR) рядом с самим Makefile: про
- * <home>/environments, куда пишет `colloq env new`, она не знает вовсе. Пока
- * каталоги совпадают (клон), вопрос пустой и ответ всегда «да».
- *
- * Расходятся они не только у установленного пакета: рабочее дерево, запущенное
- * с COLLOQ_HOME=~/классА, — это тоже два разных каталога. Там make на своём
- * окружении либо отказывал «Нет kernel/environments/<имя>.txt», либо, если имя
- * совпало с привезённым, молча собирал ПРИВЕЗЁННЫЙ список: обе беды тихие,
- * поэтому спрашиваем заранее. Про всю цепочку, а не только про названный лист:
- * свой родитель ломает сборку ровно так же.
- *
- * Развилка та же и по той же причине, что в запуске: launch-prepare.ts ·
- * viaMake. Где make не годится, образ собирает colloq start — прямым docker по
- * склеенному корню, который видит оба каталога.
- */
-function makeSees(ctx: Ctx, chain: string[]): boolean {
-  const dirs = envDirs(ctx)
-  if (dirs.own === dirs.app) return true
-  return chain.every((link) => !ctx.io.exists(ownFile(ctx, link)))
-}
-
-/** Соберёт ли образ сама команда — или это дело первого colloq start. */
-function buildsNow(ctx: Ctx, name: string): boolean {
-  return !ctx.dist && makeSees(ctx, chainOf(ctx.io, envDirs(ctx), name).names)
-}
-
-/** Сколько пакетов сверх базы — так же, как считает env-list. */
+/** Сколько пакетов сверх базы — тем же правилом, что у цели env-list. */
 function packagesOf(text: string): number {
   return text.split('\n').filter((line) => !NOT_A_PACKAGE.test(line)).length
 }
@@ -330,7 +279,7 @@ function meaningful(text: string): string[] {
   return text.split('\n').filter((line) => !NOT_A_LINE.test(line))
 }
 
-/** Шапка нового окружения — та же, что писала цель env-new, и теми же словами. */
+/** Шапка нового окружения — строка в строку та, что пишет цель env-new, только по-английски. */
 function starter(name: string, python: string | undefined, fallback: string): string {
   const lines: string[] = []
   /*
@@ -389,7 +338,7 @@ function writeKernelEnv(ctx: Ctx, name: string): void {
   ctx.io.writeText(ctx.env.paths.envFile, kept.join('\n'), existing === null ? 0o600 : undefined)
 }
 
-/** Экран `env list` — тот же, что печатала цель, вплоть до ширины колонки. */
+/** Экран `env list` — тот же, что печатает цель env-list, вплоть до ширины колонки. */
 function renderList(ctx: Ctx): void {
   const current = ctx.env.kernelEnv()
   const fallback = defaultPython(ctx)
@@ -420,7 +369,7 @@ function renderList(ctx: Ctx): void {
   ctx.ui.line(ctx.ui.dim('* — the default for new classes. Change it: colloq env use <name>'))
 }
 
-/** Экран `env show` — то же, что печатала цель, но про любое окружение. */
+/** Экран `env show` — то же, что печатает цель env-show, но про любое окружение. */
 function renderShow(ctx: Ctx, name: string): void {
   const file = envFile(ctx, name)
   const python = pythonOf(ctx, name, defaultPython(ctx))
@@ -441,7 +390,6 @@ export const commands: Command[] = [
     name: 'env list',
     aliases: ['env', 'env ls'],
     group: 'env',
-    audience: 'teacher',
     summary: 'Which environments exist',
     usage: 'colloq env list [--json]',
     flags: [
@@ -489,12 +437,9 @@ export const commands: Command[] = [
   {
     name: 'env show',
     group: 'env',
-    audience: 'teacher',
     summary: 'What is in an environment and which Python it runs on',
     usage: 'colloq env show [name]',
-    args: [
-      { name: 'name', summary: 'Environment; without a name, the current one', makeVar: 'NAME' },
-    ],
+    args: [{ name: 'name', summary: 'Environment; without a name, the current one' }],
     flags: [],
     destructive: false,
     delegates: 'native: reads <environment>.txt and kernel/requirements.txt',
@@ -502,7 +447,7 @@ export const commands: Command[] = [
     notes:
       'Without a name it shows the current one: what stands in KERNEL_ENV. When there is no such file it refuses. The base packages are listed separately: they are in every environment, and there is no need to repeat them in your own list.',
     async run(ctx) {
-      const asked = (ctx.positionals[0] ?? ctx.makeVars.NAME ?? '').trim() || ctx.env.kernelEnv()
+      const asked = (ctx.positionals[0] ?? '').trim() || ctx.env.kernelEnv()
       checkName(asked)
       needFile(ctx, asked, 'colloq env list')
       // Негодная цепочка — отказ до показа: строка «Python 3.11» над
@@ -526,7 +471,6 @@ export const commands: Command[] = [
   {
     name: 'env new',
     group: 'env',
-    audience: 'teacher',
     summary: 'Create an environment',
     usage: 'colloq env new <name> [--python <version>]',
     args: [
@@ -534,7 +478,6 @@ export const commands: Command[] = [
         name: 'name',
         summary: 'What to call it: lowercase latin letters, digits, hyphen',
         required: true,
-        makeVar: 'NAME',
       },
     ],
     flags: [
@@ -591,172 +534,54 @@ export const commands: Command[] = [
   },
 
   {
-    name: 'env build',
-    group: 'env',
-    summary: 'Build the image of an environment without switching to it',
-    usage: 'colloq env build <name>',
-    args: [
-      {
-        name: 'name',
-        summary: 'An environment from colloq env list',
-        required: true,
-        makeVar: 'NAME',
-      },
-    ],
-    flags: [],
-    destructive: false,
-    delegates: 'make env-build NAME=… (in the repository only)',
-    examples: ['colloq env build cv', 'colloq env build {env} --dry-run'],
-    notes:
-      'Minutes of work and the docker build stream as it is. Parents from "# colloq: from" are built only when their image is missing, while the named environment is rebuilt every time. A circle, and a chain longer than eight links, are rejected before the build rather than after nine minutes. The command belongs to the workshop: with colloq installed, as with an environment from your own directory, the image is built on its own, on your first colloq start.',
-    async run(ctx) {
-      const name = wantName(ctx, 'colloq env build <name>')
-      needFile(ctx, name, 'colloq env new ' + name)
-      const chain = needChain(ctx, name, 'fix the "# colloq: from" line in the chain')
-      /*
-       * Единственная команда группы, которая осталась делегатом сознательно.
-       *
-       * Нативная сборка образа в проекте уже есть, и даже дважды:
-       * launch-prepare.ts · buildKernelImage (для запуска занятия) и
-       * server/src/environments.ts · buildCommand (для панели). Позвать
-       * первую отсюда нельзя — она не вынесена наружу, работает через свой
-       * супервизор процессов мимо ctx.sh (а значит мимо --dry-run и мимо
-       * подставного исполнителя в тестах) и живёт в файле, который этой
-       * правкой не трогают. Списать её третьей копией — ровно то, от чего эти
-       * комментарии предостерегают на каждой странице: три copy-paste сборки
-       * разъедутся на первой же правке Dockerfile.
-       *
-       * Преподаватель без репозитория ничего от этого не теряет: цепочку
-       * образов собирает сам запуск (colloq start), с прогрессом и штампами,
-       * которых у make-цели нет. Поэтому здесь — честный отказ с указанием
-       * дороги, а не «No rule to make target».
-       */
-      if (ctx.dist) {
-        throw new PreconditionError(
-          'building an image by hand only works next to the sources',
-          'colloq start: the image of environment ' +
-            name +
-            ' is built on its own, before the class',
-        )
-      }
-      // Цель есть, а окружение не её: см. makeSees. Отказ, а не сборка чужого
-      // листа под правильным именем — молчаливая подмена хуже отказа.
-      if (!makeSees(ctx, chain.names)) {
-        throw new PreconditionError(
-          'make env-build knows nothing about environments in ' +
-            short(ctx, ctx.env.paths.ownEnvDir) +
-            '/',
-          'colloq start: the image of environment ' +
-            name +
-            ' is built on its own, before the class',
-        )
-      }
-      if (!ctx.dryRun) ctx.ui.header('building the image of ' + name + ': the first time is slow')
-      return await ctx.sh.make('env-build', { NAME: nameVar(ctx, name) })
-    },
-  },
-
-  {
     name: 'env use',
     aliases: ['env switch'],
     group: 'env',
-    audience: 'teacher',
     summary: 'Make an environment the default for new classes',
     usage: 'colloq env use <name>',
-    args: [
-      {
-        name: 'name',
-        summary: 'An environment from colloq env list',
-        required: true,
-        makeVar: 'NAME',
-      },
-    ],
+    args: [{ name: 'name', summary: 'An environment from colloq env list', required: true }],
     flags: [],
     destructive: true,
     confirm: 'cli',
     // Проверка до вопроса: окружения нет или цепочка негодная — отказ, а не
-    // вопрос перед отказом.
+    // вопрос перед отказом. Негодную цепочку не соберёт и запуск, и узнать об
+    // этом сейчас дешевле, чем на colloq start перед парой.
     check(ctx) {
       const name = wantName(ctx, 'colloq env use <name>')
       needFile(ctx, name, 'colloq env new ' + name)
       needChain(ctx, name, 'fix the "# colloq: from" line in the chain')
     },
-    confirmQuestion: (ctx) => {
-      const name = wantName(ctx, 'colloq env use <name>')
-      // Вопрос обещает ровно то, что команда сделает: где сборки не будет —
-      // не обещаем и долгого ожидания. См. buildsNow.
-      return buildsNow(ctx, name)
-        ? 'build environment ' + name + ' and make it the default? the first time can be slow'
-        : 'make environment ' + name + ' the default for new classes?'
-    },
-    delegates: 'native: KERNEL_ENV in .env (in the repository, make env-build first)',
+    // Вопрос обещает ровно то, что команда сделает, — одну строку в .env.
+    // Сборки здесь нет, значит нет и обещания долгого ожидания: о минутах
+    // сборки на colloq start команда говорит уже после записи.
+    confirmQuestion: (ctx) =>
+      'make environment ' +
+      wantName(ctx, 'colloq env use <name>') +
+      ' the default for new classes?',
+    delegates: 'native: KERNEL_ENV in .env',
     examples: ['colloq env use cv', 'colloq env use {env} --yes'],
     notes:
-      'The KERNEL_ENV= line is written into the existing .env instead of a fresh file put on top of it: under sudo the file would stay root:0600, and the next start would bring an instance up with the defaults. Classes that are already open stay on their own environment. Next to the sources the image is built right away, by the env-build target; with colloq installed it is built on the first colloq start, together with the rest of the preparation. The env-build target does not see an environment from your own directory: colloq start builds that image too.',
+      'The KERNEL_ENV= line is written into the existing .env instead of a fresh file put on top of it: under sudo the file would stay root:0600, and the next start would bring an instance up with the defaults. Classes that are already open stay on their own environment. The image is not built here: colloq start builds it before the class, together with the rest of the preparation, and the first time that can take minutes.',
     async run(ctx) {
+      // Файл и цепочку уже проверил check() — до вопроса и под --dry-run тоже.
       const name = wantName(ctx, 'colloq env use <name>')
-      needFile(ctx, name, 'colloq env new ' + name)
-      // Не «установлен ли пакет», а «есть ли кому собрать отсюда»: у своего
-      // окружения при разошедшихся каталогах make соберёт не то. См. makeSees.
-      const build = buildsNow(ctx, name)
       if (ctx.dryRun) {
         return ctx.sh.dry(
           'native: env use ' +
             name +
-            ' (' +
-            (build ? 'make env-build NAME=' + name + ', then ' : '') +
-            'KERNEL_ENV=' +
+            ' (KERNEL_ENV=' +
             name +
             ' in ' +
             short(ctx, ctx.env.paths.envFile) +
             ')',
         )
       }
-      if (build) {
-        ctx.ui.header('switching to ' + name + ': building the image, then KERNEL_ENV in .env')
-        // Сборка целью env-build, а не своим docker: сборка цепочки
-        // наследования живёт там, и два её списывания разъехались бы на
-        // первой же правке. Упала сборка — умолчание не меняем: переключить
-        // занятия на окружение, образа которого нет, хуже, чем не
-        // переключить.
-        const code = await ctx.sh.make('env-build', { NAME: nameVar(ctx, name) })
-        if (code !== 0) return code
-      }
       writeKernelEnv(ctx, name)
       ctx.ui.line(ctx.ui.bold('Default environment for new classes: ' + name))
-      if (!build)
-        ctx.ui.line(
-          ctx.ui.dim('the image is built on your first colloq start: this can take minutes'),
-        )
+      ctx.ui.line(
+        ctx.ui.dim('the image is built on your next colloq start: this can take minutes'),
+      )
       return 0
-    },
-  },
-
-  {
-    name: 'env freeze',
-    group: 'env',
-    summary: 'Show the real package versions from the kernel',
-    usage: 'colloq env freeze',
-    flags: [],
-    destructive: false,
-    delegates: 'make env-freeze (with colloq installed: docker run colloq-kernel:<environment>)',
-    examples: ['colloq env freeze', 'colloq env freeze --dry-run'],
-    notes:
-      'Asks the running kernel service, and when there is none (a machine set up as a service) a one-off colloq-kernel:<environment> container: this is the answer about the environment, not about what somebody installed by hand into a live room.',
-    async run(ctx) {
-      /*
-       * У установленного colloq цель env-freeze звать нечем, а ответить есть чем.
-       *
-       * Makefile ветвится: есть ли работающая служба kernel из docker compose —
-       * тогда `compose exec`, иначе одноразовый контейнер образа окружения
-       * (Makefile · env-freeze). У преподавателя compose нет вовсе — ни файла,
-       * ни службы, — значит из двух веток действует ровно одна, и она пишется
-       * одной строкой. Это не третья копия сборки, от которой предостерегает
-       * `env build` выше: сборки здесь нет, есть `pip freeze` в контейнере.
-       */
-      if (!ctx.dist) return await ctx.sh.make('env-freeze')
-      const image = 'colloq-kernel:' + ctx.env.kernelEnv()
-      return await ctx.sh.run('docker', ['run', '--rm', image, 'pip', 'freeze'])
     },
   },
 ]

@@ -1,16 +1,13 @@
 /**
  * Что такое команда и где их брать.
  *
- * Реестр собирается из пяти файлов, по файлу на группу. Агент группы правит
- * ровно свой файл и свой тест: ни строки здесь, в main.ts, ui.ts, sh.ts,
- * env.ts, Makefile и package.json группам менять не нужно. Порядок в help и в
- * меню — порядок массива внутри файла группы.
+ * Реестр собирается из четырёх файлов, по файлу на группу. Порядок в help —
+ * порядок массива внутри файла группы.
  *
- * Реестр один на обе поверхности. Поверхность преподавателя (COLLOQ_SURFACE=
- * teacher) не укорачивает его, а только показывает меньше: команда с
- * audience:'teacher' видна в help и в меню, остальные прячутся, но зовутся по
- * точному имени как прежде. Кто в какой поверхности — решает поле audience у
- * самой команды, а не отдельный список: список разъехался бы с реестром.
+ * Здесь только то, чем преподаватель ведёт занятие после `pip install colloq`:
+ * поднять, выставить наружу, посмотреть, остановить, снять копию. Мастерская —
+ * аренда машин, кластер, ретранслятор, DNS, сборка, тесты — живёт в Makefile
+ * и scripts/, обёртки над ней здесь нет.
  */
 import type { Env, Io } from './env.js'
 import type { Sh } from './sh.js'
@@ -18,28 +15,10 @@ import type { Ui } from './ui.js'
 
 import { commands as local } from './commands/local.js'
 import { commands as host } from './commands/host.js'
-import { commands as vast } from './commands/vast.js'
 import { commands as env } from './commands/env.js'
 import { commands as tools } from './commands/tools.js'
 
-export type Group = 'local' | 'host' | 'vast' | 'env' | 'tools'
-
-/**
- * Кому команда предназначена — и, значит, кому её видно.
- *
- * 'teacher' — поверхность человека, который поставил пакет (`pip install
- * colloq`) и ведёт занятие на своём ноутбуке: поднять, выставить наружу,
- * посмотреть, остановить, снять копию. 'workshop' — всё, что имеет смысл
- * только рядом с исходниками: разработка, сборка, тесты, аренда машин,
- * развёртывание, DNS.
- *
- * Разделение не удаляет ничего: workshop-команда остаётся в реестре и
- * находится по точному имени в любой поверхности. Она лишь не показывается
- * в help, в меню и в подсказке по опечатке, когда CLI работает поверхностью
- * преподавателя (COLLOQ_SURFACE=teacher). В репозитории по умолчанию видно
- * всё — разработка не меняется ни на шаг.
- */
-export type Audience = 'teacher' | 'workshop'
+export type Group = 'local' | 'host' | 'env' | 'tools'
 
 /** Флаг команды. arg — имя значения; нет arg — флаг булев. */
 export type Flag = {
@@ -50,26 +29,14 @@ export type Flag = {
   multiple?: boolean
 }
 
-/**
- * Позиционный аргумент — для help и для вопроса в меню.
- *
- * makeVar — пара ВИДА=ЗНАЧЕНИЕ, которой этот же аргумент называют вместо
- * позиции: `colloq vast up NAME=hse` и `colloq vast up hse` — одно и то же.
- * Каркас считает обязательный аргумент названным, если пришла его пара, —
- * иначе required был бы несовместим с make-формой и им никто не пользовался бы.
- */
-export type Arg = { name: string; summary: string; required?: boolean; makeVar?: string }
-
-/** Как устроена эта машина: от этого зависит, чем останавливать и где смотреть журнал. */
-export type Form = 'cluster' | 'service' | 'container' | 'host' | 'other'
+/** Позиционный аргумент — для help. */
+export type Arg = { name: string; summary: string; required?: boolean }
 
 export type Ctx = {
   /** Позиционные аргументы после имени команды. */
   positionals: string[]
   /** Значения флагов из parseArgs. */
   values: Record<string, unknown>
-  /** Пары ВИДА=ЗНАЧЕНИЕ, снятые из argv: уходят делегируемому make как есть. */
-  makeVars: Record<string, string>
   dryRun: boolean
   yes: boolean
   json: boolean
@@ -79,26 +46,15 @@ export type Ctx = {
   io: Io
   /** Сколько сейчас идёт комнат (ядра в docker). Не запрещает ничего — только уточняет вопрос. */
   rooms(): Promise<number>
-  /** Форма установки на этой машине. */
-  form(): Promise<Form>
-  /** Жив ли сервер этой машины: расписка .colloq.pid или кто-то на порту. */
-  serverAlive(): Promise<boolean>
   /**
-   * Чья это поверхность: преподавателя или мастерской.
+   * Приложение приехало готовым (колесо pip), а не запущено из исходников.
    *
-   * Приходит через ctx, а не читается из process.env в модуле группы, — как и
-   * всё остальное: модули групп герметичны, и это стережёт cli-core
-   * («модули групп не открывают дверь к процессам и файлам мимо ctx»).
-   * Решает не команда, а каркас: COLLOQ_SURFACE выставляет питоновский шим.
-   */
-  surface: Audience
-  /**
-   * Приложение приехало готовым: ни Makefile, ни npm, ни исходников рядом нет.
-   *
-   * Через ctx по той же причине, что и surface: модуль группы не смотрит на
-   * файловую систему мимо ctx.io, иначе его нельзя проверить, не разложив
-   * настоящий дистрибутив на диске. Решает каркас — по признаку у корня
-   * приложения (launch-state.ts · isDistribution).
+   * Решает только одно — чем звать супервизор и откуда читать собранное:
+   * cli/launch.mjs голым node или cli/src/launch.ts через tsx. Поведение
+   * команд от него не зависит. Через ctx, а не своим взглядом на диск: модуль
+   * группы не смотрит на файловую систему мимо ctx.io, иначе его нельзя
+   * проверить, не разложив настоящий дистрибутив. Решает каркас — по признаку
+   * у корня приложения (launch-state.ts · isDistribution).
    */
   dist: boolean
   /** Спросить самому: --yes и --dry-run отвечают «да» молча. */
@@ -109,12 +65,6 @@ export type Command = {
   name: string
   aliases?: string[]
   group: Group
-  /**
-   * Кому команда видна. Не указано — 'workshop': поверхность преподавателя
-   * узкая и перечисляется поимённо, а всё новое по умолчанию остаётся в
-   * мастерской. Прятать — не то же самое, что удалять: см. Audience.
-   */
-  audience?: Audience
   /** Одна строка по-английски: что делает. */
   summary: string
   /** Начинается с 'colloq '. */
@@ -143,9 +93,7 @@ export type Command = {
    * машине: там, где писатели на арендованной, число сбивает с толку.
    */
   rooms?: boolean
-  /** Принимать позиционные сверх объявленных args (у colloq make это хвост цели). */
-  extra?: boolean
-  /** Что выполнится: `make host HOST=…`, `scripts/dns.sh sync`, `native`. */
+  /** Что выполнится: `scripts/host.sh`, `native: …`. */
   delegates: string
   /** Примеры для --help. {domain} и {env} подставляются из .env. */
   examples?: string[]
@@ -156,9 +104,8 @@ export type Command = {
 export const GROUPS: { name: Group; title: string }[] = [
   { name: 'local', title: 'Locally' },
   { name: 'host', title: 'Class online' },
-  { name: 'vast', title: 'Machines and releases' },
   { name: 'env', title: 'Kernel environments' },
   { name: 'tools', title: 'Tools' },
 ]
 
-export const registry: Command[] = [...local, ...host, ...vast, ...env, ...tools]
+export const registry: Command[] = [...local, ...host, ...env, ...tools]

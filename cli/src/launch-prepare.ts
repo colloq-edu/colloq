@@ -213,7 +213,7 @@ export async function prepare(
       ancestorRebuilt = true
     }
     if (fingerprint(kernelFrom, inputs) !== sourceHash)
-      throw new Error('The sources changed during the build. Start again, or use colloq dev.')
+      throw new Error('The sources changed during the build. Start again, or use make dev.')
     stamps.push({ file: marker, value: { fingerprint: item.fingerprint, id: image.Id, parentId } })
     parentId = image.Id
     parentImage = `colloq-kernel:${item.name}`
@@ -263,7 +263,7 @@ export async function prepare(
     )
       throw new Error('The build produced no frontend and no server. Check the output above.')
     if (fingerprint(root) !== before)
-      throw new Error('The sources changed during the build. Start again, or use colloq dev.')
+      throw new Error('The sources changed during the build. Start again, or use make dev.')
     writeJson(file, { fingerprint: before, fast: options.fast })
   }
 }

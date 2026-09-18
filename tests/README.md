@@ -60,7 +60,7 @@ should have to unwind. Without the flag the runner waits on a child that has
 finished its work and has no intention of exiting, and a suite that takes 600 ms
 takes three minutes to say so.
 
-Both `npm test` and `colloq test <pattern>` preload `tests/_cli.mts` after tsx.
+`npm test` preloads `tests/_cli.mts` after tsx.
 It makes the test child's stdout synchronous before forced exit, so buffered
 test events reach the parent. Without this preload Node 23.7 reported only
 49 of 64 passing pult tests in one audit run; with it all 64 were reported.

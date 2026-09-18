@@ -4,12 +4,13 @@
  * Ни один процесс здесь не запускается и ни один настоящий файл не читается
  * командами: исполнитель подставной и пишет вызовы в массив, io — карта файлов
  * в памяти. Настоящие kernel/environments/*.txt читает только сам тест — и
- * кладёт их в ту же карту, чтобы сверить машинный вид со списком, который даёт
- * make env-list.
+ * кладёт их в ту же карту, чтобы сверить машинный вид с правилом счёта, которым
+ * пользуется и цель env-list в Makefile.
  *
- * Четыре команды группы — list, show, new, use — нативные: они читают и пишут
- * файлы сами, а не зовут make. Поэтому проверяется и то, ЧТО написано: карта
- * файлов возвращается наружу (Harness.io), и после команды в неё заглядывают.
+ * Все четыре команды группы — list, show, new, use — только файлы: ни одна
+ * ничего не запускает, и массив вызовов после каждой обязан остаться пустым.
+ * Поэтому проверяется и то, ЧТО написано: карта файлов возвращается наружу
+ * (Harness.io), и после команды в неё заглядывают.
  */
 import './_cli.mjs'
 import { test } from 'node:test'
@@ -17,7 +18,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { cli } from '../cli/src/main.js'
 import { createEnv, createMemoryIo, type Io } from '../cli/src/env.js'
-import { envFileIn, listEnvNames } from '../cli/src/commands/env.js'
+import { commands, envFileIn, listEnvNames } from '../cli/src/commands/env.js'
 import { PYTHON_VERSIONS } from '../shared/admin.js'
 
 const ROOT = '/repo'
@@ -25,7 +26,6 @@ const ROOT = '/repo'
 const FILES: Record<string, string> = {
   '/repo/package.json': '{ "name": "colloq", "version": "0.1.0" }',
   '/repo/cli/package.json': '{ "name": "@colloq/cli", "version": "0.1.0" }',
-  '/repo/Makefile': ['env-list: ## Окружения', 'env-show: ## Окружение'].join('\n'),
   '/repo/.env': ['PORT=3000', 'KERNEL_ENV=cv', 'RELAY_DOMAIN=hse.colloq.ru'].join('\n'),
   '/repo/kernel/Dockerfile': ['FROM scratch', 'ARG PARENT=python:3.11-slim-bookworm'].join('\n'),
   '/repo/kernel/requirements.txt': [
@@ -79,8 +79,10 @@ async function run(
     files?: Record<string, string>
     answer?: string
     tty?: boolean
-    exit?: number
-    /** Установленный colloq: ни Makefile, ни npm рядом нет. */
+    /**
+     * Установленный colloq. Поведение команд от него не зависит; он решает
+     * только умолчания нового .env — те же, что написал бы запуск.
+     */
     dist?: boolean
     /** Каталог состояния, когда он не совпадает с каталогом приложения. */
     home?: string
@@ -115,7 +117,7 @@ async function run(
     runner: {
       async run(cmd, args) {
         calls.push([cmd, ...args])
-        return opts.exit ?? 0
+        return 0
       },
       async capture() {
         // Счёт комнат каркасом — чтение, а не запуск: в calls ему не место.
@@ -126,7 +128,7 @@ async function run(
   return { code, out, err, calls, asked, io }
 }
 
-/** Строка списка ровно той ширины, какой её печатала цель env-list (%-14s). */
+/** Строка списка ровно той ширины, какой её печатает цель env-list (%-14s). */
 function row(mark: string, name: string, tail: string): string {
   return '  ' + mark + ' ' + name.padEnd(14) + ' ' + tail
 }
@@ -191,9 +193,34 @@ test('совпавшие каталоги не удваивают имя', () =>
   assert.deepEqual(listEnvNames(io, { app: same, own: same }), ['base', 'cv'])
 })
 
+// ------------------------------------------------------------- состав группы
+
+test('в группе четыре команды, и ни одна не собирает образ', async () => {
+  /*
+   * env build и env freeze ушли вместе с обёрткой над Makefile: образ собирает
+   * colloq start, а цели env-build и env-freeze остались в мастерской. Старое
+   * имя не должно тихо сделать что-нибудь другое — `env build cv` доходит до
+   * `env` (алиас списка) и отказывает лишним словом, ничего не запустив.
+   */
+  assert.deepEqual(
+    commands.map((command) => command.name),
+    ['env list', 'env show', 'env new', 'env use'],
+  )
+  for (const argv of [
+    ['env', 'build', 'cv'],
+    ['env', 'freeze'],
+  ]) {
+    const result = await run(argv, { answer: 'y' })
+    assert.equal(result.code, 2, argv.join(' '))
+    assert.deepEqual(result.calls, [])
+    assert.deepEqual(result.asked, [])
+    assert.equal(result.io.readText('/repo/.env'), FILES['/repo/.env'])
+  }
+})
+
 // ------------------------------------------------------------------ env list
 
-test('env list: имя, голое env и env ls печатают список сами, без make', async () => {
+test('env list: имя, голое env и env ls печатают список сами, ничего не запуская', async () => {
   for (const argv of [['env', 'list'], ['env'], ['env', 'ls']]) {
     const result = await run(argv)
     assert.equal(result.code, 0)
@@ -212,7 +239,7 @@ test('env list: имя, голое env и env ls печатают список �
   }
 })
 
-test('env list: ширина колонки и звёздочка — те же, что печатала цель', async () => {
+test('env list: ширина колонки и звёздочка — те же, что печатает цель', async () => {
   const result = await run(['env', 'list'])
   assert.equal(
     result.out[4],
@@ -268,7 +295,7 @@ test('env list --json --dry-run: ровно одна строка JSON и нич
   assert.match(parsed.command, /^native: env list /)
 })
 
-test('env list --json по настоящим файлам совпадает с тем, что показывает make env-list', async () => {
+test('env list --json по настоящим файлам считает пакеты тем же правилом, что цель env-list', async () => {
   const result = await run(['env', 'list', '--json'], { files: realFiles() })
   assert.equal(result.code, 0)
   const parsed = JSON.parse(result.out[0] as string) as {
@@ -324,7 +351,7 @@ test('env list терпит петлю: список не гаснет из-за
 
 // ------------------------------------------------------------------ env show
 
-test('env show без имени показывает текущее окружение сам, без make', async () => {
+test('env show без имени показывает текущее окружение сам, ничего не запуская', async () => {
   const bare = await run(['env', 'show'])
   assert.equal(bare.code, 0)
   assert.deepEqual(bare.calls, [])
@@ -431,14 +458,6 @@ test('env new --python не по умолчанию пишет директив�
   assert.equal(/colloq: python/.test(plain), false, 'просили умолчание — писать нечего')
 })
 
-test('env new принимает и форму make: NAME= и PYTHON= не удваиваются', async () => {
-  const result = await run(['env', 'new', 'NAME=ml', 'PYTHON=3.12', '--dry-run'])
-  assert.equal(result.code, 0)
-  assert.deepEqual(result.out, [
-    'native: env new ml (creates kernel/environments/ml.txt, Python 3.12)',
-  ])
-})
-
 test('env new без имени — употребление, ничего не запущено', async () => {
   const result = await run(['env', 'new'])
   assert.equal(result.code, 2)
@@ -481,11 +500,6 @@ test('env new: чужая версия Python — отказ со списком
   assert.equal(name.code, 2)
   assert.deepEqual(name.calls, [])
   assert.match(name.err.join('\n'), /cannot be an environment name/)
-
-  const twice = await run(['env', 'new', 'ml', 'NAME=cv'])
-  assert.equal(twice.code, 2)
-  assert.deepEqual(twice.calls, [])
-  assert.match(twice.err.join('\n'), /named twice/)
 })
 
 test('env new: файл уже есть — отказ 3, чужой список не тронут', async () => {
@@ -498,92 +512,48 @@ test('env new: файл уже есть — отказ 3, чужой списо�
   )
 })
 
-// ----------------------------------------------------------------- env build
-
-test('env build --dry-run печатает цель с именем', async () => {
-  const result = await run(['env', 'build', 'cv', '--dry-run'])
-  assert.equal(result.code, 0)
-  assert.deepEqual(result.calls, [])
-  assert.deepEqual(result.out, ['make env-build NAME=cv'])
-})
-
-test('env build: шапка одной строкой, дальше поток цели', async () => {
-  const result = await run(['env', 'build', 'cv'])
-  assert.equal(result.code, 0)
-  assert.deepEqual(result.calls, [['make', 'env-build', 'NAME=cv']])
-  assert.equal(result.out.length, 1)
-  assert.match(result.out[0] as string, /^building the image of cv/)
-})
-
-test('env build: нет файла окружения — отказ 3 до сборки', async () => {
-  const result = await run(['env', 'build', 'ml'])
-  assert.equal(result.code, 3)
-  assert.deepEqual(result.calls, [])
-  assert.match(result.err.join('\n'), /colloq env new ml/)
-})
-
-test('env build: петля отвергается до сборки, а не после девяти минут', async () => {
-  const result = await run(['env', 'build', 'ring'], { files: RING })
-  assert.equal(result.code, 3)
-  assert.deepEqual(result.calls, [])
-  assert.match(result.err.join('\n'), /in a circle: ring/)
-})
-
-test('env build без имени — употребление; пары ВИДА=ЗНАЧЕНИЕ доезжают', async () => {
-  const bare = await run(['env', 'build'])
-  assert.equal(bare.code, 2)
-  assert.deepEqual(bare.calls, [])
-
-  const vars = await run(['env', 'build', 'cv', 'FORCE=1', '--dry-run'])
-  assert.deepEqual(vars.out, ['make env-build NAME=cv FORCE=1'])
-})
-
 // ------------------------------------------------------------------- env use
 
-test('env use --dry-run: сборка и запись названы, вопроса нет, .env не тронут', async () => {
+test('env use --dry-run: запись названа, вопроса нет, .env не тронут', async () => {
   const result = await run(['env', 'use', 'base', '--dry-run'])
   assert.equal(result.code, 0)
   assert.deepEqual(result.calls, [])
   assert.deepEqual(result.asked, [])
-  assert.deepEqual(result.out, [
-    'native: env use base (make env-build NAME=base, then KERNEL_ENV=base in .env)',
-  ])
+  assert.deepEqual(result.out, ['native: env use base (KERNEL_ENV=base in .env)'])
   assert.equal(result.io.readText('/repo/.env'), FILES['/repo/.env'])
 })
 
-test('env use --yes собирает образ и переливает KERNEL_ENV в .env', async () => {
+test('env use --yes переливает KERNEL_ENV в .env и ничего не собирает сам', async () => {
   const result = await run(['env', 'use', 'base', '--yes'], { answer: 'y' })
   assert.equal(result.code, 0)
   assert.deepEqual(result.asked, [])
-  assert.deepEqual(result.calls, [['make', 'env-build', 'NAME=base']])
+  assert.deepEqual(result.calls, [], 'образ собирает colloq start, а не эта команда')
   assert.equal(
     result.io.readText('/repo/.env'),
     ['PORT=3000', 'RELAY_DOMAIN=hse.colloq.ru', 'KERNEL_ENV=base', ''].join('\n'),
     'остальные строки на месте, KERNEL_ENV ровно один',
   )
-  assert.match(result.out.join('\n'), /Default environment for new classes: base/)
+  assert.deepEqual(result.out, [
+    'Default environment for new classes: base',
+    'the image is built on your next colloq start: this can take minutes',
+  ])
 })
 
-test('env use: упала сборка — умолчание не меняется', async () => {
-  const result = await run(['env', 'use', 'base', '--yes'], { exit: 1 })
-  assert.equal(result.code, 1)
-  assert.deepEqual(result.calls, [['make', 'env-build', 'NAME=base']])
-  assert.equal(result.io.readText('/repo/.env'), FILES['/repo/.env'], '.env не тронут')
-})
-
-test('env use спрашивает один раз, «нет» — код 4 и ни одного вызова', async () => {
+test('env use спрашивает один раз и без обещания сборки; «нет» — код 4 и .env цел', async () => {
   const no = await run(['env', 'use', 'base'], { answer: 'n' })
   assert.equal(no.code, 4)
   assert.deepEqual(no.calls, [])
   assert.equal(no.asked.length, 1)
-  assert.match(no.asked[0] as string, /build environment base and make it the default\?/)
+  assert.match(no.asked[0] as string, /make environment base the default for new classes\?/)
+  assert.doesNotMatch(no.asked[0] as string, /build|slow/, 'сборки здесь нет — нет и обещания')
   assert.match(no.out.join('\n'), /cancelled/)
   assert.equal(no.io.readText('/repo/.env'), FILES['/repo/.env'])
 
   const yes = await run(['env', 'use', 'base'], { answer: 'y' })
   assert.equal(yes.code, 0)
   assert.equal(yes.asked.length, 1)
-  assert.deepEqual(yes.calls, [['make', 'env-build', 'NAME=base']])
+  assert.deepEqual(yes.calls, [])
+  assert.match(yes.io.readText('/repo/.env') ?? '', /^KERNEL_ENV=base$/m)
 })
 
 test('env use без терминала и без --yes — отказ 3, а не «да»', async () => {
@@ -591,41 +561,47 @@ test('env use без терминала и без --yes — отказ 3, а н�
   assert.equal(result.code, 3)
   assert.deepEqual(result.calls, [])
   assert.match(result.err.join('\n'), /--yes/)
+  assert.equal(result.io.readText('/repo/.env'), FILES['/repo/.env'])
 })
 
-test('env use: нет окружения — отказ 3 без вопроса; алиас env switch и форма NAME=', async () => {
+test('env use: нет окружения — отказ 3 без вопроса; алиас env switch — та же команда', async () => {
   const missing = await run(['env', 'use', 'ml'], { answer: 'y' })
   assert.equal(missing.code, 3)
   assert.deepEqual(missing.asked, [])
   assert.deepEqual(missing.calls, [])
+  assert.match(missing.err.join('\n'), /colloq env new ml/)
+  assert.equal(missing.io.readText('/repo/.env'), FILES['/repo/.env'])
 
   const alias = await run(['env', 'switch', 'base', '--dry-run'])
-  assert.match(alias.out.join('\n'), /^native: env use base /)
+  assert.deepEqual(alias.out, ['native: env use base (KERNEL_ENV=base in .env)'])
 
-  const asVar = await run(['env', 'use', 'NAME=base', '--dry-run'])
-  assert.match(asVar.out.join('\n'), /^native: env use base /)
+  // Проверка идёт до вопроса и под --dry-run тоже: строка «сделал бы» про
+  // окружение, которого нет, была бы враньём.
+  const dry = await run(['env', 'use', 'ml', '--dry-run'])
+  assert.equal(dry.code, 3)
+  assert.deepEqual(dry.out, [])
 })
 
-test('env use на петле отказывает до вопроса и до сборки', async () => {
+test('env use без имени и с чужим именем — употребление, .env не тронут', async () => {
+  const bare = await run(['env', 'use'], { answer: 'y' })
+  assert.equal(bare.code, 2)
+  assert.deepEqual(bare.asked, [])
+  assert.match(bare.err.join('\n'), /<name>/)
+
+  const wrong = await run(['env', 'use', 'ML'], { answer: 'y' })
+  assert.equal(wrong.code, 2)
+  assert.deepEqual(wrong.asked, [])
+  assert.match(wrong.err.join('\n'), /cannot be an environment name/)
+  assert.equal(wrong.io.readText('/repo/.env'), FILES['/repo/.env'])
+})
+
+test('env use на петле отказывает до вопроса', async () => {
   const result = await run(['env', 'use', 'ring'], { files: RING, answer: 'y' })
   assert.equal(result.code, 3)
   assert.deepEqual(result.asked, [])
   assert.deepEqual(result.calls, [])
   assert.match(result.err.join('\n'), /in a circle: ring/)
   assert.equal(result.io.readText('/repo/.env'), FILES['/repo/.env'])
-})
-
-// ---------------------------------------------------------------- env freeze
-
-test('env freeze зовёт цель и отдаёт её код; --dry-run печатает одну строку', async () => {
-  const dry = await run(['env', 'freeze', '--dry-run'])
-  assert.equal(dry.code, 0)
-  assert.deepEqual(dry.calls, [])
-  assert.deepEqual(dry.out, ['make env-freeze'])
-
-  const real = await run(['env', 'freeze'], { exit: 2 })
-  assert.equal(real.code, 2)
-  assert.deepEqual(real.calls, [['make', 'env-freeze']])
 })
 
 // -------------------------------------------------------------------- помощь
@@ -636,47 +612,31 @@ test('помощь по команде группы: употребление, �
   const text = result.out.join('\n')
   assert.match(text, /Usage: colloq env use <name>/)
   assert.match(text, /colloq env use cv --yes/)
-  assert.match(text, /delegates: native: KERNEL_ENV in \.env/)
+  assert.match(text, /delegates: native: KERNEL_ENV in \.env$/m)
+  // Цели мастерской в помощи преподавателю не место: звать их нечем.
+  assert.doesNotMatch(text, /env-build|NAME=/)
 })
 
-// ------------------------------------------------- установленный colloq
+// ------------------------------------------- установленный colloq и репозиторий
 
 /**
- * У установленного colloq Makefile нет, и группа env обязана это знать.
+ * Установленный colloq и репозиторий ведут себя одинаково.
  *
- * Раньше эти ветки нельзя было проверить вовсе: `isDistribution()` читала
- * настоящий диск мимо ctx, и тест увидел бы репозиторий, что бы ему ни
- * подкладывали в память. Теперь признак приходит через ctx, как и поверхность,
- * и обе дороги проверяются одинаково.
+ * Развилка по ctx.dist в группе осталась одна — умолчания нового .env
+ * (launch-config.ts · localClassEnv), и она повторяет выбор самого запуска.
+ * Всё прочее — вопрос, запись, вывод — от признака не зависит, и это
+ * проверяется прямо: две дороги, один результат.
  */
-test('env build у установленного colloq отказывает словами, а не «No rule to make target»', async () => {
-  const dist = await run(['env', 'build', 'cv'], { dist: true })
-  assert.notEqual(dist.code, 0)
-  assert.deepEqual(dist.calls, [], 'make звать нечем — значит не зовём')
-  assert.match(dist.err.join('\n'), /next to the sources/)
-  assert.match(dist.err.join('\n'), /colloq start/)
-
-  const repo = await run(['env', 'build', 'cv'])
-  assert.equal(repo.code, 0)
-  assert.deepEqual(repo.calls[0]?.slice(0, 2), ['make', 'env-build'])
-})
-
-test('env freeze спрашивает образ окружения напрямую, когда make звать нечем', async () => {
-  const dist = await run(['env', 'freeze'], { dist: true })
-  assert.equal(dist.code, 0)
-  // KERNEL_ENV в тестовом .env — cv.
-  assert.deepEqual(dist.calls, [['docker', 'run', '--rm', 'colloq-kernel:cv', 'pip', 'freeze']])
-
-  const repo = await run(['env', 'freeze'])
-  assert.deepEqual(repo.calls[0]?.slice(0, 2), ['make', 'env-freeze'])
-})
-
-test('env use у установленного colloq переписывает .env и не собирает ничего сам', async () => {
-  const result = await run(['env', 'use', 'gpu', '--yes'], { dist: true })
-  assert.equal(result.code, 0)
-  assert.deepEqual(result.calls, [], 'сборку делает colloq start, а не эта команда')
-  assert.match(result.io.readText('/repo/.env') ?? '', /^KERNEL_ENV=gpu$/m)
-  assert.match(result.out.join('\n'), /the image is built on your first colloq start/)
+test('env use одинаков у установленного colloq и в репозитории', async () => {
+  const dist = await run(['env', 'use', 'gpu', '--yes'], { dist: true })
+  const repo = await run(['env', 'use', 'gpu', '--yes'], { dist: false })
+  for (const result of [dist, repo]) {
+    assert.equal(result.code, 0)
+    assert.deepEqual(result.calls, [])
+    assert.match(result.io.readText('/repo/.env') ?? '', /^KERNEL_ENV=gpu$/m)
+  }
+  assert.deepEqual(dist.out, repo.out)
+  assert.equal(dist.io.readText('/repo/.env'), repo.io.readText('/repo/.env'))
 })
 
 test('env use на пустом месте заводит .env целиком, а не одну строку', async () => {
@@ -687,16 +647,24 @@ test('env use на пустом месте заводит .env целиком, �
   assert.equal(result.code, 0)
   const written = result.io.readText('/repo/.env') ?? ''
   assert.match(written, /^KERNEL_ENV=gpu$/m)
+  assert.equal(
+    written.match(/^KERNEL_ENV=/gm)?.length,
+    1,
+    'строка из умолчаний заменена, а не удвоена',
+  )
   // Ровно то, чего не хватало: свой токен ядра, а не общеизвестный из примера.
   assert.match(written, /^JUPYTER_TOKEN=[0-9a-f]{48}$/m)
   assert.match(written, /^KERNEL_BACKEND=docker$/m)
   assert.doesNotMatch(written, /colloq-dev-token/)
   // У пакета pip комната и панель открываются по-английски; в репозитории ru.
   assert.match(written, /^UI_LANGUAGE=en$/m)
+
+  const repo = await run(['env', 'use', 'gpu', '--yes'], { without: ['/repo/.env'] })
+  assert.match(repo.io.readText('/repo/.env') ?? '', /^UI_LANGUAGE=ru$/m)
 })
 
 test('env use в существующем .env трогает одну строку и оставляет остальные', async () => {
-  const result = await run(['env', 'use', 'gpu', '--yes'], { dist: true })
+  const result = await run(['env', 'use', 'gpu', '--yes'])
   const written = result.io.readText('/repo/.env') ?? ''
   assert.match(written, /^KERNEL_ENV=gpu$/m)
   assert.match(written, /^PORT=3000$/m, 'чужие строки на месте')
@@ -704,17 +672,15 @@ test('env use в существующем .env трогает одну стро�
   assert.doesNotMatch(written, /JUPYTER_TOKEN/, 'готовый файл не переписывается заново')
 })
 
-// ------------------------------ рабочее дерево, у которого своё COLLOQ_HOME
+// ------------------------------------------ два каталога: свой и привезённый
 
 /**
- * Каталоги разошлись не у пакета, а у клона: `colloq start` с COLLOQ_HOME.
+ * Каталог состояния отдельно от каталога приложения.
  *
- * Тогда своё окружение лежит в <home>/environments, а `make env-build` читает
- * $(ENV_DIR) рядом с Makefile и про этот каталог не знает вовсе — он либо
- * отказывал «Нет kernel/environments/mine.txt», либо, если имя совпало с
- * привезённым, молча собирал ПРИВЕЗЁННЫЙ список под правильным именем.
- * Развилка теперь стоит не по «установлен ли пакет», а по «увидит ли make
- * этот лист» — так же, как в запуске (launch-prepare.ts · viaMake).
+ * Так живёт установленный colloq, и так же — рабочее дерево, запущенное с
+ * COLLOQ_HOME. Тогда .env лежит в <home>, свои окружения — в
+ * <home>/environments, а привезённые — в <app>/kernel/environments, и каждая
+ * команда группы обязана смотреть в оба каталога и писать только в свой.
  */
 const HOME = '/home/teacher/.colloq'
 
@@ -723,46 +689,89 @@ const SPLIT: Record<string, string> = {
   [HOME + '/environments/mine.txt']: ['# colloq: from base', 'statsmodels'].join('\n'),
 }
 
-test('env use на своём окружении не зовёт make: он собрал бы не то', async () => {
+test('env list при двух каталогах называет оба и помечает своё', async () => {
+  const result = await run(['env', 'list'], { home: HOME, files: SPLIT })
+  assert.equal(result.code, 0)
+  assert.deepEqual(result.calls, [])
+  assert.equal(result.out[0], 'Environments (kernel/environments/ and ' + HOME + '/environments/)')
+  const text = result.out.join('\n')
+  assert.match(text, /\* base /, 'звёздочка — по .env каталога состояния')
+  assert.match(text, /mine .*1 package on top of the base · your own$/m)
+  assert.doesNotMatch(text, /cv .*your own/, 'привезённое своим не называется')
+
+  const json = await run(['env', 'list', '--json'], { home: HOME, files: SPLIT })
+  const parsed = JSON.parse(json.out[0] as string) as {
+    ownDir: string
+    environments: { name: string; own: boolean; file: string }[]
+  }
+  assert.equal(parsed.ownDir, HOME + '/environments')
+  const mine = parsed.environments.find((item) => item.name === 'mine')
+  assert.deepEqual([mine?.own, mine?.file], [true, HOME + '/environments/mine.txt'])
+})
+
+test('env new при двух каталогах пишет только в свой, и перекрытие называет вслух', async () => {
+  const fresh = await run(['env', 'new', 'ml'], { home: HOME, files: SPLIT })
+  assert.equal(fresh.code, 0)
+  assert.ok(fresh.io.exists(HOME + '/environments/ml.txt'))
+  assert.equal(fresh.io.exists('/repo/kernel/environments/ml.txt'), false, 'в пакет не пишем')
+  assert.doesNotMatch(fresh.out.join('\n'), /overrides/)
+
+  // cv приехал с продуктом: своё с тем же именем законно, но не молча.
+  const shadow = await run(['env', 'new', 'cv'], { home: HOME, files: SPLIT })
+  assert.equal(shadow.code, 0)
+  assert.ok(shadow.io.exists(HOME + '/environments/cv.txt'))
+  assert.equal(
+    shadow.io.readText('/repo/kernel/environments/cv.txt'),
+    FILES['/repo/kernel/environments/cv.txt'],
+    'привезённый список не тронут',
+  )
+  assert.match(shadow.out.join('\n'), /overrides the bundled environment with the same name/)
+})
+
+test('env show своего окружения читает его файл, а не привезённый', async () => {
+  const result = await run(['env', 'show', 'mine'], { home: HOME, files: SPLIT })
+  assert.equal(result.code, 0)
+  const text = result.out.join('\n')
+  assert.match(text, new RegExp('^mine — ' + HOME + '/environments/mine\\.txt · Python 3\\.11'))
+  assert.match(text, /statsmodels/)
+})
+
+test('env use на своём окружении пишет KERNEL_ENV в .env каталога состояния', async () => {
   const result = await run(['env', 'use', 'mine', '--yes'], { home: HOME, files: SPLIT })
   assert.equal(result.code, 0)
-  assert.deepEqual(result.calls, [], 'make видит только kernel/environments — звать его нельзя')
+  assert.deepEqual(result.calls, [])
   assert.match(result.io.readText(HOME + '/.env') ?? '', /^KERNEL_ENV=mine$/m)
-  assert.match(result.out.join('\n'), /the image is built on your first colloq start/)
+  assert.equal(result.io.readText('/repo/.env'), FILES['/repo/.env'], '.env приложения не наш')
+  assert.match(result.out.join('\n'), /the image is built on your next colloq start/)
 })
 
-test('env use на привезённом окружении собирает целью: его make видит', async () => {
+test('env use на привезённом окружении при двух каталогах — то же самое', async () => {
   const result = await run(['env', 'use', 'cv', '--yes'], { home: HOME, files: SPLIT })
   assert.equal(result.code, 0)
-  assert.deepEqual(result.calls, [['make', 'env-build', 'NAME=cv']])
+  assert.deepEqual(result.calls, [])
   assert.match(result.io.readText(HOME + '/.env') ?? '', /^KERNEL_ENV=cv$/m)
-  assert.doesNotMatch(result.out.join('\n'), /is built on your first colloq start/)
 })
 
-test('env use: свой родитель в цепочке тоже уводит сборку от make', async () => {
-  const result = await run(['env', 'use', 'kid', '--yes'], {
+test('env use: цепочка идёт через оба каталога, пропавший родитель — отказ', async () => {
+  const kid = await run(['env', 'use', 'kid', '--yes'], {
     home: HOME,
     files: {
       ...SPLIT,
       [HOME + '/environments/kid.txt']: ['# colloq: from mine', 'seaborn'].join('\n'),
     },
   })
-  assert.equal(result.code, 0)
-  assert.deepEqual(result.calls, [], 'родитель mine из своего каталога — make его не соберёт')
-  assert.match(result.io.readText(HOME + '/.env') ?? '', /^KERNEL_ENV=kid$/m)
-})
+  assert.equal(kid.code, 0, 'родитель mine из своего каталога, его родитель base — из пакета')
+  assert.deepEqual(kid.calls, [])
+  assert.match(kid.io.readText(HOME + '/.env') ?? '', /^KERNEL_ENV=kid$/m)
 
-test('env build на своём окружении отказывает словами, а не собирает чужой лист', async () => {
-  const result = await run(['env', 'build', 'mine'], { home: HOME, files: SPLIT })
-  assert.equal(result.code, 3)
-  assert.deepEqual(result.calls, [])
-  assert.ok(
-    result.err.join('\n').includes(HOME + '/environments/'),
-    'в отказе назван каталог, которого make не видит: ' + result.err.join('\n'),
-  )
-  assert.match(result.err.join('\n'), /colloq start/)
-
-  const brought = await run(['env', 'build', 'cv'], { home: HOME, files: SPLIT })
-  assert.equal(brought.code, 0)
-  assert.deepEqual(brought.calls, [['make', 'env-build', 'NAME=cv']])
+  const orphan = await run(['env', 'use', 'orphan', '--yes'], {
+    home: HOME,
+    files: {
+      ...SPLIT,
+      [HOME + '/environments/orphan.txt']: ['# colloq: from gone', 'seaborn'].join('\n'),
+    },
+  })
+  assert.equal(orphan.code, 3)
+  assert.match(orphan.err.join('\n'), /"gone" is named as a parent, and it does not exist/)
+  assert.equal(orphan.io.readText(HOME + '/.env'), SPLIT[HOME + '/.env'])
 })

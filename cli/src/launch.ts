@@ -27,6 +27,14 @@ import {
 } from './launch-state.js'
 import { prepare } from './launch-prepare.js'
 import { devFrontendReady } from './launch-readiness.js'
+import { ensureCloudflared } from './launch-cloudflared.js'
+import {
+  parseShareMarker,
+  publishRefusal,
+  readClasses,
+  refusalText,
+  renderShareBlock,
+} from './launch-share.js'
 import { leaseUrl } from '../../shared/local-public-url-lease.js'
 
 /*
@@ -102,6 +110,58 @@ function banner(receipt: LaunchReceipt): void {
     `\nColloq is running\n\nLocal:  ${receipt.url}\nPanel:  ${receipt.url}/admin\nData:   ${receipt.dataDir}\nFiles:  ${receipt.workspaceDir}\n\nCtrl+C — save and stop the server and the local kernels\n`,
   )
 }
+/**
+ * Блок ссылки --share (launch-share.ts · renderShareBlock).
+ *
+ * Занятия читаются из базы в миг печати, а не при запуске: туннель
+ * поднимается полминуты, и занятие, созданное за это время в открывшемся
+ * браузере, в блок уже попадает.
+ */
+async function announceShare(
+  url: string,
+  receipt: Pick<LaunchReceipt, 'url' | 'dataDir'>,
+  relayDomain: string,
+  verified: boolean | null,
+  detached: boolean,
+): Promise<void> {
+  const { classes, total } = await readClasses(receipt.dataDir)
+  console.log(
+    renderShareBlock({
+      url,
+      local: receipt.url,
+      classes,
+      total,
+      verified,
+      detached,
+      relayDomain,
+    }).join('\n'),
+  )
+}
+/**
+ * cloudflared для --share — с отказом, который говорит, как быть без него.
+ * Один и тот же в терминале и в фоновом запуске.
+ */
+async function shareCloudflared(
+  env: Record<string, string | undefined>,
+  signal?: AbortSignal,
+): Promise<string> {
+  try {
+    return await ensureCloudflared({ home, env, say: (line) => console.log(line), signal })
+  } catch (error) {
+    throw new Error(
+      `No cloudflared for --share: ${(error as Error).message}\n` +
+        'Start without --share (colloq start) and publish later with colloq host.',
+    )
+  }
+}
+/** Действующее окружение так, как его увидит сервер: .env и поверх него переменные. */
+function effectiveEnv(): Record<string, string | undefined> {
+  const envFile = path.join(home, '.env')
+  return {
+    ...(fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile)) : {}),
+    ...process.env,
+  }
+}
 async function stopSession(): Promise<LaunchReceipt | null> {
   const receipt = readReceipt(receiptFile)
   if (!receipt) {
@@ -149,7 +209,7 @@ async function stopSession(): Promise<LaunchReceipt | null> {
  * сделал.
  *
  * Порядок предпочтения разный с двух сторон, и намеренно. В репозитории
- * правда — исходник (на нём работает colloq dev, правку видно сразу); в
+ * правда — исходник (на нём работает make dev, правку видно сразу); в
  * дистрибутиве — бандл. Если предпочтённого нет, берём второй: собранное
  * дерево без bundle и распакованный дистрибутив с исходниками одинаково
  * должны убирать за собой.
@@ -170,6 +230,7 @@ function childArgs(options: LaunchOptions): string[] {
   if (options.fast) args.push('--fast')
   if (options.build) args.push('--build')
   if (options.host) args.push('--host', options.host)
+  if (options.share) args.push('--share')
   if (options.port) args.push('--port', String(options.port))
   return args
 }
@@ -178,6 +239,20 @@ async function detached(options: LaunchOptions): Promise<number> {
   if (existing && (await supervisorOwned(existing))) {
     console.log(`Colloq is already running: ${existing.url}`)
     return 0
+  }
+  /*
+   * cloudflared — здесь, в терминале, а не в фоновом ребёнке: загрузка на
+   * первом запуске идёт минуту, и в фоне её было бы видно только в журнале,
+   * а человек смотрел бы на «Preparing the background start» без движения.
+   * Ребёнок потом найдёт сверенную копию сразу (launch-cloudflared.ts).
+   */
+  if (options.share || options.host) {
+    // Замок по настройкам — тоже здесь: отказ ребёнка лёг бы в журнал, а
+    // человек прочёл бы только «фоновый запуск не удался».
+    const env = effectiveEnv()
+    const refusal = publishRefusal({ env })
+    if (refusal) throw new Error(refusalText(refusal))
+    if (options.share) await shareCloudflared(env)
   }
   const runId = randomUUID()
   const log = fs.openSync(logFile, 'a', 0o600)
@@ -230,17 +305,26 @@ async function detached(options: LaunchOptions): Promise<number> {
           publicUrl = leaseUrl(fs.readFileSync(receipt.leaseFile, 'utf8'), runId, Date.now())
         } catch {}
       }
+      const publishing = Boolean(options.host || options.share)
       if (
         !cancelled &&
         receipt?.runId === runId &&
         receipt.phase === 'ready' &&
-        (!options.host || publicUrl || receipt.hosting === 'failed')
+        (!publishing || publicUrl || receipt.hosting === 'failed')
       ) {
         console.log(
           `Colloq is running in the background: ${receipt.url}\nLogs: colloq logs\nStop: colloq stop`,
         )
-        if (publicUrl) console.log(`Public address: ${publicUrl}`)
-        else if (options.host)
+        if (publicUrl && options.share)
+          await announceShare(
+            publicUrl,
+            receipt,
+            effectiveEnv().RELAY_DOMAIN?.trim() ?? '',
+            null,
+            true,
+          )
+        else if (publicUrl) console.log(`Public address: ${publicUrl}`)
+        else if (publishing)
           console.log(`The tunnel did not come up; local work continues. Details: ${logFile}`)
         if (options.open) openBrowser(`${receipt.url}/admin`)
         child.unref()
@@ -263,6 +347,7 @@ async function runSession(options: LaunchOptions): Promise<number> {
       `Colloq is already ${prior.phase === 'ready' ? 'running' : 'starting'}: ${prior.url}`,
     )
     if (options.host) console.log(`For public access: colloq host ${options.host}`)
+    if (options.share) console.log('For a public link: colloq host')
     if (options.open && prior.phase === 'ready') openBrowser(`${prior.url}/admin`)
     return 0
   }
@@ -277,10 +362,13 @@ async function runSession(options: LaunchOptions): Promise<number> {
   let stopPromise: Promise<void> | undefined
   let cleanupFailure: string | null = null
   let tunnel: ManagedProcess | undefined
+  // Ctrl+C посреди загрузки cloudflared обрывает загрузку, а не ждёт её конца.
+  const cancel = new AbortController()
   const stop = (code: number): void => {
     if (stopping) return
     stopping = true
     exitCode = code
+    cancel.abort()
     console.log('\nStopping the local session…')
     stopPromise = (async () => {
       if (tunnel) await processes?.stop(tunnel, 5000)
@@ -329,6 +417,30 @@ async function runSession(options: LaunchOptions): Promise<number> {
       throw new Error(
         `Port ${config.port} or ${config.uiPort} is already taken. The running process was left alone.`,
       )
+    /*
+     * Замок публикации по настройкам — до сборки и до сервера. Отказ здесь
+     * стоит секунду; тот же отказ после минуты сборки — минуту, а с
+     * KERNEL_ISOLATION=off сервер и вовсе не стал бы здоровым, и человек
+     * прочёл бы «не поднялся за 90 секунд» вместо причины.
+     */
+    const publishing = Boolean(options.host || options.share)
+    const early = publishing ? publishRefusal({ env: config.env }) : null
+    if (early) throw new Error(refusalText(early))
+    /*
+     * cloudflared для --share — тоже до сервера: первая загрузка идёт минуту,
+     * и лучше ей идти, пока ничего не поднято. Не вышло — отказ сразу, с
+     * причиной, а не занятие без ссылки, о котором узнают из чата группы.
+     */
+    let cloudflared: string | undefined
+    if (options.share) {
+      try {
+        cloudflared = await shareCloudflared(config.env, cancel.signal)
+      } catch (error) {
+        if (stopping) return exitCode
+        throw error
+      }
+    }
+    if (stopping) return exitCode
     releases.push(acquireLock(path.join(config.dataDir, '.local-session.lock'), process.pid, runId))
     fs.mkdirSync(config.workspaceDir, { recursive: true })
     if (!options.child) {
@@ -407,11 +519,11 @@ async function runSession(options: LaunchOptions): Promise<number> {
     }
     if (stopping) return exitCode
     receipt.phase = 'ready'
-    if (options.host) receipt.hosting = 'starting'
+    if (publishing) receipt.hosting = 'starting'
     writeJson(receiptFile, receipt)
     banner(receipt)
     if (options.open) openBrowser(`${config.url}/admin`)
-    if (options.host) {
+    if (publishing) {
       /*
        * Путь до скрипта проверяется до запуска, потому что его отсутствие
        * ничем себя не выдавало. `bash scripts/host.sh` без файла уходит кодом
@@ -424,6 +536,21 @@ async function runSession(options: LaunchOptions): Promise<number> {
        * проверялось бы не там, где запускается.
        */
       const script = path.join(root, 'scripts/host.sh')
+      /*
+       * Замок публикации по живому серверу: демон docker отвечает, и сервер
+       * сам называет, чем разделены комнаты (/api/health · isolation). До
+       * туннеля, а не после: дверь, открытая на секунду, — всё равно дверь.
+       */
+      const docker = fs.existsSync(script)
+        ? await capture(root, config.env, 'docker', ['info', '--format', '{{.ServerVersion}}'])
+        : null
+      const refusal = docker
+        ? publishRefusal({
+            env: config.env,
+            dockerReachable: docker.code === 0,
+            health: await health(config.port),
+          })
+        : null
       if (!fs.existsSync(script)) {
         receipt.hosting = 'failed'
         writeJson(receiptFile, receipt)
@@ -432,6 +559,10 @@ async function runSession(options: LaunchOptions): Promise<number> {
             `The class runs locally: ${config.url}\n` +
             'The package looks built without scripts/: update colloq (pip install -U colloq).',
         )
+      } else if (refusal) {
+        receipt.hosting = 'failed'
+        writeJson(receiptFile, receipt)
+        console.error('\n' + refusalText(refusal, config.url))
       } else {
         /*
          * Каталог состояния уезжает ребёнку явной переменной: скрипт ищет в
@@ -440,17 +571,50 @@ async function runSession(options: LaunchOptions): Promise<number> {
          * этого нет (scripts/lib.sh · COLLOQ_STATE_ROOT). У запуска из
          * терминала COLLOQ_HOME в окружении может и не быть вовсе: супервизор
          * считает его сам.
+         *
+         * У --share имя пустое нарочно: пустой COLLOQ_HOSTNAME и есть быстрый
+         * туннель, и строка в .env или в оболочке не должна увести ссылку в
+         * именованный. COLLOQ_CLOUDFLARED — файл, найденный и сверенный выше:
+         * скрипт не ищет его второй раз. COLLOQ_SHARE=1 просит скрипт не
+         * печатать свой итог, а сказать строкой-меткой, что адрес поднят; итог
+         * печатаем мы, одним блоком (launch-share.ts).
          */
-        tunnel = processes.start('Public access', 'bash', [script], false, {
-          COLLOQ_HOSTNAME: options.host,
-          COLLOQ_HOME: home,
-        })
+        const relayDomain = config.env.RELAY_DOMAIN?.trim() ?? ''
+        tunnel = processes.start(
+          'Public access',
+          'bash',
+          [script],
+          false,
+          {
+            COLLOQ_HOME: home,
+            ...(options.share
+              ? {
+                  COLLOQ_HOSTNAME: '',
+                  COLLOQ_DIRECT: '',
+                  COLLOQ_SHARE: '1',
+                  COLLOQ_CLOUDFLARED: cloudflared ?? '',
+                }
+              : { COLLOQ_HOSTNAME: options.host }),
+          },
+          root,
+          options.share
+            ? (line) => {
+                const shared = parseShareMarker(line)
+                if (!shared || !receipt) return false
+                void announceShare(shared.url, receipt, relayDomain, shared.verified, false)
+                return true
+              }
+            : undefined,
+        )
         void tunnel.done.then((code) => {
           if (!stopping && receipt) {
             receipt.hosting = 'failed'
             writeJson(receiptFile, receipt)
             console.log(
-              `\nPublic access ended (code ${code}). Local work continues: ${config.url}\nTry again: colloq host ${options.host}`,
+              `\nPublic access ended (code ${code}). Local work continues: ${config.url}\n` +
+                (options.share
+                  ? 'Try again: colloq host (a new quick tunnel — and a new address to send).'
+                  : `Try again: colloq host ${options.host}`),
             )
           }
         })
@@ -530,6 +694,19 @@ async function runSession(options: LaunchOptions): Promise<number> {
 
 async function main(): Promise<number> {
   const options = parseLaunchArgs(process.argv.slice(2))
+  if (options.action === 'cloudflared') {
+    /*
+     * Служебное слово для scripts/host.sh: путь — в stdout (скрипт берёт его
+     * через $(...)), слова о загрузке — в stderr, прямо в терминал человека.
+     */
+    const file = await ensureCloudflared({
+      home,
+      env: effectiveEnv(),
+      say: (line) => console.error(line),
+    })
+    process.stdout.write(file + '\n')
+    return 0
+  }
   if (options.action === 'stop') {
     await stopSession()
     return 0

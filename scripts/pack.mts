@@ -40,10 +40,12 @@
  * сервера, и `colloq` ставит их сам при первом запуске (python/colloq/__main__.py).
  *
  * node_modules нет и у самого CLI: бандлы собраны с --packages=external, и
- * единственное, что им нужно снаружи, — dotenv, а он и так в зависимостях
- * сервера. Проверять это глазами не надо: сборка сама сверяет список внешних
- * имён с тем, что встанет по package.json, и падает, если кто-то добавил в CLI
- * новую библиотеку.
+ * снаружи им нужны только dotenv и better-sqlite3 (последний — одному
+ * launch.mjs, отложенным импортом: --share читает список занятий из базы), а
+ * оба и так в зависимостях сервера. colloq.mjs не нужно ничего вовсе: --help
+ * работает до npm install. Проверять это глазами не надо: сборка сама сверяет
+ * список внешних имён с тем, что встанет по package.json, и падает, если
+ * кто-то добавил в CLI новую библиотеку.
  */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -52,6 +54,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { build, type Metafile } from 'esbuild'
+import { pythonVersionFile } from './version.mts'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -215,7 +218,7 @@ collectExternal(cliBundle.metafile)
 
 /*
  * launch.ts собирается отдельно, потому что и живёт отдельно: CLI запускает его
- * как самостоятельный процесс (cli/src/commands/local.ts:147), и именно этот
+ * как самостоятельный процесс (cli/src/commands/local.ts · launch), и именно этот
  * процесс остаётся супервизором занятия — он держит расписку, pid-файл и ядра.
  * Одним бандлом их не склеить: у launch.ts свой main() на верхнем уровне.
  */
@@ -255,7 +258,7 @@ collectExternal(leaseBundle.metafile)
 
 /*
  * Внешние имена бандлов обязаны найтись в node_modules, которые встанут по
- * app/package.json. Сегодня там ровно dotenv; завтра кто-нибудь добавит в CLI
+ * app/package.json. Сегодня там dotenv и better-sqlite3; завтра кто-нибудь добавит в CLI
  * ещё одну библиотеку — и на машине преподавателя первый же запуск умрёт на
  * ERR_MODULE_NOT_FOUND, а не здесь. Пусть умирает здесь.
  */
@@ -282,6 +285,16 @@ for (const item of ['Dockerfile', 'requirements.txt', 'environments']) {
 // превью комнаты молча выходит без текста.
 if (fs.existsSync(path.join(root, 'server/assets')))
   copyInto(path.join(root, 'server/assets'), path.join(appDir, 'server/assets'))
+// Лицензия и чужие лицензии — в корень приложения, то есть внутрь колеса. MIT
+// требует, чтобы текст ехал с каждой копией, а колесо — копия; в бандлах при
+// этом лежат pdf.js, satori, resvg и шрифты под своими лицензиями, и
+// THIRD_PARTY_NOTICES.md — единственное место, где это сказано. В dist-info
+// hatchling их не положит: он ищет LICENSE рядом с pyproject.toml, в python/.
+for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
+  const from = path.join(root, name)
+  if (!fs.existsSync(from)) throw new Error(`Нечего паковать: нет ${name} в корне репозитория`)
+  copyInto(from, path.join(appDir, name))
+}
 
 /**
  * Скрипты эксплуатации — ровно те, которые зовут, и ровно те, которые зовут
@@ -298,7 +311,7 @@ const SCRIPTS: Record<string, string> = {
   'host.sh': 'публикация занятия наружу',
   // Его сорсят host.sh, dns.sh и restore.sh: чтение .env и корень состояния.
   'lib.sh': 'общее чтение .env и каталог состояния',
-  // Прямой режим пишет им A-запись; им же работают colloq dns sync/point.
+  // Прямой режим (colloq host --direct) пишет им A-запись.
   'dns.sh': 'записи в зоне Cloudflare',
   // host.sh отдаёт ему адрес на установке с k3s; из него же стоят и
   // останавливаются службы, которых ждут backup и restore.
@@ -414,7 +427,6 @@ try {
       ...process.env,
       COLLOQ_APP_DIR: appDir,
       COLLOQ_HOME: probeHome,
-      COLLOQ_SURFACE: 'teacher',
       NO_COLOR: '1',
     },
   })
@@ -423,6 +435,22 @@ try {
       'Собранный CLI не ответил на --help ' +
         `(код ${probe.status ?? 'сигнал'}). ${(probe.stderr ?? '').trim().slice(0, 400)}\n` +
         'Похоже, точка входа не зовёт cli(): см. cli/src/bin.ts и хвост cli/src/main.ts.',
+    )
+  /*
+   * И версия — та самая, что в корневом package.json. `colloq --version` читает
+   * app/cli/package.json, записанный выше; проверка ловит день, когда кто-то
+   * поменяет, откуда он читает, а колесо уедет с «0.0.0» из запасной ветки.
+   */
+  const said = spawnSync(process.execPath, [path.join(appDir, 'cli/colloq.mjs'), '--version'], {
+    cwd: appDir,
+    encoding: 'utf8',
+    timeout: 60000,
+    env: { ...process.env, COLLOQ_APP_DIR: appDir, COLLOQ_HOME: probeHome, NO_COLOR: '1' },
+  })
+  if (said.status !== 0 || (said.stdout ?? '').trim() !== version)
+    throw new Error(
+      `Собранный CLI назвал версию «${(said.stdout ?? '').trim()}» вместо ${version} ` +
+        `(код ${said.status ?? 'сигнал'}). ${(said.stderr ?? '').trim().slice(0, 400)}`,
     )
 } finally {
   fs.rmSync(probeHome, { recursive: true, force: true })
@@ -441,13 +469,12 @@ if (!values['no-python']) {
   copyInto(appDir, pythonApp)
   // Версия пакета Python — из корневого package.json, одним числом на весь
   // проект. pyproject.toml читает её отсюда (tool.hatch.version), поэтому
-  // разъехаться им негде.
-  fs.writeFileSync(
-    path.join(root, 'python/colloq/_version.py'),
-    '# Версия проекта. Файл пишет scripts/pack.mts из корневого package.json —\n' +
-      '# руками не править: pyproject.toml берёт версию колеса отсюда.\n' +
-      `__version__ = "${version}"\n`,
-  )
+  // разъехаться им негде. Текст файла — общий шаблон pythonVersionFile
+  // (scripts/version.mts): файл отслеживается git-ом, и в PR выпуска его же
+  // правит release-please — только число в строке с пометкой, которую шаблон
+  // и несёт. Потеряй упаковка пометку или шапку, каждый `make wheel` пачкал бы
+  // дерево, а следующий выпуск оставил бы _version.py на старом числе.
+  fs.writeFileSync(path.join(root, 'python/colloq/_version.py'), pythonVersionFile(version))
 }
 
 // ---------------------------------------------------------------- отчёт

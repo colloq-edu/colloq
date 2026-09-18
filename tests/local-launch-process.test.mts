@@ -53,7 +53,7 @@ function fixture(p: number): string {
   fs.writeFileSync(path.join(root, 'kernel/environments/base.txt'), '')
   fs.writeFileSync(path.join(root, 'web/dist/index.html'), 'hello')
   const server = `import http from 'node:http';import fs from 'node:fs';
-const s=http.createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({ok:true,localRunId:process.env.COLLOQ_LOCAL_RUN_ID,publicUrl:process.env.COLLOQ_LOCAL_URL}))});
+const s=http.createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({ok:true,kernel:true,isolation:process.env.FIXTURE_ISOLATION==='none'?null:'docker',localRunId:process.env.COLLOQ_LOCAL_RUN_ID,publicUrl:process.env.COLLOQ_LOCAL_URL}))});
 s.listen(Number(process.env.PORT),'127.0.0.1',()=>fs.appendFileSync('events','start\\n'));
 process.on('SIGTERM',()=>{fs.appendFileSync('events','stop:'+process.env.COLLOQ_STOP_KERNELS_ON_EXIT+'\\n');s.close(()=>process.exit(0))});`
   fs.writeFileSync(path.join(root, 'server/dist/server.js'), server)
@@ -78,7 +78,7 @@ process.on('SIGTERM',()=>{fs.appendFileSync('events','stop:'+process.env.COLLOQ_
   )
   return root
 }
-function invoke(root: string, args: string[]) {
+function invoke(root: string, args: string[], extra: NodeJS.ProcessEnv = {}) {
   const child = spawn(
     process.execPath,
     ['--import', 'tsx', path.join(root, 'cli/src/launch.ts'), ...args],
@@ -91,6 +91,7 @@ function invoke(root: string, args: string[]) {
         DATA_DIR: path.join(root, 'data'),
         WORKSPACE_DIR: path.join(root, 'workspace'),
         PATH: path.join(root, 'bin') + ':' + process.env.PATH,
+        ...extra,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
@@ -182,6 +183,8 @@ test(
     const run = invoke(root, ['run', '--host', 'class.example.test', '--no-open'])
     try {
       await until(() => run.output().includes('Local work continues'))
+      // Замок пройден: сервер назвал изоляцию, и скрипт туннеля запускался.
+      assert.match(fs.readFileSync(path.join(root, 'events'), 'utf8'), /tunnel-start/)
       assert.equal((await fetch(`http://127.0.0.1:${p}/api/health`)).status, 200)
       run.child.kill('SIGINT')
       assert.equal(await run.done, 130, run.output())
@@ -189,6 +192,155 @@ test(
     } finally {
       run.child.kill('SIGTERM')
       await run.done
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
+/**
+ * --share целиком, кроме настоящего Cloudflare: супервизор находит
+ * cloudflared (здесь его называет .env — так же поступает и сам супервизор,
+ * передавая host.sh найденный и сверенный файл), поднимает занятие, зовёт
+ * host.sh быстрым туннелем, забирает его строку-метку и печатает один блок со
+ * ссылкой на занятие из базы. Ctrl+C закрывает туннель вместе с занятием.
+ */
+test(
+  '--share: one link block from the marker, the quick tunnel gets the named cloudflared, Ctrl+C closes it',
+  { timeout: 25000 },
+  async () => {
+    const p = await port(),
+      root = fixture(p)
+    const cloudflared = path.join(root, 'tools/cloudflared')
+    fs.mkdirSync(path.join(root, 'tools'))
+    fs.writeFileSync(cloudflared, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    fs.appendFileSync(path.join(root, '.env'), `COLLOQ_CLOUDFLARED=${cloudflared}\n`)
+    // Одно занятие в базе — его ссылку блок и назовёт.
+    fs.mkdirSync(path.join(root, 'data'))
+    const { default: Database } = await import('better-sqlite3')
+    const db = new Database(path.join(root, 'data/colloq.db'))
+    db.exec(
+      'CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL, archived_at INTEGER)',
+    )
+    db.prepare('INSERT INTO sessions VALUES (?, ?, ?, NULL)').run('k3mnp7qr', 'Linear algebra', 1)
+    db.close()
+    fs.mkdirSync(path.join(root, 'scripts'))
+    fs.writeFileSync(
+      path.join(root, 'scripts/host.sh'),
+      [
+        '#!/bin/bash',
+        'printf "tunnel share=%s cf=%s name=[%s]\\n" "$COLLOQ_SHARE" "$COLLOQ_CLOUDFLARED" "$COLLOQ_HOSTNAME" >> events',
+        `trap 'printf "tunnel-stop\\n" >> events; exit 0' TERM INT`,
+        'echo "4/4 checking that it really answers from outside"',
+        'echo "@colloq-share ok https://fixture-share.trycloudflare.com"',
+        'while :; do sleep 0.1; done',
+      ].join('\n'),
+    )
+    const run = invoke(root, ['run', '--share', '--no-open'])
+    try {
+      await until(() => run.output().includes('Colloq is online at https://fixture-share'))
+      await until(() => run.output().includes('Cloudflare addresses do not open from Russia'))
+      const out = run.output()
+      assert.match(out, /4\/4 checking that it really answers from outside/)
+      assert.doesNotMatch(out, /@colloq-share/, 'the marker line reached the screen')
+      assert.match(out, /Give your students this link:/)
+      assert.match(out, /https:\/\/fixture-share\.trycloudflare\.com\/s\/k3mnp7qr {3}Linear algebra/)
+      assert.match(out, /Never share a link with \/admin\//)
+      assert.match(out, /Ctrl\+C closes it and the class/)
+      const events = fs.readFileSync(path.join(root, 'events'), 'utf8')
+      assert.ok(events.includes(`tunnel share=1 cf=${cloudflared} name=[]`), events)
+      run.child.kill('SIGINT')
+      assert.equal(await run.done, 130, run.output())
+      assert.match(fs.readFileSync(path.join(root, 'events'), 'utf8'), /tunnel-stop/)
+      assert.match(fs.readFileSync(path.join(root, 'events'), 'utf8'), /cleanup/)
+    } finally {
+      run.child.kill('SIGTERM')
+      await run.done
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  '--share --detach: the parent prints the block once the tunnel holds the address, colloq stop closes it',
+  { timeout: 25000 },
+  async () => {
+    const root = fixture(await port())
+    const cloudflared = path.join(root, 'tools/cloudflared')
+    fs.mkdirSync(path.join(root, 'tools'))
+    fs.writeFileSync(cloudflared, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    fs.appendFileSync(path.join(root, '.env'), `COLLOQ_CLOUDFLARED=${cloudflared}\n`)
+    fs.mkdirSync(path.join(root, 'scripts'))
+    // Настоящий host.sh берёт адрес в аренду; здесь — та же запись руками.
+    fs.writeFileSync(
+      path.join(root, 'scripts/host.sh'),
+      [
+        '#!/bin/bash',
+        `until=$(node -e 'console.log(Date.now() + 60000)')`,
+        `printf '{"runId":"%s","owner":"fake","url":"https://fixture-bg.trycloudflare.com","expiresAt":%s}\\n' "$COLLOQ_LOCAL_RUN_ID" "$until" > "$COLLOQ_PUBLIC_URL_LEASE_FILE"`,
+        'echo "@colloq-share ok https://fixture-bg.trycloudflare.com"',
+        `trap 'printf "tunnel-stop\\n" >> events; exit 0' TERM INT`,
+        'while :; do sleep 0.1; done',
+      ].join('\n'),
+    )
+    const run = invoke(root, ['run', '--detach', '--share', '--no-open'])
+    try {
+      assert.equal(await run.done, 0, run.output())
+      assert.match(run.output(), /Colloq is running in the background/)
+      assert.match(run.output(), /Colloq is online at https:\/\/fixture-bg\.trycloudflare\.com/)
+      assert.match(run.output(), /The link lives until colloq stop/)
+      const stop = invoke(root, ['stop'])
+      assert.equal(await stop.done, 0, stop.output())
+      assert.match(fs.readFileSync(path.join(root, 'events'), 'utf8'), /tunnel-stop/)
+    } finally {
+      if (fs.existsSync(path.join(root, '.colloq/local-session.json')))
+        await invoke(root, ['stop']).done
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  'the gate: a server that does not confirm room isolation gets no tunnel, the class stays local',
+  { timeout: 20000 },
+  async () => {
+    const p = await port(),
+      root = fixture(p)
+    fs.mkdirSync(path.join(root, 'scripts'))
+    fs.writeFileSync(
+      path.join(root, 'scripts/host.sh'),
+      '#!/bin/bash\nprintf "tunnel-start\\n" >> events\nsleep 30\n',
+    )
+    const run = invoke(root, ['run', '--host', 'class.example.test', '--no-open'], {
+      FIXTURE_ISOLATION: 'none',
+    })
+    try {
+      await until(() => run.output().includes('The class keeps running locally'))
+      assert.match(run.output(), /Not published: the server does not confirm that every room/)
+      assert.doesNotMatch(fs.readFileSync(path.join(root, 'events'), 'utf8'), /tunnel-start/)
+      assert.equal((await fetch(`http://127.0.0.1:${p}/api/health`)).status, 200)
+      run.child.kill('SIGINT')
+      assert.equal(await run.done, 130, run.output())
+    } finally {
+      run.child.kill('SIGTERM')
+      await run.done
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  'the gate: KERNEL_ISOLATION=off refuses --share before anything is built or started',
+  { timeout: 15000 },
+  async () => {
+    const root = fixture(await port())
+    const run = invoke(root, ['run', '--share', '--no-open'], { KERNEL_ISOLATION: 'off' })
+    try {
+      assert.equal(await run.done, 1, run.output())
+      assert.match(run.output(), /Not published: KERNEL_ISOLATION=off is set/)
+      assert.equal(fs.existsSync(path.join(root, 'events')), false, 'the server was started')
+      assert.equal(fs.existsSync(path.join(root, '.colloq/local-session.json')), false)
+    } finally {
+      run.child.kill('SIGTERM')
       fs.rmSync(root, { recursive: true, force: true })
     }
   },

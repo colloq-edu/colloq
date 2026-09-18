@@ -44,10 +44,7 @@ function expandHome(value: string): string {
   return value === '~' || value.startsWith('~/') ? path.join(os.homedir(), value.slice(1)) : value
 }
 
-/**
- * Репозиторий: Makefile рядом с package.json, где name — colloq. Примета та
- * же, что у env.ts · findRoot, и разъезжаться им нельзя.
- */
+/** Репозиторий: Makefile рядом с package.json, где name — colloq. */
 function isRepository(dir: string): boolean {
   try {
     if (!fs.existsSync(path.join(dir, 'Makefile'))) return false

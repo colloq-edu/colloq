@@ -1,19 +1,19 @@
 /**
- * Занятие в сети: host, tunnel setup, relay setup/page/ping, dns sync/point, sync.
+ * Занятие в сети: colloq host — единственная команда группы.
  *
  * В первой половине файла не запускается ни один процесс и не читается ни один
  * настоящий файл: исполнитель подменён массивом вызовов, файловая система —
  * картой в памяти, вывод — массивом строк. Проверяется ровно то, за что
- * отвечает группа: какая строка уходит в make или в scripts/*.sh, что случается
- * без аргумента и кто спрашивает перед опасным действием.
+ * отвечает группа: какая строка уходит в scripts/host.sh, что случается с
+ * плохим именем и кто спрашивает перед опасным действием.
  *
  * Вторая половина (в конце файла) читает настоящие scripts/host.sh, scripts/lib.sh
  * и scripts/pack.mts: строка может уходить верная, а на другом её конце не быть
  * ни скрипта, ни каталога состояния, — и увидеть это подставным исполнителем
  * нельзя. Почему это отдельная проверка, сказано там же.
  *
- * Общее (уникальность имён, --dry-run без запусков, русский summary, вопрос у
- * каждой опасной команды) стережёт tests/cli-core.test.mts — здесь не дублируем.
+ * Общее (уникальность имён, --dry-run без запусков, вопрос у каждой опасной
+ * команды) стережёт tests/cli-core.test.mts — здесь не дублируем.
  */
 import './_cli.mjs'
 import { test } from 'node:test'
@@ -25,13 +25,13 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { cli } from '../cli/src/main.js'
 import { createMemoryIo } from '../cli/src/env.js'
+import { registry } from '../cli/src/registry.js'
 
 const ROOT = '/repo'
 
 const FILES: Record<string, string> = {
   '/repo/package.json': '{ "name": "colloq", "version": "0.1.0" }',
   '/repo/cli/package.json': '{ "name": "@colloq/cli", "version": "0.1.0" }',
-  '/repo/Makefile': ['host: .env', 'host-direct: .env', 'sync:', 'relay-setup:'].join('\n'),
   '/repo/.env': [
     'PORT=3000',
     'KERNEL_ENV=base',
@@ -59,13 +59,14 @@ type Options = {
   files?: Record<string, string | null>
   answer?: string
   tty?: boolean
-  /** Что отвечает подставной capture: сюда ходят docker ps и проба TCP. */
+  /** Что отвечает подставной capture: сюда ходит docker ps. */
   capture?: (cmd: string, args: string[]) => { code: number; stdout: string; stderr: string }
   /**
-   * Поставленный пакет: корень приложения и каталог состояния — разные, make
-   * звать нечем. Умолчание — репозиторий, где они совпадают.
+   * Поставленный пакет или исходники. На поведение host это влиять не должно —
+   * ради этого поле и оставлено: проверить, что не влияет.
    */
   dist?: boolean
+  /** Каталог состояния. Умолчание — корень приложения, как в исходниках. */
   home?: string
 }
 
@@ -120,35 +121,67 @@ const oneRoom: Options['capture'] = (cmd) =>
     ? { code: 0, stdout: 'c0ffee\n', stderr: '' }
     : { code: 1, stdout: '', stderr: '' }
 
-/** Запуски без чтений: capture (docker ps, проба TCP) сюда не считается. */
+/** Запуски без чтений: capture (docker ps) сюда не считается. */
 function spawned(result: Harness): Call[] {
   return result.calls.filter((call) => call[0] !== 'capture')
 }
 
 /* ------------------------------------------------------------------ host */
 
-test('host: имя уходит в make host HOST=…, --direct — в host-direct', async () => {
+test('host: имя уходит скрипту переменной, --direct добавляет COLLOQ_DIRECT=1', async () => {
   const relay = await run(['host', 'hse.colloq.ru', '--dry-run'])
   assert.equal(relay.code, 0)
   // COLLOQ_HOME впереди — это каталог состояния: .env, расписка занятия и
-  // .colloq.pid лежат там, а не рядом со скриптом. В репозитории это тот же
+  // .colloq.pid лежат там, а не рядом со скриптом. В исходниках это тот же
   // каталог, и строка от переменной не меняется ничем, кроме честности.
-  assert.deepEqual(relay.out, ['COLLOQ_HOME=/repo make host HOST=hse.colloq.ru'])
+  assert.deepEqual(relay.out, ['COLLOQ_HOME=/repo COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh'])
   assert.deepEqual(spawned(relay), [])
 
+  // Порядок — как в цели host-direct и в шапке host.sh: строку копируют.
   const direct = await run(['host', 'hse.colloq.ru', '--direct', '--dry-run'])
-  assert.deepEqual(direct.out, ['COLLOQ_HOME=/repo make host-direct HOST=hse.colloq.ru'])
+  assert.deepEqual(direct.out, [
+    'COLLOQ_HOME=/repo COLLOQ_DIRECT=1 COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh',
+  ])
 
+  // Без имени — быстрый туннель: имя скрипту не выдумывается.
   const quick = await run(['host', '--dry-run'])
-  assert.deepEqual(quick.out, ['COLLOQ_HOME=/repo make host'])
+  assert.deepEqual(quick.out, ['COLLOQ_HOME=/repo ./scripts/host.sh'])
 
   const alias = await run(['public', 'hse.colloq.ru', '--dry-run'])
-  assert.deepEqual(alias.out, ['COLLOQ_HOME=/repo make host HOST=hse.colloq.ru'])
+  assert.deepEqual(alias.out, ['COLLOQ_HOME=/repo COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh'])
 })
 
-test('host: пара HOST=… работает вместо позиционного и не дублируется', async () => {
-  const result = await run(['host', 'HOST=hse.colloq.ru', '--dry-run'])
-  assert.deepEqual(result.out, ['COLLOQ_HOME=/repo make host HOST=hse.colloq.ru'])
+test('host: из колеса и из исходников — одна и та же строка, make не зовётся никогда', async () => {
+  // Прежде в исходниках уходило `make host HOST=…`, а в колесе — сам скрипт:
+  // две ветки, и проверенной на машине автора была не та, что у
+  // преподавателя. Теперь ветка одна, и ctx.dist её не трогает.
+  for (const argv of [
+    ['host', 'hse.colloq.ru'],
+    ['host', 'hse.colloq.ru', '--direct'],
+    ['host'],
+  ]) {
+    const source = await run([...argv, '--dry-run'], { dist: false, home: '/home/.colloq' })
+    const wheel = await run([...argv, '--dry-run'], { dist: true, home: '/home/.colloq' })
+    assert.deepEqual(source.out, wheel.out, argv.join(' '))
+    assert.match(wheel.out[0] ?? '', /^COLLOQ_HOME=\/home\/\.colloq .*\.\/scripts\/host\.sh$/)
+    assert.doesNotMatch(wheel.out[0] ?? '', /\bmake\b/)
+  }
+})
+
+test('host: пары ВИДА=ЗНАЧЕНИЕ больше не разбираются — отказ, а не молчаливая подстановка', async () => {
+  // HOST=… на месте имени — это имя, и в DNS оно не годится.
+  const asName = await run(['host', 'HOST=hse.colloq.ru', '--dry-run'])
+  assert.equal(asName.code, 2)
+  assert.deepEqual(spawned(asName), [])
+  assert.deepEqual(asName.out, [])
+  assert.match(asName.err.join('\n'), /will not do/)
+
+  // PORT=3001 после имени — лишний аргумент, и скрипту он окружением не уходит.
+  const extra = await run(['host', 'hse.colloq.ru', 'PORT=3001', '--dry-run'])
+  assert.equal(extra.code, 2)
+  assert.deepEqual(spawned(extra), [])
+  assert.deepEqual(extra.out, [])
+  assert.match(extra.err.join('\n'), /extra argument: PORT=3001/)
 })
 
 test('host: прямой режим без имени — отказ об употреблении, ничего не запущено', async () => {
@@ -156,13 +189,43 @@ test('host: прямой режим без имени — отказ об упо
   assert.equal(result.code, 2)
   assert.deepEqual(spawned(result), [])
   assert.match(result.err.join('\n'), /direct mode needs a name/)
+  assert.match(result.err.join('\n'), /colloq host class\.example\.org --direct/)
+
+  // И под --dry-run тоже: строка с пустым COLLOQ_HOSTNAME была бы ложью о
+  // том, что выполнится.
+  const dry = await run(['host', '--direct', '--dry-run'])
+  assert.equal(dry.code, 2)
+  assert.deepEqual(dry.out, [])
 })
 
-test('host: имя не из латиницы — отказ, до make дело не доходит', async () => {
-  const result = await run(['host', 'ХСЕ.colloq.ru', '--dry-run'])
-  assert.equal(result.code, 2)
-  assert.deepEqual(spawned(result), [])
-  assert.match(result.err.join('\n'), /will not do/)
+test('host: имя не из латиницы — отказ, до скрипта дело не доходит', async () => {
+  for (const name of [
+    'ХСЕ.colloq.ru',
+    'Hse.colloq.ru',
+    'hse.colloq.ru-',
+    'hse.colloq.ru.',
+    'hse_colloq.ru',
+  ]) {
+    const result = await run(['host', name, '--dry-run'])
+    assert.equal(result.code, 2, name)
+    assert.deepEqual(spawned(result), [], name)
+    assert.deepEqual(result.out, [], name)
+    assert.match(result.err.join('\n'), /will not do/, name)
+  }
+})
+
+test('host: вопрос не задаётся раньше проверки — плохое имя даёт код 2, а не 3', async () => {
+  for (const argv of [
+    ['host', 'ХСЕ.colloq.ru', '--direct'],
+    ['host', '--direct'],
+  ]) {
+    // Ни терминала, ни --yes: каркас спросил бы и отказал с кодом 3 — но
+    // check срабатывает раньше вопроса.
+    const result = await run(argv)
+    assert.equal(result.code, 2, argv.join(' '))
+    assert.deepEqual(spawned(result), [], argv.join(' '))
+    assert.deepEqual(result.asked, [], argv.join(' '))
+  }
 })
 
 test('host --direct: вопрос называет цену, «нет» — код 4 и «отменено»', async () => {
@@ -174,56 +237,91 @@ test('host --direct: вопрос называет цену, «нет» — ко
 
   const yes = await run(['host', 'hse.colloq.ru', '--direct'], { tty: true, answer: 'y' })
   assert.equal(yes.code, 0)
-  assert.deepEqual(spawned(yes), [['make', 'host-direct', 'HOST=hse.colloq.ru']])
+  assert.deepEqual(spawned(yes), [['./scripts/host.sh']])
+  assert.deepEqual(yes.envs[0], {
+    COLLOQ_HOME: '/repo',
+    COLLOQ_DIRECT: '1',
+    COLLOQ_HOSTNAME: 'hse.colloq.ru',
+  })
 })
 
 test('host --direct --yes: вопроса нет вовсе', async () => {
   const result = await run(['host', 'hse.colloq.ru', '--direct', '--yes'], { tty: true })
   assert.equal(result.code, 0)
   assert.deepEqual(result.asked, [])
-  assert.deepEqual(spawned(result), [['make', 'host-direct', 'HOST=hse.colloq.ru']])
+  assert.deepEqual(spawned(result), [['./scripts/host.sh']])
+  assert.equal(result.envs[0]?.COLLOQ_DIRECT, '1')
 })
 
 test('host: туннель молчит, пока нет занятия, и спрашивает, когда оно идёт', async () => {
   const quiet = await run(['host', 'hse.colloq.ru'], { tty: true, answer: 'n' })
   assert.equal(quiet.code, 0)
   assert.deepEqual(quiet.asked, [])
-  assert.deepEqual(spawned(quiet), [['make', 'host', 'HOST=hse.colloq.ru']])
+  assert.deepEqual(spawned(quiet), [['./scripts/host.sh']])
+  assert.deepEqual(quiet.envs[0], { COLLOQ_HOME: '/repo', COLLOQ_HOSTNAME: 'hse.colloq.ru' })
 
   const busy = await run(['host', 'hse.colloq.ru'], { tty: true, answer: 'n', capture: oneRoom })
   assert.equal(busy.code, 4)
   assert.deepEqual(spawned(busy), [])
   assert.match(busy.asked[0] ?? '', /publish hse\.colloq\.ru\? 1 room is running/)
+
+  // Без имени вопрос называет занятие целиком, а не пустое место.
+  const quick = await run(['host'], { tty: true, answer: 'n', capture: oneRoom })
+  assert.equal(quick.code, 4)
+  assert.match(quick.asked[0] ?? '', /publish the class\? 1 room is running/)
 })
 
-test('host: шапка называет транспорт, и она одна', async () => {
+test('host: шапка называет транспорт, и она одна; под ней — две строки о периметре', async () => {
   const relay = await run(['host', 'hse.colloq.ru', '--yes'], { tty: true })
-  // Шапка по-прежнему одна, а под ней — две строки о периметре: занятие идёт
-  // без ограничений прода, и для открытой аудитории нужна серверная установка.
-  // Те же слова говорит colloq doctor (PERIMETER в cli/src/commands/host.ts).
+  // Шапка одна, а под ней — две строки о периметре: комната — укреплённый
+  // контейнер без доступа к домашней сети, а ссылка всё равно дверь к коду на
+  // этом компьютере. Те же слова говорит colloq doctor (PERIMETER в
+  // cli/src/commands/host.ts).
   assert.equal(relay.out[0], 'publishing hse.colloq.ru through the relay: keep this window open')
   assert.equal(relay.out.length, 3)
-  assert.match(relay.out[1] ?? '', /without production limits/)
-  assert.match(relay.out[2] ?? '', /server install/)
+  assert.match(relay.out[1] ?? '', /hardened container per room, cut off from your home network/)
+  assert.match(relay.out[2] ?? '', /the link is a door: anyone who has it runs code in a sandbox/)
+  assert.match(relay.out[2] ?? '', /keep it for your class; Ctrl\+C closes it/)
+  // Прежние слова были правдой до укрепления комнат, и вернуться им нельзя.
+  assert.doesNotMatch(relay.out.join('\n'), /without production limits|privileges are not dropped/)
 
   const cloud = await run(['host', 'class.example.ru', '--yes'], { tty: true })
-  assert.match(cloud.out.join('\n'), /through Cloudflare, which does not open from Russia/)
+  assert.match(cloud.out[0] ?? '', /through Cloudflare, which does not open from Russia/)
+
+  const quick = await run(['host', '--yes'], { tty: true })
+  assert.match(quick.out[0] ?? '', /quick Cloudflare tunnel: the name is random/)
+
+  const direct = await run(['host', 'hse.colloq.ru', '--direct', '--yes'], { tty: true })
+  assert.equal(
+    direct.out[0],
+    'installing caddy on this machine: it holds 80 and 443 for hse.colloq.ru',
+  )
+  assert.equal(direct.out.length, 3)
+
+  // Секреты из .env в вывод не попадают ни строкой.
+  for (const result of [relay, cloud, quick, direct]) {
+    const text = [...result.out, ...result.err].join('\n')
+    assert.equal(text.includes('very-secret-token'), false)
+    assert.equal(text.includes('zone-token'), false)
+  }
 })
 
-test('host: нет .env — код 3, назван путь и выполнимый совет', async () => {
-  const result = await run(['host', 'hse.colloq.ru', '--yes'], {
+test('host: нет .env — код 3, назван путь и выполнимый совет, один и тот же везде', async () => {
+  const source = await run(['host', 'hse.colloq.ru', '--yes'], {
     tty: true,
     files: { '/repo/.env': null },
   })
-  assert.equal(result.code, 3)
-  assert.deepEqual(spawned(result), [])
+  assert.equal(source.code, 3)
+  assert.deepEqual(spawned(source), [])
   // Путь целиком, а не «нет .env»: корня два, и человеку нужно знать, в каком
   // из них файла не хватает.
-  assert.match(result.err.join('\n'), /no \/repo\/\.env/)
+  assert.match(source.err.join('\n'), /no \/repo\/\.env/)
   // Совет должен быть выполнимым. Прежний — «cp .env.example .env» — врал
   // дважды: путь относительный (то есть в текущем каталоге человека), а
-  // .env.example у поставленного пакета нет вовсе.
-  assert.match(result.err.join('\n'), /colloq start/)
+  // .env.example у поставленного пакета нет вовсе. Заводит .env colloq start,
+  // и из исходников так же, поэтому совет один.
+  assert.match(source.err.join('\n'), /colloq start creates it on the first run/)
+  assert.doesNotMatch(source.err.join('\n'), /\.env\.example/)
 
   const packaged = await run(['host', 'hse.colloq.ru', '--yes'], {
     tty: true,
@@ -234,7 +332,20 @@ test('host: нет .env — код 3, назван путь и выполним�
   assert.equal(packaged.code, 3)
   assert.deepEqual(spawned(packaged), [])
   assert.match(packaged.err.join('\n'), /no \/home\/\.colloq\/\.env/)
+  assert.match(packaged.err.join('\n'), /colloq start creates it on the first run/)
   assert.doesNotMatch(packaged.err.join('\n'), /\.env\.example/)
+})
+
+test('host: нет .env, но --dry-run — строка печатается, проверка .env не нужна', async () => {
+  // --dry-run только показывает, что выполнится, и ничего не читает сверх
+  // аргументов: отказ за отсутствующий .env здесь был бы отказом зря.
+  const result = await run(['host', 'hse.colloq.ru', '--dry-run'], {
+    files: { '/repo/.env': null },
+  })
+  assert.equal(result.code, 0)
+  assert.deepEqual(result.out, [
+    'COLLOQ_HOME=/repo COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh',
+  ])
 })
 
 /* -------------------------------------------------- host у поставленного colloq */
@@ -244,36 +355,10 @@ test('host: нет .env — код 3, назван путь и выполним�
  *
  * У поставленного через pip colloq каталог приложения лежит внутри пакета
  * (только чтение, сносится обновлением), а .env, расписка занятия и .colloq.pid
- * — в ~/.colloq. Отсюда два свойства, и оба стоили ссылки на паре: звать make
- * нечем — Makefile в колесо не едет, — и скрипту надо сказать, где состояние,
- * иначе он поищет его рядом с собой и опубликует адрес в файл, которого никто
- * не читает.
+ * — в ~/.colloq. Скрипту надо сказать, где состояние, иначе он поищет его
+ * рядом с собой и опубликует адрес в файл, которого никто не читает.
  */
 const PACKAGED: Options = { dist: true, home: '/home/.colloq' }
-
-test('host: у поставленного пакета зовётся сам скрипт, а не make', async () => {
-  const relay = await run(['host', 'hse.colloq.ru', '--dry-run'], PACKAGED)
-  assert.equal(relay.code, 0)
-  assert.deepEqual(relay.out, [
-    'COLLOQ_HOME=/home/.colloq COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh',
-  ])
-
-  const direct = await run(['host', 'hse.colloq.ru', '--direct', '--dry-run'], PACKAGED)
-  assert.deepEqual(direct.out, [
-    'COLLOQ_HOME=/home/.colloq COLLOQ_DIRECT=1 COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh',
-  ])
-
-  // Без имени — быстрый туннель: имя скрипту не выдумывается.
-  const quick = await run(['host', '--dry-run'], PACKAGED)
-  assert.deepEqual(quick.out, ['COLLOQ_HOME=/home/.colloq ./scripts/host.sh'])
-
-  // Пары, написанные человеком, цель Makefile отдала бы рецепту окружением —
-  // прямой вызов делает то же, иначе он вёл бы себя не как цель.
-  const pair = await run(['host', 'hse.colloq.ru', 'PORT=3001', '--dry-run'], PACKAGED)
-  assert.deepEqual(pair.out, [
-    'COLLOQ_HOME=/home/.colloq PORT=3001 COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh',
-  ])
-})
 
 test('host: скрипт запускается по-настоящему и знает каталог состояния', async () => {
   const result = await run(['host', 'hse.colloq.ru', '--yes'], {
@@ -292,267 +377,43 @@ test('host: скрипт запускается по-настоящему и з�
   assert.match(result.out[0] ?? '', /through the relay/)
 })
 
-test('host: в репозитории идёт та же цель, и корень состояния назван и там', async () => {
+test('host: в исходниках корень состояния назван так же, хотя и совпадает с приложением', async () => {
   // Развилки «когда корни совпадают, не посылаем» нет намеренно: её пришлось
   // бы не забыть повторить в следующей команде. Тем же правилом живут copies и
   // link (cli/src/commands/local.ts · stateEnv).
-  const result = await run(['host', 'hse.colloq.ru', '--yes'], { tty: true })
-  assert.deepEqual(spawned(result), [['make', 'host', 'HOST=hse.colloq.ru']])
+  const result = await run(['host', '--yes'], { tty: true })
+  assert.deepEqual(spawned(result), [['./scripts/host.sh']])
   assert.deepEqual(result.envs[0], { COLLOQ_HOME: '/repo' })
 })
 
-test('host-direct: отдельное имя делает то же, что host --direct', async () => {
-  const dry = await run(['host-direct', 'hse.colloq.ru', '--dry-run'])
-  assert.deepEqual(dry.out, ['COLLOQ_HOME=/repo make host-direct HOST=hse.colloq.ru'])
+/* ------------------------------------------------------- состав группы */
 
-  const empty = await run(['host-direct', '--yes'], { tty: true })
-  assert.equal(empty.code, 2)
-  assert.deepEqual(spawned(empty), [])
+test('в группе одна команда — host; мастерская отсюда не зовётся', () => {
+  // Ретранслятор, DNS, именованный туннель и стенд ставят и правят чужие
+  // машины и зону: это Makefile и scripts/, обёртки над ними в CLI нет.
+  const group = registry.filter((command) => command.group === 'host')
+  assert.deepEqual(
+    group.map((command) => command.name),
+    ['host'],
+  )
+  // Второе имя у host одно — public; прямой режим живёт флагом --direct, а не
+  // отдельной командой host-direct.
+  assert.deepEqual(group[0]?.aliases, ['public'])
 })
 
-/* ---------------------------------------------------------- tunnel setup */
-
-test('tunnel setup: имя уходит в make tunnel-setup HOST=…', async () => {
-  const dry = await run(['tunnel', 'setup', 'class.example.ru', '--dry-run'])
-  assert.equal(dry.code, 0)
-  assert.deepEqual(dry.out, ['make tunnel-setup HOST=class.example.ru'])
-
-  const pair = await run(['tunnel', 'setup', 'HOST=class.example.ru', '--dry-run'])
-  assert.deepEqual(pair.out, ['make tunnel-setup HOST=class.example.ru'])
-})
-
-test('tunnel setup: без имени и с коротким именем — код 2, ничего не запущено', async () => {
-  const empty = await run(['tunnel', 'setup', '--yes'], { tty: true })
-  assert.equal(empty.code, 2)
-  assert.deepEqual(spawned(empty), [])
-  assert.match(empty.err.join('\n'), /<name>/)
-
-  const short = await run(['tunnel', 'setup', 'class', '--yes'], { tty: true })
-  assert.equal(short.code, 2)
-  assert.deepEqual(spawned(short), [])
-})
-
-test('tunnel setup: «нет» — код 4, --yes снимает вопрос', async () => {
-  const no = await run(['tunnel', 'setup', 'class.example.ru'], { tty: true, answer: 'n' })
-  assert.equal(no.code, 4)
-  assert.deepEqual(spawned(no), [])
-  assert.match(no.asked[0] ?? '', /a named tunnel and a CNAME record\?/)
-
-  const yes = await run(['tunnel', 'setup', 'class.example.ru', '--yes'], { tty: true })
-  assert.equal(yes.code, 0)
-  assert.deepEqual(yes.asked, [])
-  assert.deepEqual(spawned(yes), [['make', 'tunnel-setup', 'HOST=class.example.ru']])
-})
-
-/* ------------------------------------------------------ relay setup/page */
-
-test('relay setup: машина уходит в make relay-setup WHERE=…', async () => {
-  const dry = await run(['relay', 'setup', 'root@203.0.113.10', '--dry-run'])
-  assert.deepEqual(dry.out, ['make relay-setup WHERE=root@203.0.113.10'])
-
-  const pair = await run(['relay', 'setup', 'WHERE=root@203.0.113.10', '--dry-run'])
-  assert.deepEqual(pair.out, ['make relay-setup WHERE=root@203.0.113.10'])
-})
-
-test('relay setup: без машины — код 2; вопрос говорит про обрыв туннелей', async () => {
-  const empty = await run(['relay', 'setup', '--yes'], { tty: true })
-  assert.equal(empty.code, 2)
-  assert.deepEqual(spawned(empty), [])
-  assert.match(empty.err.join('\n'), /<root@address>/)
-
-  const no = await run(['relay', 'setup', 'root@203.0.113.10'], { tty: true, answer: 'n' })
-  assert.equal(no.code, 4)
-  assert.deepEqual(spawned(no), [])
-  assert.match(no.asked[0] ?? '', /frps and caddy restart, and live tunnels break/)
-
-  const yes = await run(['relay', 'setup', 'root@203.0.113.10', '--yes'], { tty: true })
-  assert.deepEqual(spawned(yes), [['make', 'relay-setup', 'WHERE=root@203.0.113.10']])
-})
-
-test('relay page: дешёвый путь, без вопроса и без перезапусков', async () => {
-  const dry = await run(['relay', 'page', 'root@203.0.113.10', '--dry-run'])
-  assert.deepEqual(dry.out, ['make relay-page WHERE=root@203.0.113.10'])
-
-  const real = await run(['relay', 'page', 'root@203.0.113.10'], { tty: true, answer: 'n' })
-  assert.equal(real.code, 0)
-  assert.deepEqual(real.asked, [])
-  assert.deepEqual(spawned(real), [['make', 'relay-page', 'WHERE=root@203.0.113.10']])
-
-  const empty = await run(['relay', 'page'])
-  assert.equal(empty.code, 2)
-  assert.deepEqual(spawned(empty), [])
-})
-
-/* -------------------------------------------------------------- relay ping */
-
-test('relay ping: --dry-run печатает одну строку native и ничего не трогает', async () => {
-  const result = await run(['relay', 'ping', '--dry-run'])
-  assert.equal(result.code, 0)
-  assert.deepEqual(result.out, [
-    'native: relay ping (TCP RELAY_ADDR:RELAY_PORT from .env, 2s timeout)',
-  ])
-  assert.deepEqual(result.calls, [])
-})
-
-test('relay ping: ответил — ●, молчит — ○ и что делать; токена в выводе нет', async () => {
-  const up = await run(['relay', 'ping'], {
-    capture: (cmd) =>
-      cmd === 'node' ? { code: 0, stdout: '', stderr: '' } : { code: 1, stdout: '', stderr: '' },
-  })
-  assert.equal(up.code, 0)
-  assert.deepEqual(up.out, ['● 203.0.113.10:7000 answers'])
-  const probe = up.calls.find((call) => call[1] === 'node')
-  assert.deepEqual(probe?.slice(-2), ['203.0.113.10', '7000'])
-
-  const down = await run(['relay', 'ping'])
-  assert.equal(down.code, 1)
-  assert.match(down.out.join('\n'), /○ 188\.119\.112\.65:7000 is silent/)
-  assert.match(down.out.join('\n'), /→ check the machine/)
-  assert.equal([...down.out, ...down.err].join('\n').includes('very-secret-token'), false)
-})
-
-test('relay ping: нет RELAY_ADDR — код 3 и куда идти', async () => {
-  const files = { ...FILES, '/repo/.env': 'RELAY_DOMAIN=colloq.ru' }
-  const result = await run(['relay', 'ping'], { files })
-  assert.equal(result.code, 3)
-  assert.deepEqual(result.calls, [])
-  assert.match(result.err.join('\n'), /no RELAY_ADDR/)
-  assert.match(result.err.join('\n'), /colloq relay setup/)
-})
-
-/* ------------------------------------------------------------------- dns */
-
-test('dns sync: без зоны — голый скрипт, с зоной — DOMAIN=… перед ним', async () => {
-  const plain = await run(['dns', 'sync', '--dry-run'])
-  assert.equal(plain.code, 0)
-  assert.deepEqual(plain.out, ['COLLOQ_HOME=/repo ./scripts/dns.sh'])
-
-  const zone = await run(['dns', 'sync', '--domain', 'example.ru', '--dry-run'])
-  assert.deepEqual(zone.out, ['COLLOQ_HOME=/repo DOMAIN=example.ru ./scripts/dns.sh'])
-
-  const alias = await run(['dns', '--dry-run'])
-  assert.deepEqual(alias.out, ['COLLOQ_HOME=/repo ./scripts/dns.sh'])
-
-  const pair = await run(['dns', 'sync', 'DOMAIN=example.ru', '--dry-run'])
-  assert.deepEqual(pair.out, ['COLLOQ_HOME=/repo DOMAIN=example.ru ./scripts/dns.sh'])
-})
-
-test('dns sync: зона не именем — код 2; «нет» — код 4; --yes запускает скрипт', async () => {
-  const bad = await run(['dns', 'sync', '--domain', 'не зона', '--yes'], { tty: true })
-  assert.equal(bad.code, 2)
-  assert.deepEqual(spawned(bad), [])
-
-  const no = await run(['dns', 'sync'], { tty: true, answer: 'n' })
-  assert.equal(no.code, 4)
-  assert.deepEqual(spawned(no), [])
-  assert.match(no.asked[0] ?? '', /extra records of each \(type, name\) pair will be deleted/)
-
-  const yes = await run(['dns', 'sync', '--domain', 'example.ru', '--yes'], { tty: true })
-  assert.equal(yes.code, 0)
-  assert.deepEqual(spawned(yes), [['./scripts/dns.sh']])
-  assert.deepEqual(yes.envs[0], { COLLOQ_HOME: '/repo', DOMAIN: 'example.ru' })
-})
-
-test('dns: у поставленного пакета скрипт слышит, где лежит .env с CF_TOKEN', async () => {
-  const files = { '/repo/.env': null, '/home/.colloq/.env': 'CF_TOKEN=zone-token\n' }
-  const sync = await run(['dns', 'sync', '--yes'], { ...PACKAGED, tty: true, files })
-  assert.equal(sync.code, 0)
-  assert.deepEqual(sync.envs[0], { COLLOQ_HOME: '/home/.colloq' })
-
-  const point = await run(['dns', 'point', 'hse.colloq.ru', '203.0.113.10', '--yes'], {
-    ...PACKAGED,
-    tty: true,
-    files,
-  })
-  assert.equal(point.code, 0)
-  assert.deepEqual(point.envs[0], { COLLOQ_HOME: '/home/.colloq' })
-})
-
-test('dns point: имя и адрес уходят скрипту позиционно', async () => {
-  const dry = await run(['dns', 'point', 'hse.colloq.ru', '203.0.113.10', '--dry-run'])
-  assert.equal(dry.code, 0)
-  assert.deepEqual(dry.out, [
-    'COLLOQ_HOME=/repo ./scripts/dns.sh point hse.colloq.ru 203.0.113.10',
-  ])
-
-  const pair = await run(['dns', 'point', 'HOST=hse.colloq.ru', 'IP=203.0.113.10', '--dry-run'])
-  assert.deepEqual(pair.out, [
-    'COLLOQ_HOME=/repo ./scripts/dns.sh point hse.colloq.ru 203.0.113.10',
-  ])
-})
-
-test('dns point: нет имени, нет адреса, адрес не IPv4 — код 2 и ни одного запуска', async () => {
+test('прежние имена мастерской — «нет такой команды», и ничего не запущено', async () => {
   for (const argv of [
-    ['dns', 'point'],
-    ['dns', 'point', 'hse.colloq.ru'],
-    ['dns', 'point', 'hse.colloq.ru', '300.1.1.1'],
-    ['dns', 'point', 'hse', '203.0.113.10'],
+    ['host-direct', 'hse.colloq.ru'],
+    ['tunnel', 'setup', 'class.example.ru'],
+    ['relay', 'setup', 'root@203.0.113.10'],
+    ['relay', 'ping'],
+    ['dns', 'point', 'hse.colloq.ru', '203.0.113.10'],
   ]) {
     const result = await run([...argv, '--yes'], { tty: true })
     assert.equal(result.code, 2, argv.join(' '))
     assert.deepEqual(spawned(result), [], argv.join(' '))
-    assert.match(result.err.join('\n'), /✗/)
-  }
-})
-
-test('dns point: «нет» — код 4, --yes запускает скрипт', async () => {
-  const no = await run(['dns', 'point', 'hse.colloq.ru', '203.0.113.10'], {
-    tty: true,
-    answer: 'n',
-  })
-  assert.equal(no.code, 4)
-  assert.deepEqual(spawned(no), [])
-  assert.match(no.asked[0] ?? '', /an explicit A record beats \*\.colloq\.ru/)
-
-  const yes = await run(['dns', 'point', 'hse.colloq.ru', '203.0.113.10', '--yes'], { tty: true })
-  assert.equal(yes.code, 0)
-  assert.deepEqual(spawned(yes), [['./scripts/dns.sh', 'point', 'hse.colloq.ru', '203.0.113.10']])
-})
-
-test('вопрос не задаётся раньше проверки: плохой аргумент — код 2, а не 3', async () => {
-  for (const argv of [
-    ['tunnel', 'setup', 'class'],
-    ['relay', 'setup', 'ssh://203.0.113.10'],
-    ['dns', 'point', 'hse', '203.0.113.10'],
-    ['dns', 'sync', '--domain', 'зона'],
-  ]) {
-    // Ни терминала, ни --yes: каркас спросил бы и отказал с кодом 3 — но
-    // check срабатывает раньше вопроса.
-    const result = await run(argv)
-    assert.equal(result.code, 2, argv.join(' '))
-    assert.deepEqual(spawned(result), [], argv.join(' '))
     assert.deepEqual(result.asked, [], argv.join(' '))
   }
-})
-
-/* ------------------------------------------------------------------ sync */
-
-test('sync: make sync, а с --headed — HEADED=1', async () => {
-  const plain = await run(['sync', '--dry-run'])
-  assert.deepEqual(plain.out, ['make sync'])
-
-  const headed = await run(['sync', '--headed', '--dry-run'])
-  assert.deepEqual(headed.out, ['make sync HEADED=1'])
-
-  const pair = await run(['sync', 'HEADED=1', '--dry-run'])
-  assert.deepEqual(pair.out, ['make sync HEADED=1'])
-})
-
-test('sync: спрашивает только при живом сервере', async () => {
-  const quiet = await run(['sync'], { tty: true, answer: 'n' })
-  assert.equal(quiet.code, 0)
-  assert.deepEqual(quiet.asked, [])
-  assert.deepEqual(spawned(quiet), [['make', 'sync']])
-
-  const alive = await run(['sync'], {
-    tty: true,
-    answer: 'n',
-    files: { '/repo/.colloq.pid': '4242\n' },
-  })
-  assert.equal(alive.code, 4)
-  assert.deepEqual(spawned(alive), [])
-  assert.match(alive.asked[0] ?? '', /run the load test while the server is running\?/)
-  assert.deepEqual(alive.out, ['cancelled'])
 })
 
 /* ------------------------------------------- скрипты, которыми это и делается */
@@ -561,7 +422,7 @@ test('sync: спрашивает только при живом сервере',
  * Вторая половина файла — про то, чего подставным исполнителем не увидеть.
  *
  * Выше ни один процесс не запускается и ни один настоящий файл не читается:
- * проверяется, ЧТО уходит в make или в скрипт. Здесь проверяется то, что
+ * проверяется, ЧТО уходит в скрипт. Здесь проверяется то, что
  * лежит на другом конце этой строки, — и увидеть это можно только в настоящих
  * файлах. Находка была ровно там: строка уходила верная, а скрипта в пакете не
  * было вовсе, и `colloq host` умирал кодом 127 на единственной команде,

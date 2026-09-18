@@ -4,14 +4,13 @@
  * Здесь не запускается ни один процесс и не читается ни один настоящий файл:
  * sh подменяется исполнителем, который пишет вызовы в массив, io — картой
  * файлов в памяти, вывод — массивом строк. Тест стережёт ровно те свойства
- * каркаса, на которые опираются пять групп команд: пока они держатся, агент
- * группы правит свой файл и свой тест, и больше ничего.
+ * каркаса, на которые опираются четыре группы команд.
  */
 import './_cli.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { cli, isMakeTarget, levenshtein, respell, roomsPhrase } from '../cli/src/main.js'
+import { cli, levenshtein, respell, roomsPhrase } from '../cli/src/main.js'
 import { GROUPS, registry, type Command } from '../cli/src/registry.js'
 import { createEnv, createMemoryIo, SECRET_KEYS } from '../cli/src/env.js'
 import { commandLine, exitFromSignal, quote } from '../cli/src/sh.js'
@@ -29,7 +28,6 @@ const ROOT = '/repo'
 const FILES: Record<string, string> = {
   '/repo/package.json': '{ "name": "colloq", "version": "0.1.0" }',
   '/repo/cli/package.json': '{ "name": "@colloq/cli", "version": "0.1.0" }',
-  '/repo/Makefile': ['ps: status', 'status: ## What is running', 'site: ## Pages'].join('\n'),
   '/repo/.env': [
     'PORT=4000',
     'KERNEL_ENV=cv',
@@ -55,8 +53,6 @@ async function run(
     commands?: Command[]
     files?: Record<string, string>
     answer?: string
-    /** Очередь ответов: меню спрашивает дважды — пункт, потом аргумент. */
-    answers?: string[]
     tty?: boolean
     processEnv?: NodeJS.ProcessEnv
   } = {},
@@ -76,11 +72,10 @@ async function run(
     processEnv: opts.processEnv ?? {},
     commands: opts.commands,
     ask:
-      opts.answer === undefined && opts.answers === undefined
+      opts.answer === undefined
         ? undefined
         : async (question: string) => {
             asked.push(question)
-            if (opts.answers) return opts.answers[asked.length - 1] ?? ''
             return opts.answer as string
           },
     runner: {
@@ -97,20 +92,20 @@ async function run(
   return { code, out, err, calls, asked }
 }
 
-/** Крошечный реестр: две группы, двухсловное имя, опасная команда. */
+/** Крошечный реестр: три группы, двухсловное имя, опасная команда. */
 function fakeCommands(): Command[] {
   return [
     {
-      name: 'ps',
-      aliases: ['containers'],
+      name: 'logs',
+      aliases: ['log'],
       group: 'local',
-      summary: 'What is running',
-      usage: 'colloq ps',
+      summary: 'Watch the log',
+      usage: 'colloq logs',
       flags: [],
       destructive: false,
-      delegates: 'make ps',
+      delegates: 'tail -f .colloq.log',
       async run(ctx) {
-        return await ctx.sh.make('ps')
+        return await ctx.sh.run('tail', ['-f', '.colloq.log'])
       },
     },
     {
@@ -122,26 +117,27 @@ function fakeCommands(): Command[] {
       destructive: true,
       confirm: 'cli',
       confirmQuestion: 'stop the server?',
-      delegates: 'make stop',
+      delegates: './scripts/stop.sh',
       async run(ctx) {
-        return await ctx.sh.make('stop')
+        return await ctx.sh.script('./scripts/stop.sh')
       },
     },
     {
-      name: 'vast up',
-      group: 'vast',
-      summary: 'Rent a machine and deploy a release on it',
-      usage: 'colloq vast up <name>',
-      args: [{ name: 'name', summary: 'Machine name', required: true }],
-      flags: [{ name: 'gpu', arg: 'card', summary: 'Which card to look for' }],
+      name: 'env use',
+      group: 'env',
+      summary: 'Make an environment the default',
+      usage: 'colloq env use <name> [--python <version>]',
+      args: [{ name: 'name', summary: 'Environment name', required: true }],
+      flags: [{ name: 'python', arg: 'version', summary: 'Which Python' }],
       destructive: true,
       confirm: 'script',
-      delegates: 'make vast-up NAME=…',
+      delegates: './scripts/env.sh <name>',
       async run(ctx) {
-        return await ctx.sh.make('vast-up', {
-          NAME: ctx.positionals[0],
-          GPU: ctx.values.gpu as string | undefined,
-        })
+        const python = ctx.values.python as string | undefined
+        return await ctx.sh.script('./scripts/env.sh', [
+          ctx.positionals[0] ?? '',
+          ...(python ? ['--python', python] : []),
+        ])
       },
     },
     {
@@ -157,71 +153,58 @@ function fakeCommands(): Command[] {
           ctx.ui.json({ ok: true, port: ctx.env.port() })
           return 0
         }
-        return await ctx.sh.make('status')
+        return await ctx.sh.run('ps', [])
       },
     },
   ]
 }
 
-test('имя команды и алиас ведут в одну цель make', async () => {
-  const byName = await run(['ps'], { commands: fakeCommands() })
+test('имя команды и алиас ведут в один вызов', async () => {
+  const byName = await run(['logs'], { commands: fakeCommands() })
   assert.equal(byName.code, 0)
-  assert.deepEqual(byName.calls, [['make', 'ps']])
+  assert.deepEqual(byName.calls, [['tail', '-f', '.colloq.log']])
 
-  const byAlias = await run(['containers'], { commands: fakeCommands() })
-  assert.deepEqual(byAlias.calls, [['make', 'ps']])
+  const byAlias = await run(['log'], { commands: fakeCommands() })
+  assert.deepEqual(byAlias.calls, [['tail', '-f', '.colloq.log']])
 })
 
 test('двухсловное имя разбирается жадно, аргумент и флаг доезжают', async () => {
-  const result = await run(['vast', 'up', 'hse', '--gpu', 'RTX 4090'], {
+  const result = await run(['env', 'use', 'cv', '--python', '3.12'], {
     commands: fakeCommands(),
   })
   assert.equal(result.code, 0)
-  assert.deepEqual(result.calls, [['make', 'vast-up', 'NAME=hse', 'GPU=RTX 4090']])
-})
-
-test('пара ВИДА=ЗНАЧЕНИЕ снимается из любого места и уходит make', async () => {
-  const result = await run(['FORCE=1', 'ps', 'MODE=consistent'], { commands: fakeCommands() })
-  assert.deepEqual(result.calls, [['make', 'ps', 'FORCE=1', 'MODE=consistent']])
+  assert.deepEqual(result.calls, [['./scripts/env.sh', 'cv', '--python', '3.12']])
 })
 
 test('нет обязательного аргумента — код 2 и строка употребления', async () => {
-  const result = await run(['vast', 'up'], { commands: fakeCommands() })
+  const result = await run(['env', 'use'], { commands: fakeCommands() })
   assert.equal(result.code, 2)
   assert.equal(result.calls.length, 0)
   assert.match(result.err.join('\n'), /missing required argument <name>/)
 })
 
-test('обязательный аргумент называют и парой: NAME= вместо позиции', async () => {
-  const commands = fakeCommands()
-  const up = commands.find((command) => command.name === 'vast up')
-  if (up?.args?.[0]) up.args[0].makeVar = 'NAME'
-
-  const paired = await run(['vast', 'up', 'NAME=hse'], { commands })
-  assert.equal(paired.code, 0)
-  assert.deepEqual(paired.calls, [['make', 'vast-up', 'NAME=hse']])
-})
-
 test('лишний позиционный — код 2: опечатка не сводится молча к другой команде', async () => {
-  const extra = await run(['ps', 'cv'], { commands: fakeCommands() })
+  const extra = await run(['logs', 'cv'], { commands: fakeCommands() })
   assert.equal(extra.code, 2)
   assert.equal(extra.calls.length, 0)
   assert.match(extra.err.join('\n'), /extra argument: cv/)
+})
 
-  const allowed = fakeCommands()
-  const ps = allowed.find((command) => command.name === 'ps')
-  if (ps) ps.extra = true
-  assert.equal((await run(['ps', 'cv'], { commands: allowed })).code, 0)
+test('пара ВИДА=ЗНАЧЕНИЕ — обычное слово: её никто не снимает и не передаёт дальше', async () => {
+  const pair = await run(['logs', 'MODE=consistent'], { commands: fakeCommands() })
+  assert.equal(pair.code, 2)
+  assert.deepEqual(pair.calls, [])
+  assert.match(pair.err.join('\n'), /extra argument: MODE=consistent/)
 })
 
 test('односложный алиас двухсловной команды не съедает значение флага', async () => {
   const commands = fakeCommands()
-  const up = commands.find((command) => command.name === 'vast up')
-  if (up) up.aliases = ['up']
+  const use = commands.find((command) => command.name === 'env use')
+  if (use) use.aliases = ['use']
 
-  const short = await run(['up', '--gpu', 'RTX 4090', 'hse'], { commands })
+  const short = await run(['use', '--python', '3.12', 'cv'], { commands })
   assert.equal(short.code, 0)
-  assert.deepEqual(short.calls, [['make', 'vast-up', 'NAME=hse', 'GPU=RTX 4090']])
+  assert.deepEqual(short.calls, [['./scripts/env.sh', 'cv', '--python', '3.12']])
 })
 
 test('check срабатывает раньше вопроса: без терминала это код 2, а не 3', async () => {
@@ -242,19 +225,19 @@ test('вопрос бывает функцией от ctx и умеет не с�
   const commands = fakeCommands()
   const stop = commands.find((command) => command.name === 'stop')
   if (stop) {
-    stop.confirmQuestion = (ctx) => 'stop ' + (ctx.values.gpu ?? 'the server') + '?'
-    stop.flags = [{ name: 'gpu', arg: 'card', summary: 'Which card to look for' }]
+    stop.confirmQuestion = (ctx) => 'stop ' + (ctx.values.port ?? 'the server') + '?'
+    stop.flags = [{ name: 'port', arg: 'port', summary: 'Which port' }]
     stop.rooms = false
   }
-  const result = await run(['stop', '--gpu', 'RTX 4090'], { commands, tty: true, answer: 'n' })
+  const result = await run(['stop', '--port', '4100'], { commands, tty: true, answer: 'n' })
   assert.equal(result.code, 4)
-  assert.match(result.asked[0] ?? '', /stop RTX 4090\?/)
+  assert.match(result.asked[0] ?? '', /stop 4100\?/)
   // rooms:false — docker о комнатах не спрашивают вовсе.
   assert.deepEqual(result.calls, [])
 })
 
 test('неизвестный флаг — код 2, ничего не запущено', async () => {
-  const result = await run(['ps', '--no-such-flag'], { commands: fakeCommands() })
+  const result = await run(['logs', '--no-such-flag'], { commands: fakeCommands() })
   assert.equal(result.code, 2)
   assert.equal(result.calls.length, 0)
 })
@@ -271,10 +254,10 @@ test('опечатка во флаге говорит своими словам�
 })
 
 test('--dry-run печатает одну строку и не порождает ни одного вызова', async () => {
-  const result = await run(['vast', 'up', 'hse', '--dry-run'], { commands: fakeCommands() })
+  const result = await run(['env', 'use', 'cv', '--dry-run'], { commands: fakeCommands() })
   assert.equal(result.code, 0)
   assert.deepEqual(result.calls, [])
-  assert.deepEqual(result.out, ['make vast-up NAME=hse'])
+  assert.deepEqual(result.out, ['./scripts/env.sh cv'])
 })
 
 test('--dry-run не порождает вызовов ни у одной команды настоящего реестра', async () => {
@@ -298,16 +281,16 @@ test('опасная команда спрашивает, «нет» даёт к
 test('«да» пропускает, --yes снимает вопрос вовсе', async () => {
   const yes = await run(['stop'], { commands: fakeCommands(), answer: 'y', tty: true })
   assert.equal(yes.code, 0)
-  assert.ok(yes.calls.some((call) => call[0] === 'make' && call[1] === 'stop'))
+  assert.ok(yes.calls.some((call) => call[0] === './scripts/stop.sh'))
 
   const forced = await run(['stop', '--yes'], { commands: fakeCommands(), tty: true })
   assert.equal(forced.code, 0)
   assert.deepEqual(forced.asked, [])
-  assert.deepEqual(forced.calls, [['make', 'stop']])
+  assert.deepEqual(forced.calls, [['./scripts/stop.sh']])
 })
 
 test('confirm:script не спрашивает: скрипт спросит сам', async () => {
-  const result = await run(['vast', 'up', 'hse'], { commands: fakeCommands(), tty: true })
+  const result = await run(['env', 'use', 'cv'], { commands: fakeCommands(), tty: true })
   assert.equal(result.code, 0)
   assert.deepEqual(result.asked, [])
 })
@@ -315,7 +298,7 @@ test('confirm:script не спрашивает: скрипт спросит са
 test('нет терминала и нет --yes — отказ с кодом 3, а не «да»', async () => {
   const result = await run(['stop'], { commands: fakeCommands(), tty: false })
   assert.equal(result.code, 3)
-  assert.equal(result.calls.filter((call) => call[0] === 'make').length, 0)
+  assert.equal(result.calls.filter((call) => call[0] !== 'capture').length, 0)
 })
 
 test('неизвестная команда — код 2 и одна подсказка по Левенштейну', async () => {
@@ -325,53 +308,23 @@ test('неизвестная команда — код 2 и одна подск�
   assert.match(result.err.join('\n'), /did you mean colloq status\?/)
 })
 
-test('цель Makefile без обёртки не выполняется молча: её зовут явно', async () => {
-  const result = await run(['site'], { commands: fakeCommands() })
-  assert.equal(result.code, 2)
-  assert.deepEqual(result.calls, [])
-  assert.match(result.err.join('\n'), /colloq make site/)
-
-  // А слова, которого нет и в Makefile, — обычная подсказка по буквам.
-  const typo = await run(['statsu'], { commands: fakeCommands() })
-  assert.equal(typo.code, 2)
-  assert.match(typo.err.join('\n'), /did you mean colloq status\?/)
-})
-
 test('дефисное имя — это сама команда: её проверки, её вопрос, её флаги', async () => {
-  const result = await run(['vast-up', 'hse', '--gpu', 'RTX 4090'], { commands: fakeCommands() })
+  const result = await run(['env-use', 'cv', '--python', '3.12'], { commands: fakeCommands() })
   assert.equal(result.code, 0)
-  assert.deepEqual(result.calls, [['make', 'vast-up', 'NAME=hse', 'GPU=RTX 4090']])
+  assert.deepEqual(result.calls, [['./scripts/env.sh', 'cv', '--python', '3.12']])
 
-  // Настоящий реестр: cluster-stop — тот же cluster stop, и он спрашивает.
-  // Без терминала и без --yes это код 3, а не остановленное занятие.
-  const cluster = await run(['cluster-stop'], { tty: false })
-  assert.equal(cluster.code, 3)
-  assert.deepEqual(
-    cluster.calls.filter((call) => call[0] === 'make'),
-    [],
-  )
+  const missing = await run(['env-use'], { commands: fakeCommands() })
+  assert.equal(missing.code, 2)
+  assert.match(missing.err.join('\n'), /missing required argument <name>/)
 
-  const asked = await run(['cluster-stop'], { tty: true, answer: 'n' })
-  assert.equal(asked.code, 4)
-  assert.match(asked.asked[0] ?? '', /stop the application\?/)
-  assert.deepEqual(
-    asked.calls.filter((call) => call[0] === 'make'),
-    [],
-  )
-
-  assert.deepEqual(respell(['vast-up', 'hse'], 'vast-up', 'vast up'), ['vast', 'up', 'hse'])
+  assert.deepEqual(respell(['env-use', 'cv'], 'env-use', 'env use'), ['env', 'use', 'cv'])
 })
 
 test('--help не выполняет ничего: ни дефисного двойника, ни неизвестного слова', async () => {
-  const twin = await run(['cluster-stop', '--help'], { tty: true, answer: 'y' })
+  const twin = await run(['env-use', '--help'], { tty: true, answer: 'y' })
   assert.equal(twin.code, 0)
   assert.deepEqual(twin.calls, [])
-  assert.match(twin.out.join('\n'), /Usage: colloq cluster stop/)
-
-  const unknown = await run(['release-validate', '--help'], { tty: true, answer: 'y' })
-  assert.equal(unknown.code, 0)
-  assert.deepEqual(unknown.calls, [])
-  assert.match(unknown.out.join('\n'), /Usage: colloq release validate/)
+  assert.match(twin.out.join('\n'), /Usage: colloq env use/)
 
   const nothing = await run(['statsu', '--help'], { commands: fakeCommands(), tty: true })
   assert.equal(nothing.code, 2)
@@ -380,15 +333,13 @@ test('--help не выполняет ничего: ни дефисного дв�
 })
 
 test('голое имя группы показывает её команды, а не гадает по буквам', async () => {
-  for (const group of ['vast', 'cluster', 'service', 'relay', 'tunnel', 'release']) {
-    const result = await run([group], { tty: false })
-    assert.equal(result.code, 2, group)
-    assert.deepEqual(result.calls, [], group)
-    const text = result.err.join('\n')
-    assert.match(text, new RegExp(group + ' is a group of commands'), group)
-    assert.match(text, new RegExp('colloq ' + group + ' '), group)
-    assert.equal(/did you mean/.test(text), false, group)
-  }
+  const result = await run(['env'], { commands: fakeCommands(), tty: false })
+  assert.equal(result.code, 2)
+  assert.deepEqual(result.calls, [])
+  const text = result.err.join('\n')
+  assert.match(text, /env is a group of commands/)
+  assert.match(text, /colloq env use/)
+  assert.equal(/did you mean/.test(text), false)
 })
 
 test('--json есть только там, где объявлен', async () => {
@@ -396,125 +347,50 @@ test('--json есть только там, где объявлен', async () =>
   assert.equal(ok.code, 0)
   assert.deepEqual(ok.out, ['{"ok":true,"port":4000}'])
 
-  const no = await run(['ps', '--json'], { commands: fakeCommands() })
+  const no = await run(['logs', '--json'], { commands: fakeCommands() })
   assert.equal(no.code, 2)
 })
 
-test('bare invocation launches run in either terminal mode; help stays read-only', async () => {
+test('голый вызов ничего не запускает: три строки о том, что здесь живёт', async () => {
   for (const tty of [false, true]) {
     const result = await run([], { tty })
     assert.equal(result.code, 0)
     assert.deepEqual(result.asked, [])
-    assert.deepEqual(result.calls, [['node', '--import', 'tsx', '/repo/cli/src/launch.ts', 'run']])
+    assert.deepEqual(result.calls, [])
+    const text = result.out.join('\n')
+    assert.match(text, /colloq start/)
+    assert.match(text, /colloq host <name>/)
+    assert.match(text, /colloq stop/)
   }
   const help = await run(['--help'])
   assert.equal(help.code, 0)
   assert.deepEqual(help.calls, [])
-  assert.match(help.out.join('\n'), /colloq menu/)
+  assert.match(help.out.join('\n'), /Most used: colloq start/)
 })
 
-test('explicit menu requires terminal, supports help and rejects extra arguments', async () => {
-  assert.equal((await run(['menu'])).code, 3)
-  const help = await run(['menu', '--help'])
-  assert.equal(help.code, 0)
-  assert.deepEqual(help.calls, [])
-  assert.match(help.out.join('\n'), /colloq menu/)
-  assert.equal((await run(['menu', 'run'], { tty: true })).code, 2)
-})
-
-test('меню: пять групп, сквозная нумерация, цифра ведёт в команду', async () => {
-  const result = await run(['menu'], { commands: fakeCommands(), tty: true, answer: '1' })
+test('help перечисляет ровно команды преподавателя, без мастерской и меню', async () => {
+  const result = await run(['help'])
   assert.equal(result.code, 0)
   const text = result.out.join('\n')
-  assert.match(text, /Locally/)
-  assert.match(text, /Machines and releases/)
-  assert.match(text, /  1  ps/)
-  assert.match(text, /a number and Enter/)
-  // Выбран первый пункт — ушла его команда, и ровно она.
-  assert.deepEqual(
-    result.calls.filter((call) => call[0] === 'make'),
-    [['make', 'ps']],
-  )
-})
-
-test('меню спрашивает только обязательный аргумент и принимает его позицией', async () => {
-  const commands = fakeCommands().filter((command) => command.name === 'vast up')
-  const result = await run(['menu'], { commands, tty: true, answers: ['1', 'hse'] })
-  assert.equal(result.code, 0)
-  assert.match(result.asked.at(-1) ?? '', /name\?/)
-  assert.deepEqual(
-    result.calls.filter((call) => call[0] === 'make'),
-    [['make', 'vast-up', 'NAME=hse']],
-  )
-})
-
-test('меню: умолчание подставляется имени, а не адресу и не окружению ядра', async () => {
-  const state = { '/repo/.colloq/state.json': JSON.stringify({ name: 'hse' }) }
-  const point: Command = {
-    name: 'dns point',
-    group: 'host',
-    summary: 'Point a name at an address',
-    usage: 'colloq dns point <name> <ip>',
-    args: [
-      { name: 'name', summary: 'Name in the zone', required: true },
-      { name: 'ip', summary: 'IPv4', required: true },
-    ],
-    flags: [],
-    destructive: true,
-    confirm: 'cli',
-    confirmQuestion: 'point it?',
-    delegates: 'scripts/dns.sh point',
-    async run() {
-      return 0
-    },
+  for (const title of ['Locally', 'Class online', 'Kernel environments', 'Tools']) {
+    assert.match(text, new RegExp(title))
   }
-  const dns = await run(['menu'], {
-    commands: [point],
-    tty: true,
-    answers: ['1', 'hse', ''],
-    files: state,
-  })
-  // Первым спрошено имя — ему умолчание есть; адресу его не предлагают вовсе.
-  assert.match(dns.asked[1] ?? '', /name\? \[hse\]/)
-  assert.match(dns.asked[2] ?? '', /ip\? $/)
-  assert.equal(dns.code, 2)
-
-  const build: Command = {
-    name: 'env build',
-    group: 'env',
-    summary: 'Build the environment image',
-    usage: 'colloq env build <name>',
-    args: [{ name: 'name', summary: 'Environment name', required: true }],
-    flags: [],
-    destructive: true,
-    confirm: 'cli',
-    confirmQuestion: 'build it?',
-    delegates: 'make env-build NAME=…',
-    async run() {
-      return 0
-    },
+  for (const gone of ['vast', 'cluster', 'relay', 'menu', 'colloq make', 'colloq dev']) {
+    assert.equal(text.includes(gone), false, gone)
   }
-  const env = await run(['menu'], {
-    commands: [build],
-    tty: true,
-    answers: ['1', ''],
-    files: state,
-  })
-  // Окружение ядра и среда vast — разные миры: умолчание берётся из .env.
-  assert.match(env.asked[1] ?? '', /name\? \[cv\]/)
-  assert.equal((env.asked[1] ?? '').includes('hse'), false)
+  assert.equal((await run(['menu'])).code, 2)
 })
 
 test('help по команде показывает употребление и строку делегирования', async () => {
-  const result = await run(['vast', 'up', '--help'], { commands: fakeCommands() })
+  const result = await run(['env', 'use', '--help'], { commands: fakeCommands() })
   assert.equal(result.code, 0)
   const text = result.out.join('\n')
-  assert.match(text, /Usage: colloq vast up <name>/)
-  assert.match(text, /delegates: make vast-up NAME=…/)
+  assert.match(text, /Usage: colloq env use <name>/)
+  assert.match(text, /delegates: \.\/scripts\/env\.sh <name>/)
 })
 
 test('ни одного байта escape, когда цвета нет', async () => {
-  const result = await run(['ps'], { commands: fakeCommands(), processEnv: { NO_COLOR: '1' } })
+  const result = await run(['logs'], { commands: fakeCommands(), processEnv: { NO_COLOR: '1' } })
   const text = [...result.out, ...result.err].join('\n')
   assert.equal(text.includes('\u001b'), false)
   assert.equal(colorAllowed({ NO_COLOR: '1' }, true), false)
@@ -527,11 +403,11 @@ test('таблица считает ширину по строке без escape
   const out: string[] = []
   const ui = createUi({ color: true, out: (line) => void out.push(line) })
   ui.table([
-    [ui.cyan('ps'), 'what is running'],
-    ['vast up', 'rent a machine'],
+    [ui.cyan('logs'), 'watch the log'],
+    ['env use', 'make it the default'],
   ])
   const plain = out.map(stripAnsi)
-  assert.deepEqual(plain, ['  ps       what is running', '  vast up  rent a machine'])
+  assert.deepEqual(plain, ['  logs     watch the log', '  env use  make it the default'])
 })
 
 test('kv и hint держат отступы, а пояснение отделено точкой и без цвета', () => {
@@ -601,50 +477,13 @@ test('userPath считается от каталога человека, не �
   assert.equal(env.userPath('/tmp/release.json'), '/tmp/release.json')
 })
 
-test('состояние пишется и читается', () => {
-  const io = createMemoryIo(FILES)
-  const env = createEnv({ io, root: ROOT, cwd: ROOT, processEnv: {} })
-  env.writeState({ name: 'hse', last: { code: 0 } })
-  assert.equal(env.readState().name, 'hse')
-  env.writeState({ last: { code: 2 } })
-  assert.equal(env.readState().name, 'hse')
-  assert.equal(env.readState().last?.code, 2)
-})
-
-test('память об аренде переживает любую следующую команду', async () => {
-  const io = createMemoryIo(FILES, 1_700_000_000_000)
-  const env = createEnv({ io, root: ROOT, cwd: ROOT, processEnv: {} })
-  env.writeState({ name: 'hse', gpu: 'RTX 4090' })
-  await cli(['ps'], {
-    io,
-    root: ROOT,
-    cwd: ROOT,
-    out: () => {},
-    err: () => {},
-    processEnv: {},
-    commands: fakeCommands(),
-    runner: {
-      async run() {
-        return 0
-      },
-      async capture() {
-        return { code: 1, stdout: '', stderr: '' }
-      },
-    },
-  })
-  const after = env.readState()
-  assert.equal(after.name, 'hse')
-  assert.equal(after.gpu, 'RTX 4090')
-  assert.equal(after.last?.command, 'ps')
-})
-
 test('строка --dry-run квотируется безопасно и не подставляет .env', () => {
   assert.equal(quote('hse.colloq.ru'), 'hse.colloq.ru')
   assert.equal(quote('RTX 4090'), "'RTX 4090'")
   assert.equal(quote(''), "''")
   assert.equal(
-    commandLine('make', ['host', 'HOST=hse.colloq.ru'], { KERNEL_ENV: 'cv' }),
-    'KERNEL_ENV=cv make host HOST=hse.colloq.ru',
+    commandLine('./scripts/host.sh', [], { COLLOQ_HOSTNAME: 'hse.colloq.ru' }),
+    'COLLOQ_HOSTNAME=hse.colloq.ru ./scripts/host.sh',
   )
 })
 
@@ -654,10 +493,8 @@ test('сигнал у ребёнка — 128 + номер: 130 остаётся 
   assert.equal(exitFromSignal('SIGTERM'), 143)
 })
 
-test('вспомогательное: Левенштейн, цель Makefile, счёт комнат', () => {
+test('вспомогательное: Левенштейн, счёт комнат', () => {
   assert.equal(levenshtein('statsu', 'status'), 2)
-  assert.equal(isMakeTarget(FILES['/repo/Makefile'] as string, 'status'), true)
-  assert.equal(isMakeTarget(FILES['/repo/Makefile'] as string, 'nope'), false)
   assert.equal(roomsPhrase(1), '1 room is running')
   assert.equal(roomsPhrase(3), '3 rooms are running')
   assert.equal(roomsPhrase(5), '5 rooms are running')
@@ -676,6 +513,25 @@ test('вспомогательное: Левенштейн, цель Makefile, �
   // «classs»: 's' — умолчание, а не правило.
   assert.equal(countWord(1, 'class', 'classes'), '1 class')
   assert.equal(countWord(2, 'class', 'classes'), '2 classes')
+})
+
+test('реестр: только команды преподавателя — мастерская живёт в Makefile', () => {
+  assert.deepEqual(registry.map((command) => command.name).sort(), [
+    'backup',
+    'doctor',
+    'env list',
+    'env new',
+    'env show',
+    'env use',
+    'host',
+    'link',
+    'logs',
+    'restart',
+    'restore',
+    'run',
+    'status',
+    'stop',
+  ])
 })
 
 test('реестр: имена и алиасы уникальны, группа известна', () => {
@@ -723,7 +579,7 @@ test('реестр: у опасной команды есть вопрос ил�
 })
 
 test('модули групп не открывают дверь к процессам и файлам мимо ctx', () => {
-  for (const group of ['local', 'host', 'vast', 'env', 'tools']) {
+  for (const group of ['local', 'host', 'env', 'tools']) {
     const source = readFileSync(
       new URL('../cli/src/commands/' + group + '.ts', import.meta.url),
       'utf8',

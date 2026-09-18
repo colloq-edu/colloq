@@ -1,7 +1,0 @@
-#!/bin/sh
-# Colloq — обёртка над Makefile и scripts/. Запускается из любого каталога.
-set -e
-root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-COLLOQ_CWD="$PWD"; export COLLOQ_CWD
-cd "$root" || exit 3
-exec node --import tsx cli/src/main.ts "$@"

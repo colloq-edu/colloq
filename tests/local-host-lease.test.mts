@@ -100,7 +100,9 @@ test('local host script publishes and releases a lease without touching env or s
   const bin=path.join(dir,'bin');fs.mkdirSync(bin)
   const fake=(name:string,code:string)=>fs.writeFileSync(path.join(bin,name),`#!${process.execPath}\n${code}\n`,{mode:0o755})
   fake('docker','process.exit(1)')
-  fake('curl',"if(process.argv.some(a=>a.includes('/api/health'))) process.stdout.write('{\"localRunId\":\"run\"}');else if(process.argv.includes('-w')) process.stdout.write('200')")
+  // Здоровье называет изоляцию комнат: без поля isolation host.sh не
+  // публикует ничего (замок — см. тест ниже).
+  fake('curl',"if(process.argv.some(a=>a.includes('/api/health'))) process.stdout.write('{\"localRunId\":\"run\",\"isolation\":\"docker\"}');else if(process.argv.includes('-w')) process.stdout.write('200')")
   fake('dig',"process.stdout.write('127.0.0.1\\n')")
   fake('cloudflared',"require('node:fs').writeFileSync('tunnel-argv.json',JSON.stringify(process.argv.slice(2)));setInterval(()=>{},1000)")
   const original='PUBLIC_URL=https://persistent.example\nRELAY_DOMAIN=\nCOLLOQ_CLUSTER=\n'
@@ -123,6 +125,70 @@ test('local host script publishes and releases a lease without touching env or s
   assert.equal(fs.readFileSync(path.join(dir,'.env'),'utf8'),original)
   assert.equal((await fetch(`http://127.0.0.1:${port}/api/health`)).status,200)
  } finally {host?.kill('SIGTERM');await new Promise<void>(r=>server.close(()=>r()));fs.rmSync(dir,{recursive:true,force:true})}
+})
+
+/**
+ * Стенд host.sh под `colloq start --share`: настоящий скрипт и настоящая
+ * расписка адреса, выдуманные curl, dig и cloudflared. cloudflared лежит НЕ в
+ * PATH — его называет COLLOQ_CLOUDFLARED, как это делает супервизор, найдя и
+ * сверив файл сам.
+ */
+async function shareStand(health:string){
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colloq-host-share-'))
+ const root=process.cwd()
+ const server=http.createServer((_req,res)=>res.end(JSON.stringify({localRunId:'run'})))
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r))
+ const port=(server.address() as import('node:net').AddressInfo).port
+ for(const name of ['scripts/host.sh','scripts/lib.sh','scripts/public-url-lease.mts','server/src/local/public-url-lease.ts','shared/local-public-url-lease.ts','tsconfig.json']) {
+  const dest=path.join(dir,name);fs.mkdirSync(path.dirname(dest),{recursive:true});fs.copyFileSync(path.join(root,name),dest)
+ }
+ fs.symlinkSync(path.join(root,'node_modules'),path.join(dir,'node_modules'),'dir')
+ const bin=path.join(dir,'bin');fs.mkdirSync(bin)
+ const tools=path.join(dir,'tools');fs.mkdirSync(tools)
+ const fake=(where:string,name:string,code:string)=>fs.writeFileSync(path.join(where,name),`#!${process.execPath}\n${code}\n`,{mode:0o755})
+ fake(bin,'docker','process.exit(1)')
+ fake(bin,'curl',`if(process.argv.some(a=>a.includes('/api/health'))) process.stdout.write(${JSON.stringify(health)});else if(process.argv.includes('-w')) process.stdout.write('200')`)
+ fake(bin,'dig',"process.stdout.write('127.0.0.1\\n')")
+ // Быстрый туннель печатает адрес в свой вывод, а host.sh ищет его в журнале.
+ fake(tools,'cloudflared',"require('node:fs').writeFileSync('tunnel-argv.json',JSON.stringify(process.argv.slice(2)));console.log('INF |  https://quick-share.trycloudflare.com  |');setInterval(()=>{},1000)")
+ fs.writeFileSync(path.join(dir,'.env'),'RELAY_DOMAIN=\n')
+ const lease=path.join(dir,'.colloq/public-url.json')
+ const host=spawn('bash',['scripts/host.sh'],{cwd:dir,env:{...process.env,PATH:`${bin}:${process.env.PATH}`,COLLOQ_SHARE:'1',COLLOQ_CLOUDFLARED:path.join(tools,'cloudflared'),COLLOQ_CLUSTER:'',COLLOQ_DIRECT:'',COLLOQ_HOSTNAME:'',COLLOQ_LOCAL_SESSION:'1',COLLOQ_LOCAL_RUN_ID:'run',COLLOQ_LOCAL_URL:`http://127.0.0.1:${port}`,COLLOQ_PUBLIC_URL_LEASE_FILE:lease,PORT:String(port),DATA_DIR:path.join(dir,'data')}})
+ let output=''
+ host.stdout.on('data',d=>output+=d);host.stderr.on('data',d=>output+=d)
+ const close=async()=>{if(host.exitCode===null&&host.signalCode===null){const done=new Promise<void>(r=>host.once('exit',()=>r()));host.kill('SIGTERM');await done};await new Promise<void>(r=>server.close(()=>r()));fs.rmSync(dir,{recursive:true,force:true})}
+ return {dir,lease,host,read:()=>output.replace(/\x1b\[[0-9;]*m/g,''),close}
+}
+
+test('--share: host.sh names the address with one marker line and keeps its own summary to itself',async()=>{
+ const s=await shareStand('{"ok":true,"localRunId":"run","isolation":"docker"}')
+ try {
+  const deadline=Date.now()+15000
+  while(!s.read().includes('@colloq-share') && s.host.exitCode===null && Date.now()<deadline) await new Promise(r=>setTimeout(r,50))
+  const out=s.read()
+  assert.match(out,/^@colloq-share ok https:\/\/quick-share\.trycloudflare\.com$/m,out)
+  // Итог печатает супервизор: ни ссылки с токеном, ни своего абзаца здесь нет.
+  assert.doesNotMatch(out,/Sign-in to the panel|Colloq is available|\/admin\/t\//)
+  assert.equal(JSON.parse(fs.readFileSync(s.lease,'utf8')).url,'https://quick-share.trycloudflare.com')
+  // Туннель — тот cloudflared, что назван, и быстрый: без имени туннеля.
+  const argv=JSON.parse(fs.readFileSync(path.join(s.dir,'tunnel-argv.json'),'utf8'))
+  assert.deepEqual(argv.slice(0,3),['tunnel','--no-autoupdate','--url'])
+  assert.equal(s.host.exitCode,null,'host.sh must keep the tunnel open')
+ } finally {await s.close()}
+})
+
+test('the gate: without the isolation field host.sh opens no tunnel at all',async()=>{
+ for (const health of ['{"ok":true,"localRunId":"run"}','{"ok":true,"localRunId":"run","isolation":null}']) {
+  const s=await shareStand(health)
+  try {
+   const code=await new Promise<number|null>(r=>s.host.once('exit',c=>r(c)))
+   const out=s.read()
+   assert.notEqual(code,0,out)
+   assert.match(out,/not publishing: .* does not confirm that every room\s+runs in a container of its own/,out)
+   assert.equal(fs.existsSync(path.join(s.dir,'tunnel-argv.json')),false,'a tunnel was started past the gate')
+   assert.equal(fs.existsSync(s.lease),false)
+  } finally {await s.close()}
+ }
 })
 
 

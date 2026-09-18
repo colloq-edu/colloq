@@ -21,8 +21,8 @@ dynamic = ["version"]
 description = "Colloq — a shared workspace for teaching: one link, one live notebook, one assistant"
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "Colloq" }]
-keywords = ["jupyter", "notebook", "teaching", "seminar", "collaborative"]
+authors = [{ name = "Aleksandr Kalashnikov" }]
+keywords = ["jupyter", "notebook", "teaching", "seminar", "collaborative", "classroom", "education"]
 # 3.9 — не прихоть: это python3 из коробки в macOS 12–13 и в Debian 11. Шим
 # ничего сверх него не просит, и требовать больше значило бы отправлять
 # преподавателя ставить Python ради программы, которая написана не на Python.
@@ -34,19 +34,34 @@ dependencies = []
 classifiers = [
   "Development Status :: 4 - Beta",
   "Environment :: Console",
+  "Environment :: Web Environment",
+  "Framework :: Jupyter",
   "Intended Audience :: Education",
+  "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
+  "Natural Language :: English",
+  "Natural Language :: Russian",
   "Operating System :: MacOS :: MacOS X",
   "Operating System :: POSIX :: Linux",
+  "Programming Language :: JavaScript",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
   "Topic :: Education",
+  "Topic :: Education :: Computer Aided Instruction (CAI)",
 ]
 
 [project.scripts]
 colloq = "colloq.__main__:main"
 
+# PyPI показывает их в боковой панели проекта, и это единственный путь со
+# страницы пакета к исходнику, трекеру и списку изменений: README колеса
+# (python/README.md) о репозитории молчит.
 [project.urls]
 Homepage = "https://colloq.ru"
+Documentation = "https://colloq.ru/docs/en/"
+Source = "https://github.com/sleep3r/colloq"
+Issues = "https://github.com/sleep3r/colloq/issues"
+Changelog = "https://github.com/sleep3r/colloq/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "colloq/_version.py"

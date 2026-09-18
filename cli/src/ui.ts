@@ -71,8 +71,6 @@ export type Ui = {
   refuse(what: string, why: string, fix: string): void
   /** Вопрос с умолчанием «нет». Нет терминала — PreconditionError (код 3). */
   confirm(question: string): Promise<boolean>
-  /** Строка ответа. Нет терминала — умолчание, а нет и его — PreconditionError. */
-  prompt(question: string, opts?: { default?: string }): Promise<string>
   /** Печатает JSON и гасит весь остальной вывод. */
   json(value: unknown): void
 }
@@ -84,7 +82,7 @@ export type UiOptions = {
   err?: (text: string) => void
   /** Терминал ли перед нами: от этого зависит, можно ли спрашивать. */
   tty?: boolean
-  /** Подставной источник ответов — для тестов и для меню. */
+  /** Подставной источник ответов — для тестов. */
   ask?: (question: string) => Promise<string>
 }
 
@@ -209,19 +207,6 @@ export function createUi(opts: UiOptions = {}): Ui {
       const answer = ask ? await ask(line) : await readLine(line)
       const value = answer.trim().toLowerCase()
       return value === 'y' || value === 'yes'
-    },
-    async prompt(question, promptOpts = {}) {
-      const fallback = promptOpts.default ?? ''
-      const ask = opts.ask
-      if (!ask && !tty) {
-        if (fallback) return fallback
-        throw new PreconditionError('no terminal to ask in', 'pass the value as an argument')
-      }
-      const suffix = fallback ? ' [' + fallback + '] ' : ' '
-      const line = SYMBOL.next + ' ' + question + suffix
-      const answer = ask ? await ask(line) : await readLine(line)
-      const value = answer.trim()
-      return value === '' ? fallback : value
     },
     json(value) {
       jsonMode = true

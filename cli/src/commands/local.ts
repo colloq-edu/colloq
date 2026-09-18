@@ -1,39 +1,32 @@
 /**
- * Локально — всё, что происходит на этой машине.
+ * Локально — занятие на этой машине: начать, закончить, перезапустить,
+ * посмотреть журнал и адрес, снять и развернуть копию.
  *
- * Цели группы: run, stop, restart, up, down, ps, logs, dev, build, ui, test,
- * check, shell, link, docker-gid, backup, restore.
+ * Команды: run (он же start), stop, restart, logs, link, backup, restore.
+ * Порядок здесь — порядок в help. Это всё, чем преподаватель ведёт занятие на
+ * своём ноутбуке после `pip install colloq`; мастерской — docker-стека,
+ * сборки, тестов, оболочки в ядре — здесь нет. Она живёт в Makefile и
+ * scripts/, и её зовут там напрямую: обёртка над ней из колеса только
+ * печатала `make …`, которого в пакете нет.
  *
- * В поверхности преподавателя (COLLOQ_SURFACE=teacher) из них видны семь:
- * run (он же start), stop, restart, logs, link, backup, restore — то, из чего
- * состоит занятие на своём ноутбуке. Остальные — up, down, ps, dev, build, ui,
- * test, check, shell, docker-gid — мастерская: docker-стек, сборка, тесты и
- * оболочка в ядре имеют смысл только рядом с исходниками. Ничего не удалено:
- * спрятанная команда работает по точному имени и в той поверхности тоже.
- *
- * Файл правит только агент группы. Реестр, каркас и тесты остальных групп
- * этого файла не касаются; порядок команд здесь — порядок в help и в меню.
+ * Команда ведёт себя одинаково, откуда бы CLI ни запустили — из колеса или
+ * из исходников. ctx.dist решает ровно одно: чем звать супервизор (launcher
+ * ниже). Стоит развилке заползти в поведение, и проверенное в клоне окажется
+ * у преподавателя другой командой — так уже было с backup и stop.
  *
  * node:child_process и node:fs импортировать нельзя: только ctx.sh и ctx.io.
  * Иначе тест перестаёт быть герметичным, и это стережёт cli-core.
  *
- * Две вещи, которые здесь делаются одинаково во всех командах:
- *
- *   · значение берётся и флагом, и парой ВИДА=ЗНАЧЕНИЕ (`colloq backup
- *     MODE=consistent` — та же команда, что `--mode consistent`): пары снимает
- *     каркас, и он же добавляет их к вызову make, поэтому свою пару мы шлём
- *     только тогда, когда её не прислал человек, — иначе в строке было бы
- *     `MODE=live MODE=consistent`;
- *   · работа отдаётся цели Makefile целиком. Проверки, которые уже стоят в
- *     рецепте (живой app в docker, занятый порт, чужие серверные процессы),
- *     здесь не повторяются: там они сказаны точнее, и их stderr уходит наружу
- *     как есть.
+ * Работа отдаётся тому, кто её знает: занятие — супервизору, копии —
+ * scripts/backup-local.sh, scripts/backup.sh и scripts/restore.sh. Проверки,
+ * которые уже стоят там (живой сервер под restore, нет релиза под переносимой
+ * копией, замок состояния), здесь не повторяются: там они сказаны точнее, и
+ * их stderr уходит наружу как есть.
  */
 import type { Command, Ctx } from '../registry.js'
-import { cancelled, countWord, heading as head, UsageError } from '../ui.js'
+import { cancelled, heading as head, UsageError } from '../ui.js'
 import { envNameOk, joinPath } from '../env.js'
 import { readSession, type Session } from '../session.js'
-import { quote } from '../sh.js'
 import { hostNameOk } from './host.js'
 import { leaseUrl } from '../../../shared/local-public-url-lease.js'
 
@@ -44,98 +37,52 @@ async function ask(ctx: Ctx, question: string): Promise<boolean> {
   return false
 }
 
-/** Значение флага или пары ВИДА=ЗНАЧЕНИЕ: пара главнее, её написали руками. */
-function value(ctx: Ctx, flag: string, variable: string): string | undefined {
-  const pair = ctx.makeVars[variable]
-  if (pair !== undefined && pair !== '') return pair
-  const raw = ctx.values[flag]
+/** Значение строкового флага; пустая строка — всё равно что не сказали. */
+function flag(ctx: Ctx, name: string): string | undefined {
+  const raw = ctx.values[name]
   return typeof raw === 'string' && raw !== '' ? raw : undefined
 }
 
-/** Булев флаг или пара ВИДА=1. */
-function on(ctx: Ctx, flag: string, variable: string): boolean {
-  return ctx.makeVars[variable] === '1' || ctx.values[flag] === true
-}
-
-/** Свои пары для make: те, что человек прислал сам, каркас добавит и без нас. */
-function mine(
-  ctx: Ctx,
-  pairs: Record<string, string | undefined>,
-): Record<string, string | undefined> {
-  const out: Record<string, string | undefined> = {}
-  for (const [key, item] of Object.entries(pairs)) {
-    if (ctx.makeVars[key] === undefined) out[key] = item
-  }
-  return out
-}
-
-/** Строка вызова make для --dry-run там, где команд две: `make stop && make run`. */
-function makeLine(
-  ctx: Ctx,
-  target: string,
-  pairs: Record<string, string | undefined> = {},
-): string {
-  const args = ['make', target]
-  for (const [key, item] of Object.entries(mine(ctx, pairs))) {
-    if (item !== undefined && item !== '') args.push(key + '=' + item)
-  }
-  for (const [key, item] of Object.entries(ctx.makeVars)) args.push(key + '=' + item)
-  return args.map(quote).join(' ')
-}
-
 /**
- * Где лежат данные занятия — явной переменной окружения для make и скриптов.
+ * Где лежат данные занятия — явной переменной окружения для скриптов.
  *
- * scripts/backup.sh и scripts/restore.sh делают cd к себе и берут data/ с
- * workspace/ от каталога ПРИЛОЖЕНИЯ, складывая архив в <app>/backups. Пока
- * корень был один, это и был каталог состояния; у установленного colloq там
- * нет ни базы, ни файлов занятий — копия снялась бы с пустого места, а
- * восстановление легло бы мимо настоящей базы, и обе беды тихие.
+ * scripts/backup.sh и scripts/restore.sh делают cd к себе и без подсказки
+ * берут data/ с workspace/ от каталога ПРИЛОЖЕНИЯ, складывая архив в
+ * <app>/backups. У установленного colloq там нет ни базы, ни файлов занятий —
+ * копия снялась бы с пустого места, а восстановление легло бы мимо настоящей
+ * базы, и обе беды тихие.
  *
- * Поэтому корень состояния называем сами и всегда, а не только в пакете: в
- * репозитории home и есть корень, и строка ничего не меняет — зато нет второй
- * развилки, которую надо не забыть повторить в третьей команде.
+ * Поэтому корень состояния называем сами и всегда: в клоне home и есть
+ * корень, и строка ничего не меняет — зато нет развилки, которую надо не
+ * забыть повторить в следующей команде.
  */
-function stateEnv(ctx: Ctx): { env: Record<string, string> } {
-  return { env: { COLLOQ_HOME: ctx.env.paths.home } }
+function stateEnv(ctx: Ctx): Record<string, string> {
+  return { COLLOQ_HOME: ctx.env.paths.home }
 }
 
 /**
- * Чем снимать и разворачивать копию: целью Makefile или самим скриптом.
+ * Снять или развернуть копию — самим скриптом, не целью Makefile.
  *
- * Все четыре цели — backup, backup-legacy, restore, restore-legacy — это
- * обёртки в одну-две строки над scripts/backup.sh, scripts/backup-local.sh и
- * scripts/restore.sh. В репозитории пусть так и остаётся: цели зовут руками, и
- * обходить их значило бы завести второе описание того же — ровно об этом
- * host.ts · publishCall и env.ts · env build.
+ * Цели backup, backup-legacy, restore и restore-legacy — обёртки в одну-две
+ * строки над этими же скриптами, но Makefile в колесо не едет и не поедет:
+ * `colloq backup --dry-run` из колеса печатал `make backup MODE=live` —
+ * команду, которая там умирает кодом 127, и это единственный способ унести
+ * занятие с машины. Проверено живьём. Скрипты едут (scripts/pack.mts ·
+ * SCRIPTS), поэтому зовём их напрямую и так же, как их позвала бы цель: что
+ * цель отдаёт аргументом — аргументом, что переменной — окружением.
  *
- * У поставленного пакета make звать нечем: Makefile в колесо не едет и не
- * поедет. `colloq backup --dry-run` из колеса печатал `make backup MODE=live`
- * — команду, которая там умирает кодом 127, и это единственный способ унести
- * занятие с машины. Проверено живьём. Скрипты при этом лежат рядом
- * (scripts/pack.mts довозит scripts/), поэтому в дистрибутиве зовём их
- * напрямую и тем же, чем их позвала бы цель.
- *
- * Пары, написанные человеком (NAME=hse), уходят ребёнку окружением: make
- * экспортирует переменные командной строки в рецепт, и без этого прямой вызов
- * вёл бы себя иначе, чем цель. Имена из asArgs — исключение: их цель отдаёт
- * скрипту аргументом, и в окружении им делать нечего.
+ * Пустые значения в окружение не идут: скрипт отличает «не сказали» от
+ * пустой строки не везде, и лишнее `NAME=` в строке --dry-run только путает.
  */
 function copyCall(
   ctx: Ctx,
-  target: string,
   script: string,
   vars: Record<string, string | undefined> = {},
   args: string[] = [],
-  asArgs: string[] = [],
 ): Promise<number> {
-  if (!ctx.dist) return ctx.sh.make(target, mine(ctx, vars), stateEnv(ctx))
-  const env: Record<string, string> = { ...stateEnv(ctx).env }
-  for (const [key, item] of Object.entries(ctx.makeVars)) {
-    if (!asArgs.includes(key)) env[key] = item
-  }
+  const env = stateEnv(ctx)
   for (const [key, item] of Object.entries(vars)) {
-    if (item !== undefined && item !== '' && !asArgs.includes(key)) env[key] = item
+    if (item !== undefined && item !== '') env[key] = item
   }
   return ctx.sh.script(script, args, { env })
 }
@@ -146,7 +93,7 @@ function checkName(name: string | undefined): void {
   if (!envNameOk(name)) {
     throw new UsageError(
       'environment name "' + name + '" is not valid',
-      'letters, digits and a hyphen in the middle: --name hse',
+      'letters, digits and a hyphen in the middle: --name lab',
     )
   }
 }
@@ -160,15 +107,6 @@ function checkLines(lines: string | undefined): void {
       'a whole number: colloq logs -n 200',
     )
   }
-}
-
-/** Какой журнал смотреть, когда не сказали явно. */
-async function logSource(ctx: Ctx): Promise<'server' | 'docker' | 'service'> {
-  const form = await ctx.form()
-  if (form === 'cluster' || form === 'service') return 'service'
-  if (form === 'container') return 'docker'
-  if (form === 'host') return 'server'
-  return ctx.io.exists(ctx.env.paths.logFile) ? 'server' : 'docker'
 }
 
 /**
@@ -208,30 +146,43 @@ async function sessionAddress(
   return { local: session.url, public: publicUrl }
 }
 
+/**
+ * Порт и имя туннеля проверяются до запуска супервизора.
+ *
+ * Пустое значение — тоже ошибка, а не «умолчание»: `--port ''` чаще всего
+ * значит пустую переменную в чьём-то скрипте, и молча взять 3000 значило бы
+ * поднять занятие не там, где его ждут.
+ */
 function checkLaunch(ctx: Ctx): void {
-  const port = value(ctx, 'port', 'PORT')
+  const port = ctx.values.port
   if (
-    (ctx.values.port !== undefined && port === undefined) ||
-    (port !== undefined && (!/^[0-9]+$/.test(port) || Number(port) < 1 || Number(port) > 65535))
+    typeof port === 'string' &&
+    (!/^[0-9]+$/.test(port) || Number(port) < 1 || Number(port) > 65535)
   ) {
     throw new UsageError(
       'the port must be a whole number from 1 to 65535',
       'colloq run --port 3000',
     )
   }
-  const host = value(ctx, 'host', 'HOST')
-  if (
-    (ctx.values.host !== undefined && host === undefined) ||
-    (host !== undefined && !hostNameOk(host))
-  ) {
-    throw new UsageError('the tunnel name is not valid', 'colloq run --host hse.colloq.ru')
+  const host = ctx.values.host
+  if (typeof host === 'string' && !hostNameOk(host)) {
+    throw new UsageError('the tunnel name is not valid', 'colloq run --host class.example.org')
+  }
+  // Два выхода наружу разом — это два туннеля на одну расписку адреса. Тот
+  // же отказ стоит и в супервизоре (launch-config.ts · parseLaunchArgs), но
+  // здесь он приходит кодом 2 и до всякого запуска.
+  if (ctx.values.share === true && host !== undefined) {
+    throw new UsageError(
+      '--share and --host do not work together',
+      'colloq start --share for a quick link, or colloq start --host class.example.org for your own name',
+    )
   }
 }
 
 /**
  * Чем звать супервизор занятия — исходником или бандлом.
  *
- * В репозитории это `cli/src/launch.ts` через tsx: исходник правят, и гонять
+ * Из исходников это `cli/src/launch.ts` через tsx: исходник правят, и гонять
  * его через сборку на каждый запуск значило бы вставить сборку между правкой и
  * проверкой. В дистрибутиве ни исходника, ни tsx нет вовсе — там лежит один
  * собранный `cli/launch.mjs`, и звать его надо голым node.
@@ -246,23 +197,20 @@ function launcher(ctx: Ctx): string[] {
     : ['--import', 'tsx', ctx.env.path('cli/src/launch.ts')]
 }
 
-async function launch(ctx: Ctx, command: 'run' | 'dev' | 'stop' | 'restart'): Promise<number> {
+async function launch(ctx: Ctx, command: 'run' | 'stop' | 'restart'): Promise<number> {
   const args = [...launcher(ctx), command]
   if (command === 'run') {
-    const host = value(ctx, 'host', 'HOST')
+    const host = flag(ctx, 'host')
     if (host) args.push('--host', host)
-    if (on(ctx, 'detach', 'DETACH')) args.push('--detach')
-  }
-  if (command === 'run' || command === 'dev') {
-    const port = value(ctx, 'port', 'PORT')
+    if (ctx.values.share === true) args.push('--share')
+    if (ctx.values.detach === true) args.push('--detach')
+    const port = flag(ctx, 'port')
     if (port) args.push('--port', port)
-    if (ctx.values['no-open'] === true || ctx.makeVars.OPEN === '0') args.push('--no-open')
+    if (ctx.values['no-open'] === true) args.push('--no-open')
   }
   if (command === 'restart' && ctx.values.build === true) args.push('--build')
-  if (command !== 'stop' && on(ctx, 'fast', 'FAST')) args.push('--fast')
-  const consumed = new Set(['HOST', 'DETACH', 'PORT', 'OPEN', 'FAST'])
-  const env = Object.fromEntries(Object.entries(ctx.makeVars).filter(([key]) => !consumed.has(key)))
-  return await ctx.sh.run('node', args, Object.keys(env).length ? { env } : {})
+  if (command !== 'stop' && ctx.values.fast === true) args.push('--fast')
+  return await ctx.sh.run('node', args)
 }
 
 export const commands: Command[] = [
@@ -270,27 +218,29 @@ export const commands: Command[] = [
     name: 'run',
     aliases: ['start'],
     group: 'local',
-    audience: 'teacher',
     summary: 'Start a local session in this terminal and open the browser',
-    usage: 'colloq run [--host <name>] [--detach] [--port <port>] [--no-open] [--fast]',
+    usage:
+      'colloq run [--share | --host <name>] [--detach] [--port <port>] [--no-open] [--fast]',
     flags: [
       {
-        name: 'host',
-        arg: 'name',
-        summary: 'Publish the session through the tunnel it owns (HOST=…)',
+        name: 'share',
+        summary: 'Put the class online through a quick Cloudflare tunnel and print one link',
       },
-      { name: 'detach', summary: 'Leave the session in the background (DETACH=1)' },
-      { name: 'port', arg: 'port', summary: 'Port of the local server (PORT=…)' },
-      { name: 'no-open', summary: 'Do not open the browser (OPEN=0)' },
-      { name: 'fast', summary: 'Build without pre-compressing the frontend (FAST=1)' },
+      { name: 'host', arg: 'name', summary: 'Publish the session through the tunnel it owns' },
+      { name: 'detach', summary: 'Leave the session in the background' },
+      { name: 'port', arg: 'port', summary: 'Port of the local server' },
+      { name: 'no-open', summary: 'Do not open the browser' },
+      { name: 'fast', summary: 'Build without pre-compressing the frontend' },
     ],
     destructive: false,
     check: checkLaunch,
     delegates:
-      'native: the class supervisor — cli/launch.mjs in the distribution, cli/src/launch.ts through tsx in the repository',
-    examples: ['colloq start', 'colloq run --host hse.colloq.ru'],
+      'native: the class supervisor — cli/launch.mjs in the distribution, cli/src/launch.ts through tsx from the sources',
+    examples: ['colloq start', 'colloq start --share', 'colloq run --host class.example.org'],
     notes:
-      'colloq start is the same command under its other name, and it is the one a class is started with most of the time. In the repository a bare colloq does what run does; in the installed package a bare call starts nothing and prints a short help page — there a class begins with the word start. Logs stay in the terminal; Ctrl+C ends the session, its tunnel and the kernels of this database, keeping files and data. A busy server is not restarted. --detach leaves the session in the background; colloq stop ends it. The old menu is still there: colloq menu.',
+      'colloq start is the same command under its other name, and it is the one a class is started with most of the time. Logs stay in the terminal and are appended to .colloq.log in the state directory as well; Ctrl+C ends the session, its tunnel and the kernels of this database, keeping files and data. A busy server is not restarted. --detach leaves the session in the background; colloq logs follows it, colloq stop ends it. --fast matters only when colloq runs from its sources: an installed colloq arrives built. ' +
+      '--share opens a quick Cloudflare tunnel and prints one block: the link for students (or, with no class yet, where to create one), a warning never to share /admin/ links, and how long the link lives. The address is new on every start, and Cloudflare does not open from Russia — there, use --host with your own relay. Without cloudflared on PATH, colloq downloads a pinned release from GitHub into <state>/bin once and checks its sha256 before running it; COLLOQ_CLOUDFLARED=/path names your own file, COLLOQ_CLOUDFLARED_DOWNLOAD=0 forbids the download. ' +
+      '--share and --host publish a class only when every room runs in a Docker container of its own; otherwise they refuse and the class stays local. They do not work together.',
     async run(ctx) {
       head(ctx, 'starting the local session')
       return await launch(ctx, 'run')
@@ -299,45 +249,42 @@ export const commands: Command[] = [
   {
     name: 'stop',
     group: 'local',
-    audience: 'teacher',
     summary: 'End the local session, its tunnel and the kernels of this database',
     usage: 'colloq stop',
     flags: [],
     destructive: true,
     confirm: 'cli',
+    // Спрашивать «остановить сервер?», чтобы следом сказать «останавливать
+    // нечего», — значит спросить зря: вопрос есть только у идущего занятия.
+    confirmWhen: async (ctx) => localSession(ctx) !== null,
     confirmQuestion: 'stop the server?',
-    delegates:
-      'native: the same supervisor with the stop command; without a session receipt — make stop (in the repository)',
+    delegates: 'native: the same supervisor with the stop command',
     examples: ['colloq stop', 'colloq stop --yes'],
     notes:
-      'From the session receipt (.colloq/local-session.json in the state directory) the supervisor ends the processes it owns and the kernels of its own database. Files and the database are kept. Without a new receipt the repository falls back to the old make stop; in the installed package there is nothing to stop — a class there is only ever your own, with a receipt.',
+      'From the session receipt (.colloq/local-session.json in the state directory) the supervisor ends the processes it owns and the kernels of its own database. Files and the database are kept. Without a receipt no class is running and there is nothing to stop: every colloq start leaves one.',
     async run(ctx) {
-      head(ctx, 'stopping the server')
-      if (localSession(ctx) !== null) return await launch(ctx, 'stop')
-      /*
-       * Расписки нет — и дальше две разные машины.
-       *
-       * В репозитории сервер мог поднять кто угодно: make run, docker compose,
-       * прежняя версия CLI, — и старый `make stop` остаётся единственным, кто
-       * знает про все эти формы. У поставленного пакета Makefile нет вовсе, и
-       * звать его значило бы отдать человеку «make: *** No rule to make target
-       * `stop`» вместо ответа. А отвечать тут есть что: занятие в пакете бывает
-       * ровно одно — своё, с распиской, — и её отсутствие и значит, что
-       * останавливать нечего.
-       */
-      if (ctx.dist) {
-        ctx.ui.line('no class is running — nothing to stop')
-        ctx.ui.hint('start one: colloq start')
-        return 0
+      if (localSession(ctx) !== null) {
+        head(ctx, 'stopping the server')
+        return await launch(ctx, 'stop')
       }
-      return await ctx.sh.make('stop')
+      /*
+       * Расписки нет — значит, и занятия нет.
+       *
+       * Занятие, которое начал colloq, бывает ровно одно — своё, с распиской,
+       * — и её отсутствие и значит, что останавливать нечего. Сервер, поднятый
+       * мимо colloq (make run, docker compose), — забота мастерской, и
+       * гасить его тем же словом значило бы угадывать чужое. Код 0: просьба
+       * «пусть ничего не идёт» уже исполнена.
+       */
+      ctx.ui.line('no class is running — nothing to stop')
+      ctx.ui.hint('start one: colloq start')
+      return 0
     },
   },
   {
     name: 'restart',
     group: 'local',
-    audience: 'teacher',
-    summary: 'Restart whatever is running on this machine',
+    summary: 'Restart the local session with the same port, data and tunnel',
     usage: 'colloq restart [--build] [--fast]',
     flags: [
       { name: 'build', summary: 'Rebuild the frontend before restarting' },
@@ -345,167 +292,50 @@ export const commands: Command[] = [
     ],
     destructive: true,
     confirm: 'self',
-    delegates:
-      'session → supervisor restart; container → make restart · service → make service-restart · host → make stop, make run; without a receipt in the installed package — a refusal in words',
+    delegates: 'native: the same supervisor with the restart command',
     examples: ['colloq restart', 'colloq restart --build'],
     notes:
-      'A new session receipt points at the supervisor. For older launches what is running is decided in the same order as in scripts/host.sh: COLLOQ_CLUSTER=1 → cluster, service, the app container, a live .colloq.pid receipt. The order must not change: the pid file speaks of the past. The installed package has none of the older forms at all: without a receipt there is nothing to restart, and the command says so in words rather than through a make error. A bare docker compose restart is never called: it restarts the kernel as well, and that is the Python state of every room. The cluster does not come here: colloq cluster stop · colloq cluster start.',
+      'The supervisor reads the session receipt, ends the session and starts it again with the same port, data and flags. Without a receipt no class is running, and the command says so in words. --build and --fast matter only when colloq runs from its sources: an installed colloq arrives built and has nothing to rebuild.',
     async run(ctx) {
-      if (localSession(ctx) !== null) {
-        if (!ctx.dryRun && !(await ask(ctx, 'restart the local session?'))) return 4
-        return await launch(ctx, 'restart')
-      }
-      /*
-       * Расписки нет — и у поставленного пакета дальше идти не с чем.
-       *
-       * Ниже всё держится на Makefile и node_modules: make restart, пара make
-       * stop + make run, make service-restart, а с --build ещё и npm run
-       * build:optimized. В пакете нет ни того, ни другого, и человек получал
-       * «make: *** No rule to make target `stop`» — при том что pid-файл рядом
-       * есть и перезапуск выглядел осмысленным. Отвечаем словами, как stop:
-       * занятие в пакете бывает ровно одно — своё, с распиской.
-       */
-      if (ctx.dist) {
+      if (localSession(ctx) === null) {
+        /*
+         * Расписки нет — перезапускать нечего, и отвечаем словами.
+         *
+         * Когда-то здесь начинался разбор старых форм — docker, служба,
+         * pid-файл — и вызовы make. У преподавателя ничего из этого нет, а
+         * человек получал «make: *** No rule to make target `stop`» при живом
+         * pid-файле рядом, и перезапуск выглядел осмысленным. Отказ — код 3 и
+         * под --dry-run тоже: выполнить было бы нечего.
+         */
         ctx.ui.refuse(
           'no class is running — nothing to restart',
-          'there is no session receipt, and the older forms (docker, service, make) live only next to the sources',
+          'there is no session receipt at ' + ctx.env.paths.sessionFile,
           'start one: colloq start',
         )
         return 3
       }
-      const form = await ctx.form()
-      if (form === 'cluster') {
-        ctx.ui.refuse(
-          'this is a k3s cluster',
-          'it has no soft restart',
-          'colloq cluster stop · colloq cluster start',
-        )
-        return 3
-      }
-      const fast = on(ctx, 'fast', 'FAST')
-      const build = ctx.values.build === true
-      const script = fast ? 'build' : 'build:optimized'
-
-      if (ctx.dryRun) {
-        const parts: string[] = []
-        if (build) parts.push('npm run ' + script)
-        if (form === 'service') parts.push(makeLine(ctx, 'service-restart'))
-        else if (form === 'host') {
-          parts.push(makeLine(ctx, 'stop'))
-          parts.push(makeLine(ctx, 'run', { FAST: fast ? '1' : undefined }))
-        } else parts.push(makeLine(ctx, 'restart'))
-        return ctx.sh.dry(parts.join(' && '))
-      }
-
-      const question = build
-        ? 'rebuild the panel and restart? web/dist changes on the fly'
-        : 'restart the server?'
-      if (!(await ask(ctx, question))) return 4
-
-      if (build) {
-        head(
-          ctx,
-          fast ? 'building the panel without compression' : 'building the panel with compression',
-        )
-        const built = await ctx.sh.npm(script)
-        if (built !== 0) return built
-      }
-      if (form === 'service') {
-        head(ctx, 'restarting the service')
-        return await ctx.sh.make('service-restart')
-      }
-      if (form === 'host') {
-        head(ctx, 'restarting the server on the host')
-        const stopped = await ctx.sh.make('stop')
-        if (stopped !== 0) return stopped
-        return await ctx.sh.make('run', mine(ctx, { FAST: fast ? '1' : undefined }))
-      }
-      head(ctx, 'restarting app in docker')
-      return await ctx.sh.make('restart')
-    },
-  },
-  {
-    name: 'up',
-    group: 'local',
-    summary: 'Bring the whole stack up in docker: the application and the kernel',
-    usage: 'colloq up',
-    flags: [],
-    destructive: true,
-    confirm: 'cli',
-    confirmQuestion: 'recreate app in docker?',
-    delegates: 'make up',
-    examples: ['colloq up', 'colloq up --yes'],
-    notes:
-      'Pulls .env, dirs and docker-gid along with it, recreates the app container and prints http://localhost:<PORT>. The server on the host (colloq run) and app in docker are two Colloqs on one port.',
-    async run(ctx) {
-      head(ctx, 'bringing the stack up in docker')
-      return await ctx.sh.make('up')
-    },
-  },
-  {
-    name: 'down',
-    group: 'local',
-    summary: 'Stop everything in docker (data and files stay)',
-    usage: 'colloq down',
-    flags: [],
-    destructive: true,
-    confirm: 'cli',
-    confirmQuestion: 'stop everything in docker?',
-    delegates: 'make down',
-    examples: ['colloq down', 'colloq down --yes'],
-    notes:
-      'The most dangerous of the local commands: every room container is removed first (label colloq.kind=room-kernel), and only then compose down — otherwise the compose network is not deleted while containers it does not own are still inside. The room containers hold the Python state of the class in progress, so the question names how many of them there are. A server running under the service is untouched, and make down says so itself.',
-    async run(ctx) {
-      head(ctx, 'stopping everything in docker')
-      return await ctx.sh.make('down')
-    },
-  },
-  {
-    name: 'ps',
-    aliases: ['containers'],
-    group: 'local',
-    summary: 'What is running in docker: compose, room kernels, the environment',
-    usage: 'colloq ps',
-    flags: [],
-    destructive: false,
-    delegates: 'make status (also known as make ps)',
-    examples: ['colloq ps', 'colloq ps --dry-run'],
-    notes:
-      'This is the docker view. The whole machine is colloq status, and it works without the network and without compose. The names do not collide: here ps is not an alias of status, unlike in the Makefile.',
-    async run(ctx) {
-      return await ctx.sh.make('status')
+      if (!ctx.dryRun && !(await ask(ctx, 'restart the local session?'))) return 4
+      head(ctx, 'restarting the local session')
+      return await launch(ctx, 'restart')
     },
   },
   {
     name: 'logs',
     aliases: ['log'],
     group: 'local',
-    audience: 'teacher',
-    summary: 'Watch the log of whatever is running on this machine',
-    usage: 'colloq logs [-f|--no-follow] [-n <lines>] [--server|--docker|--service]',
+    summary: 'Watch the log of the class on this machine',
+    usage: 'colloq logs [-f|--no-follow] [-n <lines>]',
     flags: [
       { name: 'follow', short: 'f', summary: 'Follow (on by default)' },
       { name: 'no-follow', summary: 'Show the tail and exit' },
       { name: 'lines', short: 'n', arg: 'lines', summary: 'How many lines of the tail' },
-      { name: 'server', summary: 'The log of the server on the host — .colloq.log' },
-      { name: 'docker', summary: 'The docker compose log' },
-      { name: 'service', summary: 'The service log' },
     ],
     destructive: false,
-    delegates: 'tail <log> · make logs · make service-logs',
-    examples: ['colloq logs', 'colloq logs --docker -n 200'],
+    delegates: 'tail .colloq.log in the state directory',
+    examples: ['colloq logs', 'colloq logs -n 200 --no-follow'],
     notes:
-      'Without a flag, what is running is decided in the same order as for restart. .colloq.log is appended to and never truncated — the history of past weeks is evidence, and tail only reads. The log holds /admin/t/<token> links: the CLI cuts nothing out of the stream and retells nothing, and it never prints the token itself either. For the service the log is kept by journalctl: -n and --no-follow do not reach it.',
+      '.colloq.log is written by every colloq start, in the terminal and with --detach alike. It is appended to and never truncated — the history of past weeks is evidence, and tail only reads. The log holds /admin/t/<token> links: the CLI cuts nothing out of the stream and retells nothing, and it never prints the token itself either.',
     async run(ctx) {
-      const picked = (['server', 'docker', 'service'] as const).filter(
-        (name) => ctx.values[name] === true,
-      )
-      if (picked.length > 1) {
-        throw new UsageError(
-          picked.map((name) => '--' + name).join(' and ') + ' at once does not happen',
-          'there is one log: colloq logs --docker',
-        )
-      }
       if (ctx.values.follow === true && ctx.values['no-follow'] === true) {
         throw new UsageError(
           '-f and --no-follow do not work together',
@@ -513,211 +343,44 @@ export const commands: Command[] = [
         )
       }
       const follow = ctx.values['no-follow'] !== true
-      const lines = value(ctx, 'lines', 'LINES')
+      const lines = flag(ctx, 'lines')
       checkLines(lines)
-      const source = picked[0] ?? (await logSource(ctx))
-
-      if (source === 'service') {
-        head(ctx, 'the service log')
-        return await ctx.sh.make('service-logs')
-      }
-      if (source === 'docker') {
-        head(ctx, 'the docker compose log')
-        if (follow && lines === undefined) return await ctx.sh.make('logs')
-        const args = ['compose', 'logs']
-        if (follow) args.push('-f')
-        args.push('--tail=' + (lines ?? '80'))
-        return await ctx.sh.run('docker', args)
-      }
-      if (!ctx.dryRun && !ctx.io.exists(ctx.env.paths.logFile)) {
+      const log = ctx.env.paths.logFile
+      if (!ctx.dryRun && !ctx.io.exists(log)) {
+        /*
+         * Журнал заводит супервизор при каждом `colloq start` — и в
+         * терминале, и в фоне (launch.ts · runSession и detached). Нет файла
+         * — значит, занятие на этой машине ещё не начинали, и совет ровно
+         * один: начать. Путь называем целиком: у установленного colloq он в
+         * каталоге состояния, а не в рабочей папке человека.
+         */
         ctx.ui.refuse(
-          'no .colloq.log',
-          'the server on this machine has never been started through colloq run',
-          'colloq run · the docker log: colloq logs --docker',
+          'no log at ' + log,
+          'no class has been started on this machine yet — every colloq start writes its log there',
+          'colloq start --detach — the class goes to the background, and colloq logs follows it',
         )
         return 3
       }
-      head(ctx, 'the log of the server on the host')
+      head(ctx, 'the log of the class')
       /*
        * Тейлим свой файл, а не отдаём работу make logs-run.
        *
        * Цель Makefile — это `tail -f $(LOG)` от каталога ПРИЛОЖЕНИЯ, и у
-       * установленного colloq она даёт «make: *** No rule to make target
-       * `logs-run`» вместо журнала. Верный путь известен строкой выше — по
-       * нему же только что проверили, что журнал вообще есть, — а в журнале
-       * лежит ссылка входа, к которой отсылает colloq link: промахнуться тут
-       * дороже всего. Вызов получается тот же самый: `tail -f <журнал>`.
+       * установленного colloq её нет вовсе. Верный путь известен строкой выше
+       * — по нему же только что проверили, что журнал вообще есть, — а в
+       * журнале лежит ссылка входа, к которой отсылает colloq link:
+       * промахнуться тут дороже всего.
        */
       const args: string[] = []
       if (follow) args.push('-f')
       if (lines !== undefined) args.push('-n', lines)
-      args.push(ctx.env.paths.logFile)
+      args.push(log)
       return await ctx.sh.run('tail', args)
-    },
-  },
-  {
-    name: 'dev',
-    group: 'local',
-    summary: 'Start the reloading server and Vite in one session',
-    usage: 'colloq dev [--port <port>] [--no-open]',
-    flags: [
-      { name: 'port', arg: 'port', summary: 'Port of the browser and Vite (PORT=… as a pair)' },
-      { name: 'no-open', summary: 'Do not open the browser (OPEN=0)' },
-    ],
-    destructive: false,
-    check: checkLaunch,
-    delegates: 'native: the same supervisor with the dev command (in the repository only)',
-    examples: ['colloq dev', 'colloq dev --port 4000 --no-open'],
-    notes:
-      'The server watching the sources and Vite run until Ctrl+C. Server reloads keep the room kernels; the end of the session ends the kernels of this database. Files and the database are kept.',
-    async run(ctx) {
-      head(ctx, 'starting the server and Vite for development')
-      return await launch(ctx, 'dev')
-    },
-  },
-  {
-    name: 'build',
-    group: 'local',
-    summary: 'Build the frontend and the server',
-    usage: 'colloq build [--fast]',
-    flags: [{ name: 'fast', summary: 'Without pre-compression' }],
-    destructive: false,
-    confirm: 'self',
-    delegates: 'npm run build:optimized (with --fast — npm run build)',
-    examples: ['colloq build', 'colloq build --fast'],
-    notes:
-      'Asks only if the server is alive: web/dist is served live through STATIC_DIR, and a rebuild under a class in progress swaps the assets on the fly. Compression by default is not idle: without .br files next to assets/ the server compresses every file on every request — 11.6 ms of CPU and 25 KB per student per file.',
-    async run(ctx) {
-      const fast = on(ctx, 'fast', 'FAST')
-      if (!ctx.dryRun && !ctx.yes && (await ctx.serverAlive())) {
-        if (
-          !(await ask(
-            ctx,
-            'rebuild the panel while the server is running? the assets change on the fly',
-          ))
-        )
-          return 4
-      }
-      head(
-        ctx,
-        fast ? 'building the panel without compression' : 'building the panel with compression',
-      )
-      return await ctx.sh.npm(fast ? 'build' : 'build:optimized')
-    },
-  },
-  {
-    name: 'ui',
-    group: 'local',
-    summary: 'Check the interface in a real browser',
-    usage: 'colloq ui [--headed]',
-    flags: [{ name: 'headed', summary: 'With a visible window' }],
-    destructive: false,
-    confirm: 'self',
-    delegates: 'make ui [HEADED=1]',
-    examples: ['colloq ui', 'colloq ui --headed'],
-    notes:
-      "Asks the same way build does: make ui rebuilds web/dist first, so on a machine where a class is running it is not safe. Its own server on 3891 (CDP 9334), its own DATA_DIR, KERNEL_BACKEND=test — the check touches nobody else's database.",
-    async run(ctx) {
-      if (!ctx.dryRun && !ctx.yes && (await ctx.serverAlive())) {
-        if (
-          !(await ask(
-            ctx,
-            'check the interface while the server is running? web/dist will be rebuilt',
-          ))
-        ) {
-          return 4
-        }
-      }
-      head(ctx, 'checking the interface in a browser')
-      return await ctx.sh.make(
-        'ui',
-        mine(ctx, { HEADED: on(ctx, 'headed', 'HEADED') ? '1' : undefined }),
-      )
-    },
-  },
-  {
-    name: 'test',
-    group: 'local',
-    summary: 'Run the tests',
-    usage: 'colloq test [pattern]',
-    args: [{ name: 'pattern', summary: 'A piece of a file name: council, cli, shell' }],
-    flags: [],
-    destructive: false,
-    delegates: 'make test · node --import tsx --test tests/*<pattern>*.test.mts',
-    examples: ['colloq test', 'colloq test council'],
-    notes:
-      'The pattern is a piece of a file name, not a regular expression: it is looked for in the names under tests/*.test.mts. --test-force-exit and --test-concurrency=1 are repeated word for word from the root npm test, otherwise the suite behaves differently than it does in CI.',
-    async run(ctx) {
-      const pattern = ctx.positionals[0]
-      if (pattern === undefined) {
-        head(ctx, 'running the tests')
-        return await ctx.sh.make('test')
-      }
-      if (pattern.includes('/') || pattern.startsWith('-')) {
-        throw new UsageError(
-          'pattern "' + pattern + '" is not valid',
-          'it is a piece of a file name, without a directory: colloq test council',
-        )
-      }
-      const names = ctx.io
-        .list(ctx.env.path('tests'))
-        .filter((name) => name.endsWith('.test.mts') && name.includes(pattern))
-      if (names.length === 0) {
-        ctx.ui.refuse(
-          'no tests match "' + pattern + '"',
-          'looked for tests/*' + pattern + '*.test.mts',
-          'see what is there: ls tests',
-        )
-        return 1
-      }
-      head(ctx, 'running the tests: ' + countWord(names.length, 'file'))
-      return await ctx.sh.run('node', [
-        '--import',
-        'tsx',
-        '--import',
-        './tests/_cli.mts',
-        '--test',
-        '--test-force-exit',
-        '--test-concurrency=1',
-        ...names.map((name) => 'tests/' + name),
-      ])
-    },
-  },
-  {
-    name: 'check',
-    group: 'local',
-    summary: 'Run the tests and the type check',
-    usage: 'colloq check',
-    flags: [],
-    destructive: false,
-    delegates: 'make check',
-    examples: ['colloq check', 'colloq check --dry-run'],
-    notes: 'npm test && npm run typecheck; the type check of the root covers @colloq/cli as well.',
-    async run(ctx) {
-      head(ctx, 'running the tests and the type check')
-      return await ctx.sh.make('check')
-    },
-  },
-  {
-    name: 'shell',
-    group: 'local',
-    summary: 'Open a shell in the kernel to see what is installed there',
-    usage: 'colloq shell',
-    flags: [],
-    destructive: false,
-    delegates: 'make shell',
-    examples: ['colloq shell', 'colloq shell --dry-run'],
-    notes:
-      'Interactive: input and output go to the terminal as they are. On a machine running under the service there is no shared compose kernel at all — make shell opens a throwaway colloq-kernel:<environment> container itself. Whatever was installed by hand into a running room is visible only in that room, from its terminal.',
-    async run(ctx) {
-      head(ctx, 'opening a shell in the kernel: ' + ctx.env.kernelEnv())
-      return await ctx.sh.make('shell')
     },
   },
   {
     name: 'link',
     group: 'local',
-    audience: 'teacher',
     summary: 'Show the class address and where to find the sign-in to the panel',
     usage: 'colloq link',
     flags: [],
@@ -776,68 +439,49 @@ export const commands: Command[] = [
     },
   },
   {
-    name: 'docker-gid',
-    group: 'local',
-    summary: 'Write the docker socket group into .env so every room gets its own kernel',
-    usage: 'colloq docker-gid',
-    flags: [],
-    destructive: true,
-    confirm: 'cli',
-    confirmWhen: async (ctx) => !ctx.env.has('DOCKER_GID'),
-    confirmQuestion: 'append DOCKER_GID to .env?',
-    delegates: 'make docker-gid',
-    examples: ['colloq docker-gid', 'colloq docker-gid --yes'],
-    notes:
-      'The only write into .env the CLI ever starts, and make does it itself: the line is appended only if it is not there already. Without it the server cannot reach docker, and the rooms will share one kernel. To ask the daemon for the gid a tiny busybox container may come up.',
-    async run(ctx) {
-      head(ctx, 'asking for the docker socket group')
-      return await ctx.sh.make('docker-gid')
-    },
-  },
-  {
     name: 'backup',
     group: 'local',
-    audience: 'teacher',
-    summary: 'Take a backup: a portable k3s one or a local one in the old format',
+    summary: 'Take a backup: a local one of this machine or a portable k3s one',
     usage:
       'colloq backup [--legacy] [--mode <live|consistent>] [--resume] [--name <environment>] [--out <path>] [--release <path>]',
     flags: [
-      { name: 'legacy', summary: 'A local pair of .db and -files.tar.gz' },
-      { name: 'mode', arg: 'mode', summary: 'live (the default) or consistent' },
-      { name: 'resume', summary: 'Start the writers again after consistent' },
+      { name: 'legacy', summary: 'A local pair of .db and -files.tar.gz (the default)' },
+      { name: 'mode', arg: 'mode', summary: 'Portable: live (the default) or consistent' },
+      { name: 'resume', summary: 'Portable: start the writers again after consistent' },
       {
         name: 'name',
         arg: 'environment',
-        summary: 'Backup of an environment: into backups/<environment>/',
+        summary: 'Portable backup of an environment: into backups/<environment>/',
       },
-      { name: 'out', arg: 'path', summary: 'Where to put the archive' },
-      { name: 'release', arg: 'path', summary: 'Which release counts as installed' },
+      { name: 'out', arg: 'path', summary: 'Portable: where to put the archive' },
+      { name: 'release', arg: 'path', summary: 'Portable: which release counts as installed' },
     ],
     destructive: true,
     confirm: 'self',
     delegates:
-      'make backup MODE=… · make backup-legacy (in an installed colloq — scripts/backup.sh and scripts/backup-local.sh directly)',
+      './scripts/backup-local.sh · with a portable flag — MODE=… ./scripts/backup.sh; COLLOQ_HOME names the state directory',
     examples: ['colloq backup', 'colloq backup --mode consistent --resume'],
     notes:
-      'Without flags an installed colloq takes a local backup: the portable one is for a machine with k3s on it, and --mode, --out, --release or --name still lead into it. The question is asked only with --mode consistent: it stops app, the broker and every room and deliberately leaves them down — only --resume brings them back, and a backup that fails leaves the writers down as well. backup.sh restarts itself under scripts/state-lock.py and refuses while .restore-in-progress is there; without an installed release it sends you to --legacy itself. The local backup (scripts/backup-local.sh) does a VACUUM INTO (sqlite3 required) and an archive with workspace, data/session-secret, data/setup-token and its own environment lists, both files 0600; exit code 1 from tar means "the file changed while it was read", that is a class in progress, and it is allowed. Everything counts from the state directory: backups of this machine live in its backups/, backups of environments in backups/<environment>/.',
+      'Without flags it is a local backup: the database and the class files of this machine. The portable one is for a machine with k3s on it, and --mode, --resume, --out, --release or --name lead into it. The question is asked only with --mode consistent: it stops app, the broker and every room and deliberately leaves them down — only --resume brings them back, and a backup that fails leaves the writers down as well. backup.sh restarts itself under scripts/state-lock.py, refuses while .restore-in-progress is there and refuses without an installed release. The local backup (scripts/backup-local.sh) does a VACUUM INTO (sqlite3 required) and an archive with workspace, data/session-secret, data/setup-token and its own environment lists, both files 0600; exit code 1 from tar means "the file changed while it was read", that is a class in progress, and it is allowed. Everything counts from the state directory: backups of this machine live in its backups/, backups of environments in backups/<environment>/.',
     async run(ctx) {
-      const mode = value(ctx, 'mode', 'MODE') ?? 'live'
-      const resume = on(ctx, 'resume', 'RESUME')
-      const name = value(ctx, 'name', 'NAME')
-      const out = value(ctx, 'out', 'OUT')
-      const release = value(ctx, 'release', 'RELEASE')
+      const given = flag(ctx, 'mode')
+      const mode = given ?? 'live'
+      const resume = ctx.values.resume === true
+      const name = flag(ctx, 'name')
+      const out = flag(ctx, 'out')
+      const release = flag(ctx, 'release')
       // Переносимую копию назвали вслух: любой её флаг — это просьба о ней.
       const portable =
-        value(ctx, 'mode', 'MODE') !== undefined ||
+        given !== undefined ||
         resume ||
         name !== undefined ||
         out !== undefined ||
         release !== undefined
       /*
-       * Умолчание меняется, и только для дистрибутива.
+       * Умолчание — локальная копия.
        *
-       * Переносимая копия имеет смысл там, где стоит k3s: scripts/backup.sh
-       * первым делом требует установленный релиз и без него отказывает. У
+       * Переносимая имеет смысл там, где стоит k3s: scripts/backup.sh первым
+       * делом требует установленный релиз и без него отказывает. У
        * преподавателя, который поставил colloq через pip и ведёт занятие на
        * своём ноутбуке, релиза нет и не будет — `colloq backup` без флагов
        * отвечал бы ему про кластер, которого он не заводил, хотя нужна ему
@@ -846,21 +490,20 @@ export const commands: Command[] = [
        * несовместимы, и разрешается это в пользу обещания — как у env list.
        *
        * Второй путь не закрыт: кластер обслуживают тем же колесом
-       * (scripts/cluster.sh едет туда же), и названный флаг уводит в него. В
-       * репозитории умолчание прежнее: там make есть, а мастерская знает,
-       * чего просит.
+       * (scripts/cluster.sh едет туда же), и названный флаг уводит в него.
+       * --legacy остаётся словом для тех, кто хочет сказать это вслух.
        */
-      const legacy = ctx.values.legacy === true || (ctx.dist && !portable)
+      const legacy = ctx.values.legacy === true || !portable
 
       if (legacy) {
         const extra = [
-          ['--mode', value(ctx, 'mode', 'MODE') !== undefined],
+          ['--mode', given !== undefined],
           ['--resume', resume],
           ['--out', out !== undefined],
           ['--release', release !== undefined],
           ['--name', name !== undefined],
         ] as const
-        const used = extra.filter(([, given]) => given).map(([flag]) => flag)
+        const used = extra.filter(([, on]) => on).map(([option]) => option)
         if (used.length > 0) {
           throw new UsageError(
             used.join(' and ') + ' does not work with --legacy',
@@ -868,7 +511,7 @@ export const commands: Command[] = [
           )
         }
         head(ctx, 'taking a local backup: the database and the files')
-        return await copyCall(ctx, 'backup-legacy', './scripts/backup-local.sh')
+        return await copyCall(ctx, './scripts/backup-local.sh')
       }
 
       if (mode !== 'live' && mode !== 'consistent') {
@@ -890,9 +533,9 @@ export const commands: Command[] = [
         if (!(await ask(ctx, 'stop every writer?' + tail))) return 4
       }
       head(ctx, mode === 'consistent' ? 'taking a consistent backup' : 'taking a backup on the fly')
-      // backup.sh читает всё окружением (MODE, RESUME, NAME, OUT, RELEASE), и
-      // цель backup ровно этим его и зовёт: аргументов у него нет вовсе.
-      return await copyCall(ctx, 'backup', './scripts/backup.sh', {
+      // backup.sh читает всё окружением (MODE, RESUME, NAME, OUT, RELEASE):
+      // аргументов у него нет вовсе.
+      return await copyCall(ctx, './scripts/backup.sh', {
         MODE: mode,
         RESUME: resume ? '1' : undefined,
         NAME: name,
@@ -904,14 +547,13 @@ export const commands: Command[] = [
   {
     name: 'restore',
     group: 'local',
-    audience: 'teacher',
-    summary: 'Restore a backup: a portable k3s one or a local one in the old format',
+    summary: 'Restore a backup: a local one of this machine or a portable k3s one',
     usage:
       'colloq restore --archive <file> --release <file> [--replace] [--recover] [--name <environment>] | colloq restore --legacy --db <file> [--files <archive>] [--name <environment>] [--replace]',
     flags: [
       { name: 'archive', arg: 'file', summary: 'The portable backup, a .tar.gz' },
       { name: 'release', arg: 'file', summary: 'release.json of the same generation' },
-      { name: 'legacy', summary: 'A local pair in the old format' },
+      { name: 'legacy', summary: 'A local pair of .db and -files.tar.gz' },
       { name: 'db', arg: 'file', summary: 'The database from a local backup' },
       { name: 'files', arg: 'archive', summary: 'Class files from a local backup' },
       {
@@ -921,32 +563,32 @@ export const commands: Command[] = [
       },
       {
         name: 'replace',
-        summary: 'REPLACE=1: restore over the current database (--yes does not grant this)',
+        summary: 'Restore over the current database (--yes does not grant this)',
       },
       { name: 'recover', summary: 'Finish an interrupted restore' },
     ],
     destructive: true,
     confirm: 'self',
     delegates:
-      'make restore ARCHIVE=… RELEASE=… · make restore-legacy DB=… FILES=… (in an installed colloq — scripts/restore.sh directly)',
+      './scripts/restore.sh <db> [<files>] · ./scripts/restore.sh --archive … --release …; COLLOQ_HOME names the state directory',
     examples: [
-      'colloq restore --archive backups/{env}/colloq-20260914.tar.gz --release release.json',
       'colloq restore --legacy --db backups/colloq-20260914.db --files backups/colloq-20260914-files.tar.gz',
+      'colloq restore --archive backups/{env}/colloq-20260914.tar.gz --release release.json',
     ],
     notes:
       'The portable path asks nothing on its own — we ask; the local one asks for itself (scripts/restore.sh), and we do not ask a second time. The two worlds must not be mixed: restore.sh rejects an old pair laid on top as soon as a k3s release is installed. The local path refuses if the colloq service is active, the compose app is running, .colloq.pid is alive, or somebody answers on localhost:<PORT>. WAL and SHM travel with their own database, the old database is set aside as data/colloq.db.replaced-<stamp>, and the files from the archive go over workspace/ without a backup of their own. Relative paths count from the directory the command was called from.',
     async run(ctx) {
       const legacy = ctx.values.legacy === true
-      const archive = value(ctx, 'archive', 'ARCHIVE')
-      const release = value(ctx, 'release', 'RELEASE')
-      const db = value(ctx, 'db', 'DB')
-      const files = value(ctx, 'files', 'FILES')
-      const name = value(ctx, 'name', 'NAME')
-      const recover = on(ctx, 'recover', 'RECOVER')
-      // --yes снимает наш вопрос, и только его. REPLACE=1 — это разрешение
-      // положить копию поверх живой базы и поверх workspace/, и называют его
-      // отдельно: --replace или REPLACE=1.
-      const replace = on(ctx, 'replace', 'REPLACE')
+      const archive = flag(ctx, 'archive')
+      const release = flag(ctx, 'release')
+      const db = flag(ctx, 'db')
+      const files = flag(ctx, 'files')
+      const name = flag(ctx, 'name')
+      const recover = ctx.values.recover === true
+      // --yes снимает наш вопрос, и только его. Положить копию поверх живой
+      // базы и поверх workspace/ — отдельное разрешение, и называют его
+      // отдельно: --replace.
+      const replace = ctx.values.replace === true
       checkName(name)
 
       const missing = (path: string, what: string): number => {
@@ -964,7 +606,7 @@ export const commands: Command[] = [
           ['--release', release !== undefined],
           ['--recover', recover],
         ] as const
-        const used = wrong.filter(([, given]) => given).map(([flag]) => flag)
+        const used = wrong.filter(([, given]) => given).map(([option]) => option)
         if (used.length > 0) {
           throw new UsageError(
             'an old-format backup and a portable one are different worlds: drop ' +
@@ -988,17 +630,14 @@ export const commands: Command[] = [
         }
         // Второй вопрос подряд перестают читать: здесь спрашивает сам скрипт.
         head(ctx, 'restoring an old-format backup')
-        // Цель restore-legacy — `NAME=… ./scripts/restore.sh $(DB) $(FILES)`:
-        // пути идут аргументами, остальное окружением. Пустого аргумента быть
-        // не должно — скрипт разбирает их по расширению и на пустой строке
-        // умирает «не понимаю «»».
+        // Как у цели restore-legacy: пути — аргументами, имя среды и
+        // разрешение — окружением. Пустого аргумента быть не должно: скрипт
+        // разбирает их по расширению и на пустой строке умирает «не понимаю «»».
         return await copyCall(
           ctx,
-          'restore-legacy',
           './scripts/restore.sh',
-          { DB: dbPath, FILES: filesPath, NAME: name, REPLACE: replace ? '1' : undefined },
+          { NAME: name, REPLACE: replace ? '1' : undefined },
           filesPath === undefined ? [dbPath] : [dbPath, filesPath],
-          ['DB', 'FILES'],
         )
       }
 
@@ -1029,31 +668,16 @@ export const commands: Command[] = [
         }
       }
       head(ctx, 'restoring a portable backup')
-      // Цель restore собирает скрипту те же аргументы: --archive, --release и
-      // два ключа-переключателя. Именем среды она распоряжается иначе —
-      // отдаёт его переменной, как и все остальные.
-      const flags = [
+      // Как у цели restore: --archive, --release и два ключа-переключателя —
+      // аргументами, имя среды — переменной.
+      return await copyCall(ctx, './scripts/restore.sh', { NAME: name }, [
         '--archive',
         archivePath,
         '--release',
         releasePath,
         ...(replace ? ['--replace'] : []),
         ...(recover ? ['--recover'] : []),
-      ]
-      return await copyCall(
-        ctx,
-        'restore',
-        './scripts/restore.sh',
-        {
-          ARCHIVE: archivePath,
-          RELEASE: releasePath,
-          REPLACE: replace ? '1' : undefined,
-          RECOVER: recover ? '1' : undefined,
-          NAME: name,
-        },
-        flags,
-        ['ARCHIVE', 'RELEASE', 'REPLACE', 'RECOVER'],
-      )
+      ])
     },
   },
 ]

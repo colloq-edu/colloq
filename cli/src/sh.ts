@@ -1,6 +1,6 @@
 /**
- * Запуск подчинённых процессов. Больше CLI ничего не делает сам: цели
- * Makefile и scripts/*.sh знают своё дело, наша задача — не мешать.
+ * Запуск подчинённых процессов. Больше CLI ничего не делает сам:
+ * scripts/*.sh и супервизор занятия знают своё дело, наша задача — не мешать.
  *
  * Поток ребёнка идёт без изменений: stdio наследуется, ни перехвата, ни
  * перерисовки, ни фильтрации. Скрипты сами нумеруют шаги («5/7 ставлю
@@ -43,20 +43,10 @@ export type Sh = {
   run(cmd: string, args: string[], opts?: RunOptions): Promise<number>
   /** Запустить молча и забрать вывод: для status и doctor. Наружу не печатает ничего. */
   capture(cmd: string, args: string[], opts?: CaptureOptions): Promise<CaptureResult>
-  /** `make <цель> K=v …` — пустые пары отбрасываются, переменные командной строки добавляются. */
-  make(
-    target: string,
-    vars?: Record<string, string | undefined>,
-    opts?: RunOptions,
-  ): Promise<number>
-  /** `npm run <скрипт> -- …` из корня репозитория. */
-  npm(script: string, args?: string[], opts?: RunOptions): Promise<number>
-  /** Прямой вызов scripts/*.sh — для того, чего нет целью. */
+  /** Прямой вызов scripts/*.sh от корня приложения. */
   script(path: string, args?: string[], opts?: RunOptions): Promise<number>
   /** Native-команда под --dry-run: одна строка `native: …`, код 0. */
   dry(line: string): number
-  /** Переменные командной строки make, снятые из argv: они уходят каждому вызову make. */
-  readonly makeVars: Record<string, string>
   /** Идёт ли --dry-run. */
   readonly dryRun: boolean
 }
@@ -65,7 +55,6 @@ export type ShOptions = {
   root: string
   ui: Ui
   dryRun?: boolean
-  makeVars?: Record<string, string>
   runner?: Runner | null
 }
 
@@ -74,8 +63,7 @@ export type ShOptions = {
  * секунды на ответ, код 0 — отвечает.
  *
  * Подчинённым процессом, а не своим сокетом: node:* группам команд закрыт, а
- * sh.capture — та самая дверь, которую тест подменяет целиком. Живёт здесь,
- * потому что нужна двоим: `colloq relay ping` и `colloq doctor`.
+ * sh.capture — та самая дверь, которую тест подменяет целиком.
  */
 export const TCP_PROBE = [
   "const net = require('net')",
@@ -109,7 +97,7 @@ export function quote(value: string): string {
   return "'" + value.replace(/'/g, "'\\''") + "'"
 }
 
-/** Строка вызова так, как он выполнится: `VAR=v make host HOST=…`. */
+/** Строка вызова так, как он выполнится: `VAR=v ./scripts/host.sh`. */
 export function commandLine(cmd: string, args: string[], env?: Record<string, string>): string {
   const head = env
     ? Object.entries(env)
@@ -123,7 +111,6 @@ export function commandLine(cmd: string, args: string[], env?: Record<string, st
 export function createSh(opts: ShOptions): Sh {
   const { root, ui } = opts
   const dryRun = opts.dryRun ?? false
-  const makeVars = opts.makeVars ?? {}
   const runner: Runner | null = opts.runner ?? null
 
   const real: Runner = {
@@ -158,7 +145,7 @@ export function createSh(opts: ShOptions): Sh {
         child.on('error', () => done(127))
         // Сигнал — это 128 + номер, как в оболочке: 130 остаётся ровно за
         // SIGINT. Иначе снесённый по нехватке памяти ребёнок выглядел бы как
-        // отказ человека, и в state.json попадало бы «прервали вручную».
+        // отказ человека — «прервали вручную».
         child.on('close', (code, signal) => done(signal ? exitFromSignal(signal) : (code ?? 0)))
       })
     },
@@ -204,9 +191,6 @@ export function createSh(opts: ShOptions): Sh {
   }
 
   const sh: Sh = {
-    get makeVars() {
-      return makeVars
-    },
     get dryRun() {
       return dryRun
     },
@@ -225,22 +209,6 @@ export function createSh(opts: ShOptions): Sh {
       // capture наружу не печатает ничего и под --dry-run тоже: это чтение
       // состояния, а не действие.
       return await (runner ?? real).capture(cmd, args, captureOpts)
-    },
-    async make(target, vars = {}, runOpts = {}) {
-      const pairs: string[] = []
-      for (const [key, value] of Object.entries(vars)) {
-        if (value === undefined || value === '') continue
-        pairs.push(key + '=' + value)
-      }
-      // Переменные, снятые из командной строки, идут следом и главнее: make
-      // экспортирует их в рецепт — так работают MODE, RESUME, FORCE, REPLACE,
-      // SINCE, RELEASE.
-      for (const [key, value] of Object.entries(makeVars)) pairs.push(key + '=' + value)
-      return await sh.run('make', [target, ...pairs], runOpts)
-    },
-    async npm(script, args = [], runOpts = {}) {
-      const tail = args.length ? ['--', ...args] : []
-      return await sh.run('npm', ['run', script, ...tail], runOpts)
     },
     async script(path, args = [], runOpts = {}) {
       return await sh.run(path, args, runOpts)

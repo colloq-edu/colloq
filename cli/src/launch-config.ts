@@ -4,12 +4,20 @@ import { createHash, randomBytes } from 'node:crypto'
 import { isDistribution } from './launch-state.js'
 
 export interface LaunchOptions {
-  action: 'run' | 'dev' | 'stop' | 'restart'
+  /**
+   * cloudflared — не занятие, а служебное слово для scripts/host.sh: найти
+   * или скачать cloudflared и напечатать путь (launch-cloudflared.ts). Скрипт
+   * зовёт его, когда в PATH cloudflared нет, — так `colloq host` и `make host`
+   * тоже обходятся без ручной установки, а правило поиска остаётся одно.
+   */
+  action: 'run' | 'dev' | 'stop' | 'restart' | 'cloudflared'
   detach: boolean
   open: boolean
   fast: boolean
   build: boolean
   host?: string
+  /** Быстрый туннель Cloudflare с одной ссылкой для класса (launch-share.ts). */
+  share?: boolean
   port?: number
   child?: boolean
 }
@@ -23,7 +31,7 @@ export function parseLaunchArgs(args: string[]): LaunchOptions {
     build: false,
   }
   let at = 0
-  if (['run', 'dev', 'stop', 'restart'].includes(args[0]))
+  if (['run', 'dev', 'stop', 'restart', 'cloudflared'].includes(args[0]))
     options.action = args[at++] as LaunchOptions['action']
   for (; at < args.length; at++) {
     const flag = args[at]
@@ -32,6 +40,7 @@ export function parseLaunchArgs(args: string[]): LaunchOptions {
     else if (flag === '--fast') options.fast = true
     else if (flag === '--build') options.build = true
     else if (flag === '--child') options.child = true
+    else if (flag === '--share') options.share = true
     else if (flag === '--port') {
       const value = args[++at]
       if (!value || !/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 65535)
@@ -46,6 +55,13 @@ export function parseLaunchArgs(args: string[]): LaunchOptions {
   }
   if (options.action === 'dev' && options.detach)
     throw new Error('dev runs in the terminal; use run --detach for the background.')
+  // Два способа выйти наружу сразу — это два туннеля на одну расписку адреса,
+  // и второй получил бы отказ «адрес уже занят» посреди запуска. Отказ здесь
+  // дешевле: ничего ещё не поднято.
+  if (options.share && options.host)
+    throw new Error(
+      '--share and --host do not work together: --share is a quick Cloudflare link, --host is your own name.',
+    )
   return options
 }
 
@@ -107,10 +123,25 @@ export function launchConfig(
    * Смотрим на действующее окружение (файл плюс переменные оболочки) — то же,
    * что увидит сервер. Если на машине настоящая установка с брокером, run
    * по-прежнему отказывает: занятие на ноутбуке и прод — разные вещи.
+   *
+   * Та же ошибка жила и в Makefile: цель `.env` копировала шаблон, и после
+   * `make up` отказывал `make dev`. Цель теперь пишет этот же файл
+   * (scripts/local-env.sh), но клоны, где копия уже лежит, остались — с 09.09
+   * broker стоит в шаблоне. Для них отказ говорит, какую строку поменять:
+   * прежнее «это установка с брокером, идите в cluster» разработчику с
+   * ноутбуком было неправдой и тупиком. COLLOQ_CLUSTER=1 такой подсказки не
+   * получает — его пишет только развёртывание (scripts/vast.sh), случайной
+   * копией он не бывает.
    */
-  if (source.COLLOQ_CLUSTER === '1' || source.KERNEL_BACKEND === 'broker')
+  if (source.COLLOQ_CLUSTER === '1')
     throw new Error(
       'This is a runtime broker installation: use the service or cluster commands for it. run is meant for local Docker.',
+    )
+  if (source.KERNEL_BACKEND === 'broker')
+    throw new Error(
+      'KERNEL_BACKEND=broker is the production setting from .env.example, and a local class runs its kernels in Docker. ' +
+        `Set KERNEL_BACKEND=docker in ${path.join(home, '.env')} (or move that file aside: colloq then writes one for this machine). ` +
+        'A real runtime broker installation is run with the service or cluster commands.',
     )
   const env = Object.fromEntries(
     Object.entries(source).filter((pair): pair is [string, string] => typeof pair[1] === 'string'),
@@ -190,7 +221,9 @@ BIND_ADDR=127.0.0.1
 UI_LANGUAGE=${dist ? 'en' : 'ru'}
 
 # The kernels of a class are Docker containers on this computer, one per room.
-# This is a local class: the perimeter is your computer and what you trust.
+# Each room container is hardened: no privileges, a process limit, the internet
+# yes, your local network and this computer no. COLLOQ_ROOM_NETWORK=open lifts
+# the network block for a machine you fully trust.
 KERNEL_BACKEND=docker
 KERNEL_ENV=base
 # Memory and processors of one room. 4g is enough for an ordinary class; for a

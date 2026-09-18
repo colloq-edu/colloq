@@ -1,6 +1,6 @@
 /**
- * Откуда CLI знает, где он и что вокруг: корень репозитория, .env, пути,
- * состояние последнего вызова.
+ * Откуда CLI знает, где он и что вокруг: каталог приложения, каталог
+ * состояния, .env, пути.
  *
  * Чтение .env — построчная копия read_env() из scripts/lib.sh, включая то,
  * ради чего она там появилась: обрезаются только края, кавычки снимаются
@@ -25,9 +25,8 @@ import { appDir, homeDir, isDistribution, SESSION_FILE } from './launch-state.js
 export { appDir, homeDir, isDistribution }
 
 /**
- * Имя среды: дословно то же сито, что в scripts/vast.sh, scripts/backup.sh и
- * scripts/restore.sh — буквы, цифры и дефис в середине. Правило одно на всех:
- * имя среды это и метка на vast, и подкаталог backups/, и поддомен.
+ * Имя среды: дословно то же сито, что в scripts/backup.sh и scripts/restore.sh
+ * — буквы, цифры и дефис в середине. Имя среды — это подкаталог backups/.
  */
 export function envNameOk(name: string): boolean {
   return /^[A-Za-z0-9-]+$/.test(name) && !name.startsWith('-') && !name.endsWith('-')
@@ -65,35 +64,11 @@ export type Io = {
   writeText(path: string, text: string, mode?: number): void
 }
 
-/** Последний вызов: чем занимались, где и чем кончилось. Ничего секретного. */
-export type State = {
-  /** Имя занятия или машины. */
-  name?: string
-  /** Карта арендованной машины. */
-  gpu?: string
-  /** Путь, который передавали аргументом (release.json, архив, база). */
-  path?: string
-  /** Жива ли среда: false — машину уничтожили, помним только имя. */
-  alive?: boolean
-  /**
-   * Что звали в прошлый раз. Отдельным полем, а не рядом с name: каркас пишет
-   * его после КАЖДОЙ команды, и `colloq ps` затирал бы память об аренде.
-   */
-  last?: {
-    /** Последняя выполненная команда. */
-    command?: string
-    /** Её код выхода. */
-    code?: number
-    /** Когда это было, в миллисекундах. */
-    at?: number
-  }
-}
-
 export type Relay = { domain: string; addr: string; port: number }
 
 export type EnvPaths = {
   /**
-   * Каталог приложения: web/dist, server/dist, kernel/, Makefile, node_modules.
+   * Каталог приложения: web/dist, server/dist, kernel/, scripts/, node_modules.
    *
    * Не «корень репозитория», как было сказано здесь до разделения корней: у
    * установленного colloq репозитория нет вовсе, а этот каталог есть — он
@@ -109,7 +84,6 @@ export type EnvPaths = {
    */
   home: string
   envFile: string
-  makefile: string
   /**
    * Кто сейчас ведёт занятие: pid супервизора, а НЕ сервера.
    *
@@ -137,10 +111,6 @@ export type EnvPaths = {
   backupsDir: string
   /** Собранная панель. */
   dist: string
-  serviceUnit: string
-  /** Состояние k3s на выделенной машине. */
-  clusterState: string
-  stateFile: string
 }
 
 export type Env = {
@@ -173,10 +143,6 @@ export type Env = {
   home(): string
   paths: EnvPaths
   io: Io
-  /** .colloq/state.json целиком; нет файла или он битый — пустое состояние. */
-  readState(): State
-  /** Дописать поля в .colloq/state.json. */
-  writeState(patch: Partial<State>): State
 }
 
 export type EnvOptions = {
@@ -187,7 +153,7 @@ export type EnvOptions = {
   home?: string
   /** Каталог, откуда позвали (шим кладёт его в COLLOQ_CWD). */
   cwd?: string
-  /** Переменные окружения процесса — для COLLOQ_STATE_DIR. */
+  /** Переменные окружения процесса — для COLLOQ_CWD. */
   processEnv?: NodeJS.ProcessEnv
 }
 
@@ -300,9 +266,7 @@ export function createEnv(opts: EnvOptions = {}): Env {
   /*
    * Умолчания корней — те же два ответа, что у запуска (launch-state.ts), и
    * это важнее, чем кажется: иначе `colloq run` писал бы журнал в одно место,
-   * а `colloq logs` читал его в другом. У пакета такое расхождение неизбежно —
-   * бандл лежит в cli/, а не в cli/src/, и findRoot по приметам репозитория
-   * там не находит ничего.
+   * а `colloq logs` читал его в другом.
    *
    * home берёт корень, когда его назвали явно: так живут тесты и всё, что
    * прикалывает CLI к своему дереву, — для них ничего не меняется.
@@ -317,7 +281,6 @@ export function createEnv(opts: EnvOptions = {}): Env {
     root,
     home,
     envFile: statePath('.env'),
-    makefile: path('Makefile'),
     pidFile: statePath('.colloq.pid'),
     logFile: statePath('.colloq.log'),
     envDir: path('kernel/environments'),
@@ -337,7 +300,7 @@ export function createEnv(opts: EnvOptions = {}): Env {
      * В репозитории (и в любом рабочем дереве, где home и есть корень
      * приложения) второй каталог — это ПЕРВЫЙ, тот же самый путь. Так и
      * задумано: там kernel/environments и пишется, и читается, и попадает в
-     * контекст `docker build`, и её же видят make env-list, launch-config.ts ·
+     * контекст `docker build`, и её же видят Makefile, launch-config.ts ·
      * kernelInputs и панель преподавателя. Новый каталог рядом увёл бы файл
      * из-под всех троих, и `colloq env new` в клоне заводил бы окружение,
      * которого не видит сборка.
@@ -346,9 +309,6 @@ export function createEnv(opts: EnvOptions = {}): Env {
     sessionFile: statePath(SESSION_FILE),
     backupsDir: statePath('backups'),
     dist: path('web/dist'),
-    serviceUnit: '/etc/systemd/system/colloq.service',
-    clusterState: processEnv.COLLOQ_STATE_DIR ?? '/var/lib/colloq',
-    stateFile: statePath('.colloq/state.json'),
   }
 
   const readRaw = (key: string): string => {
@@ -387,48 +347,6 @@ export function createEnv(opts: EnvOptions = {}): Env {
     },
     paths,
     io,
-    readState() {
-      const text = io.readText(paths.stateFile)
-      if (text === null) return {}
-      try {
-        const parsed = JSON.parse(text) as unknown
-        return parsed && typeof parsed === 'object' ? (parsed as State) : {}
-      } catch {
-        return {}
-      }
-    },
-    writeState(patch) {
-      const next: State = { ...env.readState(), ...patch }
-      try {
-        io.writeText(paths.stateFile, JSON.stringify(next, null, 2) + '\n')
-      } catch {
-        // Состояние — удобство, а не условие работы: не записалось — и ладно.
-      }
-      return next
-    },
   }
   return env
-}
-
-/** Вверх по каталогам до Makefile рядом с package.json, где name — colloq. */
-export function findRoot(io: Io, start?: string): string {
-  const here = start ?? moduleDir()
-  let dir = here
-  for (let i = 0; i < 12; i++) {
-    const pkg = io.readText(joinPath(dir, 'package.json'))
-    if (pkg !== null && io.exists(joinPath(dir, 'Makefile')) && /"name"\s*:\s*"colloq"/.test(pkg)) {
-      return dir
-    }
-    const up = dir.slice(0, dir.lastIndexOf(SEP))
-    if (!up || up === dir) break
-    dir = up
-  }
-  return here
-}
-
-/** Каталог этого файла. */
-function moduleDir(): string {
-  const url = import.meta.url
-  const file = url.startsWith('file://') ? decodeURIComponent(url.slice(7)) : url
-  return file.slice(0, file.lastIndexOf(SEP))
 }
