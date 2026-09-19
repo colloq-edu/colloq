@@ -76,7 +76,17 @@
   )
 </script>
 
-<div class={cn('overflow-x-auto whitespace-pre font-mono text-code text-ink', className)}>
+<!--
+  Единственное, что здесь ездит вбок, — сам блок, и только он. `max-w-full`,
+  чтобы строка на четыреста знаков не растянула коробку хода; `overscroll-x-contain`,
+  чтобы жест, доехавший до конца строки, не продолжился лентой панели.
+-->
+<div
+  class={cn(
+    'max-w-full overflow-x-auto overscroll-x-contain whitespace-pre font-mono text-code text-ink',
+    className,
+  )}
+>
   {#each lines as line, index (index)}<span class="block min-h-[19px]"><CodeLine tokens={line} /></span
     >{/each}
 </div>

@@ -731,6 +731,24 @@
 
 .prose-note {
   @apply text-prose text-ink;
+  /*
+   * Проза не прокручивается вбок — ни в ячейке, ни в ленте оракула.
+   *
+   * Оракул отвечает кодом внутри предложения: `data['GarageYrBlt'] =
+   * data['GarageYrBlt'].fillna(data['GarageYrBlt'].median())` — это ОДНО слово
+   * для переносчика строк, потому что пробелов в нём нет. При `overflow-wrap:
+   * normal` такое слово не разрывается нигде и вылезает за край колонки: в
+   * панели шириной 380 px оно торчало на 78 px, а окно прокрутки ленты
+   * (`overflow-y: auto`, то есть `overflow-x: auto` по спецификации) честно
+   * предлагало эти 78 px пролистать — лента ездила влево-вправо на каждом
+   * касании трекпада.
+   *
+   * `anywhere`, а не `break-word`: только он входит в расчёт минимальной
+   * ширины содержимого, то есть длинная строка не распирает ни колонку, ни
+   * flex-предка, а не просто переносится в уже растянутом блоке. Горизонтально
+   * ездят ровно две вещи, и обе внутри себя: блок кода и широкая таблица.
+   */
+  overflow-wrap: anywhere;
 }
 
 /*
@@ -813,7 +831,7 @@
   @apply bg-raised px-1 font-mono text-micro text-muted;
 }
 .prose-trace pre {
-  @apply overflow-x-auto bg-raised px-2 py-1.5;
+  @apply max-w-full overflow-x-auto overscroll-x-contain bg-raised px-2 py-1.5;
 }
 .prose-trace ul {
   @apply list-disc pl-4;
@@ -848,15 +866,39 @@
 }
 .prose-note code {
   @apply bg-raised px-1 py-0.5 font-mono text-code text-ink;
+  /*
+   * Перенос у инлайнового кода приходит сверху, от .prose-note. Здесь —
+   * только то, что без этого разваливается: подложка и отбивки рисуются на
+   * КАЖДОМ куске перенесённого инлайна, а не одной коробкой на всю строку.
+   * Иначе `fillna(...)`, разрезанный на две строки, получал бы фон с одним
+   * левым полем наверху и одним правым внизу.
+   */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .prose-note pre {
-  @apply overflow-x-auto border-l-2 border-line bg-surface px-3 py-2.5;
+  @apply max-w-full overflow-x-auto overscroll-x-contain border-l-2 border-line bg-surface px-3 py-2.5;
 }
 .prose-note pre code {
   @apply bg-transparent p-0 text-code;
 }
+/*
+ * Обёртка широкой таблицы: её ставит рендерер (lib/render.svelte.ts), потому
+ * что markdown таблицу ничем не оборачивает, а прокручиваться она обязана
+ * внутри себя. `overscroll-behavior-x: contain` — чтобы, доехав до края
+ * таблицы, жест не продолжился лентой и страницей.
+ */
+.prose-note .table-scroll {
+  @apply max-w-full overflow-x-auto overscroll-x-contain;
+}
 .prose-note table {
   @apply w-full border-collapse text-ui;
+  /*
+   * В ячейке таблицы «где угодно» переносить нельзя: двенадцать колонок с
+   * `anywhere` сжались бы в двенадцать столбиков по букве. Широкая таблица
+   * едет в обёртке выше — это и есть её способ поместиться.
+   */
+  overflow-wrap: break-word;
 }
 .prose-note th,
 .prose-note td {
@@ -909,9 +951,25 @@
 .prose-note .katex,
 .prose-note .katex [style] {
   max-width: none;
+  /*
+   * И перенос «где угодно» формулу обязан пропустить тоже: KaTeX сам решает,
+   * где строку рвать можно (после знака операции), а «где угодно» разорвало бы
+   * её посреди подкоренного выражения. Выключная формула вместо этого едет
+   * внутри себя — правило ниже.
+   */
+  overflow-wrap: normal;
 }
 .prose-note .katex [style*='background'] {
   color: inherit;
+}
+/*
+ * Выключная формула — та же широкая коробка, что и блок кода: `\begin{align}`
+ * на полстраницы шире колонки оракула, а разорвать её негде. Едет внутри
+ * себя; `.katex` внутри остаётся без `max-width` (правило выше), иначе дробь
+ * сложилась бы в кашу.
+ */
+.prose-note .katex-display {
+  @apply max-w-full overflow-x-auto overscroll-x-contain;
 }
 .prose-note::after {
   content: '';

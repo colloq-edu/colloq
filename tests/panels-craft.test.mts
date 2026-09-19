@@ -31,6 +31,11 @@ const FILES = 'web/src/components/panels/FilesPanel.svelte'
 const AI = 'web/src/components/panels/AiPanel.svelte'
 const BAN = 'web/src/components/panels/BanMenu.svelte'
 const RULES = 'web/src/components/RoomRulesRows.svelte'
+const ANSWER = 'web/src/components/panels/AnswerBody.svelte'
+const TURN = 'web/src/components/panels/ChatTurn.svelte'
+const CODE = 'web/src/components/ui/Code.svelte'
+const CSS = 'web/src/index.css'
+const RENDER = 'web/src/lib/render.svelte.ts'
 
 /* ------------------------------------------------------------- гарнитуры */
 
@@ -112,6 +117,79 @@ test('история не рвёт нажатие под reduced-motion', () => 
   // Прежний блок снимал transform из списка переходов и оставлял сам
   // scale(0.97): щелчок туда и обратно без перехода — рывок вместо движения.
   assert.doesNotMatch(hist, /prefers-reduced-motion/, 'своего блока у истории нет')
+})
+
+/* ------------------------------------------------- лента оракула и ширина */
+
+/**
+ * Правило одно: лента оракула вбок не ездит.
+ *
+ * Оракул отвечает кодом внутри предложения, и `data['GarageYrBlt'] =
+ * data['GarageYrBlt'].fillna(data['GarageYrBlt'].median())` — одно слово для
+ * переносчика строк. При `overflow-wrap: normal` оно вылезало за край колонки
+ * на 78 px, а окно прокрутки ленты предлагало эти 78 px пролистать: панель
+ * качалась влево-вправо на каждом касании трекпада. Горизонтально едут ровно
+ * две вещи, и обе внутри себя, — блок кода и широкая таблица.
+ */
+test('проза переносит длинное слово, а не растягивает колонку', () => {
+  const css = code(read(CSS))
+  const prose = css.slice(css.indexOf('.prose-note {'), css.indexOf('.prose-answer {'))
+  assert.match(prose, /overflow-wrap:\s*anywhere/, 'у .prose-note перенос «где угодно»')
+
+  // `anywhere`, а не `break-word`: только он входит в расчёт минимальной
+  // ширины содержимого, то есть строка не распирает ни колонку, ни flex-предка.
+  const inline = css.slice(css.indexOf('.prose-note code {'))
+  assert.match(
+    inline.slice(0, inline.indexOf('}')),
+    /box-decoration-break:\s*clone/,
+    'фон инлайнового кода не разваливается на переносе',
+  )
+
+  // Вопрос человека — там же: строка пути или адреса без единого пробела.
+  assert.match(code(read(TURN)), /\[overflow-wrap:anywhere\]/, 'вопрос переносится «где угодно»')
+})
+
+test('вбок едут только блок кода и таблица — каждый внутри себя', () => {
+  const css = code(read(CSS))
+  for (const rule of ['.prose-note pre {', '.prose-note .table-scroll {']) {
+    const block = css.slice(css.indexOf(rule)).slice(0, 200)
+    assert.match(block, /overflow-x-auto/, `${rule} прокручивается сам`)
+    assert.match(block, /max-w-full/, `${rule} не шире колонки`)
+    // Иначе жест, доехавший до конца строки, продолжается лентой и страницей.
+    assert.match(block, /overscroll-x-contain/, `${rule} не раскачивает ленту`)
+  }
+  // Обёртку таблице markdown не даёт — её ставит рендерер, после санитайзера.
+  assert.match(code(read(RENDER)), /className = 'table-scroll'/, 'таблица едет в обёртке')
+
+  const block = code(read(CODE))
+  assert.match(
+    block,
+    /max-w-full overflow-x-auto overscroll-x-contain whitespace-pre/,
+    'блок кода в ответе прокручивается сам и не шире хода',
+  )
+})
+
+test('у ленты оракула нет горизонтальной прокрутки', () => {
+  const ai = code(read(AI))
+  // `overflow-y: auto` в одиночку означает `overflow-x: auto` — так написано в
+  // спецификации, и именно так лента получала прокрутку вбок от любого слова,
+  // вылезшего за край. Страховка поверх лечения, а не вместо него.
+  assert.match(
+    ai,
+    /bind:this=\{scroller\}[\s\S]{0,120}overflow-y-auto overflow-x-hidden/,
+    'окно прокрутки ленты закрыто по горизонтали',
+  )
+  // И то же самое у двух коробок со своей вертикальной прокруткой внутри хода.
+  const turn = code(read(TURN))
+  assert.doesNotMatch(
+    turn,
+    /overflow-y-auto(?! overflow-x-hidden)/,
+    'у каждой прокручиваемой коробки хода закрыта горизонталь',
+  )
+
+  // Обёртка ответа — flex-колонка: без min-width: 0 её минимум равен ширине
+  // содержимого, и один широкий блок растянул бы весь ход вместе с лентой.
+  assert.match(code(read(ANSWER)), /cn\('flex min-w-0 flex-col gap-2\.5'/, 'ответ не распирается')
 })
 
 /* ---------------------------------------------------------------- жесты */

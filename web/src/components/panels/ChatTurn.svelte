@@ -523,7 +523,13 @@
       answer open prose on the panel itself.
     -->
     {#if entry.question.trim()}
-      <p class="whitespace-pre-wrap break-words bg-raised px-2.5 py-2 text-ui font-semibold text-ink">
+      <!-- `anywhere`, а не `break-words`: вопрос бывает одной строкой пути или
+           адреса без единого пробела, и только он входит в расчёт минимальной
+           ширины — то есть не распирает ход, а переносится. -->
+      <p
+        class="whitespace-pre-wrap bg-raised px-2.5 py-2 text-ui font-semibold text-ink
+               [overflow-wrap:anywhere]"
+      >
         {entry.question}
       </p>
     {/if}
@@ -575,7 +581,7 @@
             height it pushed the answer — the thing that was actually asked for
             — off the bottom of a 380px panel.
           -->
-          <div class="max-h-44 overflow-y-auto border-l border-line pl-2.5">
+          <div class="max-h-44 overflow-y-auto overflow-x-hidden border-l border-line pl-2.5">
             <Markdown class="prose-trace" source={trace} />
           </div>
         {/if}
@@ -643,8 +649,8 @@
             -->
             {#if step.kind === 'run' && step.note}
               <p
-                class="max-h-16 overflow-y-auto whitespace-pre-wrap break-words px-2.5 pb-1.5
-                       text-2xs leading-snug text-muted"
+                class="max-h-16 overflow-y-auto overflow-x-hidden whitespace-pre-wrap px-2.5 pb-1.5
+                       text-2xs leading-snug text-muted [overflow-wrap:anywhere]"
               >{step.note}</p>
             {/if}
           </div>
@@ -679,7 +685,7 @@
       <div class="flex flex-col items-start gap-2 border-l-2 border-danger bg-danger/[0.06] px-2.5 py-2">
         <!-- Verbatim: a limit and the minutes until the next question are known
              only to the server, and a paraphrase leaves the student guessing. -->
-        <p class="break-words text-code text-danger">
+        <p class="text-code text-danger [overflow-wrap:anywhere]">
           {entry.answer || tr('room.ui.551')}
         </p>
         <!-- Повтор хода «сделать» — это тот же ход: там, где его нельзя
@@ -788,7 +794,7 @@
           against the scroll box instead, a line long enough to scroll left its
           neighbours' red and green tints behind at the old edge.
         -->
-        <div class="overflow-x-auto py-0">
+        <div class="max-w-full overflow-x-auto overscroll-x-contain py-0">
           <div class="w-max min-w-full">
             {#each patchLines as line, index (index)}<span
               class={cn(

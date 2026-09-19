@@ -193,6 +193,25 @@ async function importRenderers(): Promise<Renderers> {
           strict: 'ignore',
         })
       }
+      /*
+       * Широкая таблица едет внутри своей обёртки, а не распирает колонку.
+       *
+       * Двенадцать колонок не помещаются ни в ячейку тетради, ни тем более в
+       * панель оракула на 380 px, а переносить в них текст «где угодно» —
+       * значит получить двенадцать столбиков по букве. Обёртка с
+       * `overflow-x: auto` (.table-scroll в index.css) — единственное место,
+       * где такой прокрутке место: сама лента вбок не ездит.
+       *
+       * Здесь, а не в правиле CSS у `table`, потому что markdown обёртки не
+       * даёт, а `display: block` на самой таблице ломает её же раскладку. И
+       * после санитайзера: узел строится нами, а не приезжает из чужого текста.
+       */
+      for (const table of holder.querySelectorAll('table')) {
+        const box = document.createElement('div')
+        box.className = 'table-scroll'
+        table.replaceWith(box)
+        box.appendChild(table)
+      }
       // A note is written by a classmate; a link in it must not be able to
       // navigate the seminar tab away from the seminar.
       for (const anchor of holder.querySelectorAll('a[href]')) {

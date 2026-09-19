@@ -192,7 +192,12 @@
     'focus-visible:ring-accent/40'
 </script>
 
-<div class={cn('flex flex-col gap-2.5', className)}>
+<!--
+  `min-w-0` на колонке ответа и на коробке блока: без него flex-ребёнок берёт
+  за минимум ширину своего содержимого, и один длинный блок кода растягивал бы
+  весь ход, а с ним и ленту — вместо того чтобы ехать внутри себя.
+-->
+<div class={cn('flex min-w-0 flex-col gap-2.5', className)}>
   {#each parts as part, index (index)}
     {#if part.kind === 'prose'}
       <Markdown
@@ -200,9 +205,18 @@
         source={streaming && index === parts.length - 1 ? part.text + CARET : part.text}
       />
     {:else}
-      <div class="flex flex-col items-stretch border border-line bg-canvas">
+      <div class="flex min-w-0 flex-col items-stretch border border-line bg-canvas">
+        <!--
+          Полоска переносится, а не вылезает вбок. На телефоне панель — 92vw, и
+          на 320-пиксельном экране это 294 px: «Скопировать» и «В ячейку» рядом
+          с названием языка туда не помещаются, а `shrink-0` у них стоит не зря
+          — ужатая до многоточия кнопка не называет, что она делает. Поэтому
+          перенос по строкам и `min-h-7` вместо `h-7`: вторая строка кнопок
+          должна быть видна, а не обрезана по высоте.
+        -->
         <div
-          class="flex h-7 shrink-0 items-center gap-1.5 border-b border-line bg-surface pl-2 pr-1.5"
+          class="flex min-h-7 shrink-0 flex-wrap items-center gap-1.5 border-b border-line
+                 bg-surface py-0.5 pl-2 pr-1.5"
         >
           <span class="shrink-0 font-mono text-micro text-faint">{part.lang || 'code'}</span>
           <div class="flex-1"></div>

@@ -783,7 +783,19 @@
   </div>
 
   <div class="relative flex min-h-0 flex-1 flex-col">
-    <div bind:this={scroller} onscroll={onScroll} class="min-h-0 flex-1 overflow-y-auto">
+    <!--
+      Вбок лента не ездит НИКОГДА: `overflow-x: hidden` — страховка поверх
+      лечения. Одного `overflow-y-auto` мало и в обратную сторону вредно: по
+      спецификации сосед `visible` при этом сам становится `auto`, то есть
+      панель получала горизонтальную прокрутку от любого слова, вылезшего за
+      край. Причина убрана у прозы (index.css · .prose-note), а это — про то,
+      что следующее такое слово ленту не раскачает.
+    -->
+    <div
+      bind:this={scroller}
+      onscroll={onScroll}
+      class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+    >
       <!-- Обёртка нужна наблюдателю размера: он смотрит за высотой СОДЕРЖИМОГО,
            а у самого окна прокрутки она не меняется, сколько бы туда ни дописали. -->
       <div bind:this={thread}>
@@ -875,7 +887,7 @@
       <div
         class="flex items-start gap-2 border-l-2 border-danger bg-danger/[0.05] px-3 py-2 text-2xs text-danger"
       >
-        <span class="min-w-0 flex-1 break-words">{sendError}</span>
+        <span class="min-w-0 flex-1 [overflow-wrap:anywhere]">{sendError}</span>
         <button
           type="button"
           class="shrink-0 p-0.5 transition-colors duration-100 hover:bg-danger/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
