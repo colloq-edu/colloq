@@ -1062,6 +1062,26 @@ export class JupyterKernel {
         void this.awaitComeback()
         return
       }
+      /*
+       * Занятость от подсказки — не занятость комнаты.
+       *
+       * ipykernel публикует `busy` и `idle` вокруг ЛЮБОГО запроса по shell, не
+       * только вокруг выполнения: у `complete_request` и `inspect_request` они
+       * такие же, и в `parent_header` стоит их тип. Пока их принимали за фазу,
+       * индикатор ядра моргал у всей комнаты на каждую латинскую букву любого
+       * студента — редактор спрашивает дополнение по мере набора (19.09.2026;
+       * по-русски не моргало: кириллица — не идентификатор, и запрос не
+       * уходит). Shell у ядра один и последовательный, так что подсказка не
+       * может ни начаться, ни кончиться посреди чужой ячейки: пропуская её
+       * статусы, фазу выполнения мы не теряем. Единственное, что от неё
+       * берём, — первый `idle` только что поднятого ядра: он честно говорит,
+       * что ядро отвечает.
+       */
+      const parentType = msg.parent_header?.msg_type
+      if (parentType === 'complete_request' || parentType === 'inspect_request') {
+        if (state === 'idle' && this._phase === 'starting') this.setPhase('idle')
+        return
+      }
       if (state === 'busy' || state === 'idle' || state === 'starting') this.setPhase(state)
       if (pending && state === 'idle') {
         pending.idle = true

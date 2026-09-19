@@ -197,11 +197,15 @@ before(async () => {
           content: { code: string; store_history: boolean; silent: boolean }
         }
         /*
-         * Дополнение и справка: тот же сокет, тот же shell, но ни вывода, ни
-         * закрывающего idle — ровно один ответ, как у настоящего ipykernel.
+         * Дополнение и справка: тот же сокет, тот же shell, вывода нет — но
+         * `busy` и `idle` вокруг ответа есть, как у настоящего ipykernel: он
+         * публикует статус вокруг ЛЮБОГО запроса по shell. Подделка раньше их
+         * не слала, и поэтому не видела, как индикатор ядра моргает у всей
+         * комнаты на каждую букву дополнения.
          */
         if (msg.header.msg_type === 'complete_request') {
           if (swallowShell) return
+          reply(ws, msg.header, 'status', { execution_state: 'busy' })
           reply(ws, msg.header, 'complete_reply', {
             status: 'ok',
             matches: ['df.head', 'df.describe'],
@@ -213,16 +217,19 @@ before(async () => {
               _jupyter_types_experimental: [{ type: 'function' }, { type: 'function' }],
             },
           })
+          reply(ws, msg.header, 'status', { execution_state: 'idle' })
           return
         }
         if (msg.header.msg_type === 'inspect_request') {
           if (swallowShell) return
+          reply(ws, msg.header, 'status', { execution_state: 'busy' })
           reply(ws, msg.header, 'inspect_reply', {
             status: 'ok',
             found: true,
             // С раскраской: IPython красит справку, о которой никто не просил.
             data: { 'text/plain': '\u001b[0;31mSignature:\u001b[0m df.head(n=5)' },
           })
+          reply(ws, msg.header, 'status', { execution_state: 'idle' })
           return
         }
         if (msg.header.msg_type !== 'execute_request') return
@@ -1952,6 +1959,28 @@ test('ядро отвечает на complete и inspect отдельным пу
     assert.equal(help.found, true)
     // Раскраска снята: в подсказке над кареткой ANSI читается как мусор.
     assert.equal(help.text, 'Signature: df.head(n=5)')
+  } finally {
+    await kernel.dispose()
+  }
+})
+
+test('подсказка не делает ядро занятым: её busy/idle — не фаза комнаты', async () => {
+  const { JupyterKernel, defaultEndpoint } = await import('../server/src/kernel/jupyter.js')
+  const kernel = await JupyterKernel.connect('complete-quiet', defaultEndpoint())
+  try {
+    // Сначала обычная ячейка: после неё фаза — честный idle.
+    await kernel.execute('1 + 1', {
+      onExecuteInput: () => {}, onStream: () => {}, onData: () => {}, onError: () => {}, onClear: () => {},
+    })
+    assert.equal(kernel.phase, 'idle')
+    const seen: string[] = []
+    kernel.onPhaseChange((phase) => seen.push(phase))
+    await kernel.complete('df.', 3)
+    await kernel.inspect('df.head', 7)
+    // Статусы подделка шлёт сразу за ответом; даём им доехать.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.deepEqual(seen, [], `индикатор моргнул на подсказке: ${seen.join(' → ')}`)
+    assert.equal(kernel.phase, 'idle')
   } finally {
     await kernel.dispose()
   }
