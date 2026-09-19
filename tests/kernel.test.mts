@@ -72,7 +72,9 @@ function councilExpressions(asked: boolean, code = ''): Record<string, unknown> 
    * модулем в первой же строке. Иначе разбор справки читал бы отчёт
    * консилиума и всегда отвечал «не нашлось».
    */
-  const text = code.includes('.facts(globals()')
+  const text = code.includes('.brief(globals()')
+    ? JSON.stringify({ found: true, brief: { type: 'DataFrame', dims: '1460 × 81' } })
+    : code.includes('.facts(globals()')
     ? JSON.stringify({
         found: true,
         text: 'Module: seaborn\nType: module\nPackage: seaborn 0.13.2\nSummary: Statistical data visualization\nDocs: http://seaborn.pydata.org',
@@ -2197,6 +2199,69 @@ test('без права запускать справка ядро не подн
   await inspectIn(room.id, 'df.head', 7, CELLS_KEY, { mayWake: false })
   await wait(300)
   assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'off', 'ядро подняли без права')
+})
+
+test('строка про значение не будит ядро и молчит, когда его нет', async () => {
+  const { briefIn } = await import('../server/src/kernel/index.js')
+  const { bookKernel, CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  /*
+   * Про переменную либо есть мгновенный ответ, либо тишина. Поднимать ради
+   * неё ядро бессмысленно: до первого запуска переменной не существует, и
+   * свежее ядро ответило бы то же самое — ничего.
+   */
+  assert.equal(await briefIn(room.id, 'apartments', CELLS_KEY), null)
+  await wait(300)
+  assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'off', 'строка про значение подняла ядро')
+})
+
+test('строка про значение идёт тихо и не двигает индикатор ядра', async () => {
+  const { briefIn, ensureKernel } = await import('../server/src/kernel/index.js')
+  const { CELLS_KEY, getMeta } = await import('../shared/notebook.js')
+  const room = await seminar()
+  await ensureKernel(room.id, CELLS_KEY)
+  assert.ok(await until(() => room.status() === 'idle'))
+
+  const before = requests.length
+  const meta = getMeta(room.doc)
+  const seen: string[] = []
+  const watch = () => seen.push(String(meta.get('kernelStatus')))
+  meta.observe(watch)
+  try {
+    const said = await briefIn(room.id, 'apartments', CELLS_KEY)
+    assert.deepEqual(said, { type: 'DataFrame', dims: '1460 × 81' })
+    await wait(80)
+    assert.deepEqual(seen, [], `индикатор моргнул на строке про значение: ${seen.join(' → ')}`)
+  } finally {
+    meta.unobserve(watch)
+  }
+  const service = requests.slice(before)
+  assert.equal(service.length, 1, 'вопрос про значение ушёл не одним запросом')
+  assert.equal(service[0].silent, true)
+  assert.equal(service[0].store_history, false)
+  assert.match(service[0].code, /\.brief\(globals\(\)/)
+})
+
+test('занятому ядру про значение не задают вопроса вовсе', async () => {
+  const { briefIn, ensureKernel, requestRun } = await import('../server/src/kernel/index.js')
+  const { CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  await ensureKernel(room.id, CELLS_KEY)
+  assert.ok(await until(() => room.status() === 'idle'))
+  room.type('HOLD long')
+  requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
+  assert.ok(await until(() => room.state() === 'running'))
+  try {
+    const before = requests.length
+    const started = Date.now()
+    assert.equal(await briefIn(room.id, 'apartments', CELLS_KEY), null)
+    // Ни кадра, ни ожидания: ответа не будет, и ждать его незачем.
+    assert.equal(requests.length, before, 'занятому ядру всё же задали вопрос')
+    assert.ok(Date.now() - started < 200, 'ждали занятое ядро')
+  } finally {
+    assert.equal(finishHeld(/HOLD/), 1)
+    assert.ok(await until(() => room.state() === 'ok'))
+  }
 })
 
 test('ответ живого ядра про модуль дополняется именем пакета и ссылкой', async () => {

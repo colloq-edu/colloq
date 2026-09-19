@@ -99,10 +99,12 @@ import {
   type KernelPhase,
 } from './jupyter.js'
 import {
+  inspectBriefSource,
   inspectFactsSource,
   inspectStaticSource,
   looksLikeModule,
   nameChainAt,
+  parseBrief,
   parseStaticInspect,
   withModuleFacts,
   INSPECT_BUDGET_SEC,
@@ -128,7 +130,7 @@ import {
   type CouncilLeftovers,
 } from './council-isolation.js'
 import { durationWords } from '@shared/text'
-import type { CouncilRun, InspectMiss } from '@shared/protocol'
+import type { BriefValue, CouncilRun, InspectMiss } from '@shared/protocol'
 import { closeTerminal, terminalPhase } from './terminal.js'
 
 /**
@@ -3712,6 +3714,71 @@ export async function inspectIn(
     return miss('busy')
   }
   return runtime ? await inspectStatically(runtime, code, cursor, help.header ?? '') : miss('unknown')
+}
+
+/**
+ * Сколько ждём строку про значение: четыреста миллисекунд.
+ *
+ * Это самый дешёвый вопрос из всех — объект уже в памяти ядра, у него
+ * спрашивают тип и размер (замер на живом ядре: 0,01–0,05 мс на ответ). Всё,
+ * что не уложилось в этот срок, означает занятое ядро, а не долгий ответ, — и
+ * тогда строки просто не будет: про переменную либо есть мгновенный ответ,
+ * либо тишина.
+ */
+const BRIEF_WAIT_MS = 400
+
+/**
+ * Что это за значение — одной строкой, без справки и без подъёма ядра.
+ *
+ * «Мелкие всплывающие подсказки было бы интересно увидеть: хотя бы тип данных
+ * у переменной, быстрый тип и размерность» — просьба владельца 21.09, и вторая
+ * её половина не менее важна первой: «он там ещё добавлял детальнее вагон
+ * текста, это не очень прикольно». Поэтому здесь нет ни `inspect_request`, ни
+ * jedi, ни второго пути: `null` — и клиент молчит.
+ *
+ * Ядро не поднимается НИКОГДА: пока его нет, про переменную и сказать нечего —
+ * она появится только после запуска ячейки.
+ */
+export async function briefIn(
+  sessionId: string,
+  expr: string,
+  root: string = CELLS_KEY,
+): Promise<BriefValue | null> {
+  if (expr === '') return null
+  const runtime = peekRuntime(sessionId, root) ?? null
+  const kernel = liveKernel(sessionId, root)
+  if (!runtime || !kernel || kernel.phase !== 'idle') return null
+  // Занятое ядро отвечать не будет, а ждать его ради строки незачем.
+  if (runtime.currentCell || runtime.queue.length > 0) return null
+  let raw: unknown = null
+  try {
+    const status = await Promise.race([
+      kernel.execute(
+        inspectBriefSource(expr),
+        {
+          ...SILENT_HANDLERS,
+          onUserExpressions: (values) => {
+            raw = values[INSPECT_REPORT_KEY]
+          },
+        },
+        {
+          silent: true,
+          storeHistory: false,
+          // Наведение мышью не событие комнаты: индикатор ядра не моргает.
+          quiet: true,
+          userExpressions: { [INSPECT_REPORT_KEY]: INSPECT_REPORT_EXPR },
+        },
+      ),
+      new Promise<'abort'>((resolve) => {
+        const timer = setTimeout(() => resolve('abort'), BRIEF_WAIT_MS)
+        timer.unref?.()
+      }),
+    ])
+    if (status !== 'ok') return null
+  } catch {
+    return null
+  }
+  return parseBrief(raw)
 }
 
 /**

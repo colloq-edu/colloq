@@ -38,6 +38,9 @@ const NAMES = new Set(['VariableName', 'PropertyName'])
 /** Чужой текст: внутри него имён нет, сколько бы их там ни виднелось. */
 const PROSE = new Set(['String', 'FormatString', 'Comment'])
 
+/** Список аргументов вызова — по нему решается, справка это или значение. */
+const ARGS = new Set(['ArgList'])
+
 /**
  * Почему справки не будет. Нужна тесту и объяснению, а не экрану: человеку
  * отказ наведения виден тем, что ничего не произошло, — так и задумано.
@@ -46,12 +49,8 @@ export type HoverRefusal =
   | 'no-name'
   | 'prose'
   | 'keyword-argument'
-  | 'argument'
-  | 'assignment'
   | 'definition'
-  | 'loop'
   | 'parameter'
-  | 'no-call'
 
 export interface HoverTarget {
   /** Границы имени в документе — их подсвечивает подсказка. */
@@ -59,6 +58,17 @@ export interface HoverTarget {
   to: number
   /** О чём спрашиваем ядро: цепочка через точки, кончающаяся этим именем. */
   ask: string
+  /**
+   * Что показывать: полную справку или строчку про значение.
+   *
+   * `help` — импорт, вызываемое, модуль: сигнатура, документация, пакет; окно
+   * с прокруткой. `value` — обычное имя: `apartments`, `df.shape`, `X` в
+   * списке аргументов. Про такое человек спрашивает другое — «что это и
+   * какого оно размера», — и отвечать на это вагоном текста (жалоба владельца
+   * 21.09: «он там ещё добавлял детальнее вагон текста, это не очень
+   * прикольно») значит не ответить вовсе. Одна строка, без окна.
+   */
+  kind: 'help' | 'value'
 }
 
 export interface HoverAnswer {
@@ -182,7 +192,10 @@ export function hoverTarget(input: {
   const to = node.to
   const named = askFor(doc, to)
   if (!named) return REFUSE('no-name')
-  const target: HoverTarget = { from: Math.min(from, named.from), to, ask: named.ask }
+  const spot = { from: Math.min(from, named.from), to, ask: named.ask }
+  const target: HoverTarget = { ...spot, kind: 'help' }
+  /** То же место, но про значение: одна строка вместо окна. */
+  const brief: HoverAnswer = { target: { ...spot, kind: 'value' }, why: null }
 
   // 1. Оператор импорта: спрашивать можно про каждое имя в нём.
   if (ancestor(node, 'ImportStatement')) return { target, why: null }
@@ -213,10 +226,14 @@ export function hoverTarget(input: {
     // Имя определяемой функции или класса — не вызов, а объявление.
     return REFUSE('definition')
   }
-  if (parent?.name === 'ForStatement') return REFUSE('loop')
-  if (parent?.name === 'AssignStatement' && parent.firstChild?.from === node.from) {
-    return REFUSE('assignment')
-  }
+  /*
+   * Имя слева от `=` и имена в `for … in` — это ЗНАЧЕНИЯ, а не объявления.
+   *
+   * До 21.09 они молчали: о переменной ядро рассказывало вагон текста, и
+   * лучше было не спрашивать вовсе. Короткой строкой отвечать про них стоит —
+   * `apartments` слева от `=` это ровно та таблица, размер которой человек и
+   * хочет увидеть, наведя на неё мышь.
+   */
 
   const chain = wholeChain(node)
   const root = chainRoot(chain)
@@ -230,18 +247,23 @@ export function hoverTarget(input: {
    * наводятся на него чаще всего мимоходом.
    */
   const knows = aliases.has(rooted)
-  if (!knows) {
-    if (anyAncestor(node, new Set(['ArgList']))) return REFUSE('argument')
-    return REFUSE('no-call')
-  }
   /*
-   * Значение аргумента псевдоним не спасает: `np.mean` в `df.apply(np.mean)`
-   * человек пишет, а не спрашивает. Правило продукта — «в списке аргументов
-   * ничего не всплывает», и исключение из него было бы тем самым «что-то
-   * всплывает при наборе», от которого всё это и заведено.
+   * Псевдоним модуля вне списка аргументов — полная справка: про пакет есть
+   * что рассказать, и человек наводится на него ровно за этим.
    */
-  if (anyAncestor(node, new Set(['ArgList']))) return REFUSE('argument')
-  return { target, why: null }
+  if (knows && !anyAncestor(node, ARGS)) return { target, why: null }
+  /*
+   * Всё остальное, что всё-таки является именем, — ЗНАЧЕНИЕ.
+   *
+   * `apartments` в списке аргументов и он же слева от `=`, `df` отдельной
+   * строкой, `xs` в `for x in xs`, цепочка атрибутов без вызова (`df.shape`,
+   * `model.coef_`), и даже `np.mean`, переданная в `df.apply`. Показывается
+   * про них одна короткая строка — тип и размер, — и стоит она одного тихого
+   * вопроса к ядру, которое и так знает ответ: объект уже посчитан и лежит в
+   * памяти. Ядро ради этого не поднимают и статически не гадают: нет ответа —
+   * нет и строки.
+   */
+  return brief
 }
 
 /**
@@ -274,7 +296,10 @@ export function caretTarget(input: {
     if (!callee || callee.from === node.from) continue
     const named = askFor(doc, callee.to)
     if (!named) continue
-    return { target: { from: Math.min(callee.from, named.from), to: callee.to, ask: named.ask }, why: null }
+    return {
+      target: { from: Math.min(callee.from, named.from), to: callee.to, ask: named.ask, kind: 'help' },
+      why: null,
+    }
   }
   return direct
 }

@@ -526,10 +526,10 @@ test('наведение спрашивает дерево разбора, а н
    * Отказ ничего не стоит: `return null` стоит между проверкой цели и
    * вопросом к ядру, то есть на запрещённом месте не уходит ни одного кадра.
    */
-  assert.match(
-    EDITOR,
-    /const spot = hoverSpot\(cm, view, pos\)\s*\n\s*if \(!spot\) return null\s*\n\s*const dom = await askSignature\(/,
-  )
+  assert.match(EDITOR, /const spot = hoverSpot\(cm, view, pos\)\s*\n\s*if \(!spot\) return null/)
+  // И развилка по виду цели идёт сразу за проверкой: на запрещённом месте не
+  // уходит ни одного кадра — ни за справкой, ни за строкой про значение.
+  assert.match(EDITOR, /if \(!spot\) return null[\s\S]{0,600}spot\.kind === 'value'/)
   // Псевдонимы читаются по тетради и помнятся до правки текста.
   assert.match(EDITOR, /function aliasesNow\(\)/)
   assert.match(EDITOR, /if \(aliasMemo\?\.stamp === stamp\) return aliasMemo\.names/)
@@ -565,6 +565,47 @@ test('Escape закрывает оба вида справки — и тогда
   assert.match(EDITOR, /document\.addEventListener\('keydown', onKey, true\)/)
   assert.match(EDITOR, /if \(event\.key !== 'Escape' \|\| view\.hasFocus\) return/)
   assert.match(EDITOR, /destroy: \(\) => document\.removeEventListener\('keydown', onKey, true\)/)
+})
+
+/* --------------------------------------------------- строка про значение */
+
+test('про переменную — строка, а не окно: имя, тип, размер', () => {
+  /*
+   * «Хотя бы тип данных у переменной, быстрый тип и размерность» — просьба
+   * владельца 21.09, и вторая её половина не менее важна: «он там ещё
+   * добавлял детальнее вагон текста, это не очень прикольно». Поэтому у
+   * значения своя плашка, а не окно справки: ни документации, ни сигнатуры.
+   */
+  assert.match(EDITOR, /function briefDom\(/)
+  assert.match(EDITOR, /dom\.className = 'cm-signature cm-signature-brief'/)
+  assert.match(EDITOR, /spot\.kind === 'value'\s*\n\s*\? await askBrief\(/)
+  // Ни причин, ни переспросов: нет ответа — нет строки.
+  assert.match(EDITOR, /if \(!answer\?\.found \|\| !answer\.brief\) return null/)
+  assert.doesNotMatch(EDITOR, /signatureMiss\(answer\.reason\)[\s\S]{0,80}askBrief/)
+  // Плашка того же слоя и размера, что строка-причина, а не окно 640×420.
+  assert.match(THEME, /'\.cm-signature-brief': \{[\s\S]*?width: 'auto'/)
+  assert.match(THEME, /'\.cm-signature-brief': \{[\s\S]*?whiteSpace: 'nowrap'/)
+  assert.doesNotMatch(THEME, /'\.cm-signature-brief': \{[\s\S]*?overflow: 'auto'/)
+})
+
+test('числа в строке про значение читаются по-человечески', () => {
+  // 1460 → «1 460» по-русски и «1,460» по-английски: разряды разделяет язык
+  // комнаты, а не сервер, у которого этого языка нет.
+  assert.match(EDITOR, /function withGroups\(/)
+  assert.match(EDITOR, /text\.replace\(\/\\d\{4,\}\/g, \(digits\) => formatNumber\(Number\(digits\)\)\)/)
+  // И длинное значение режется: строка не должна соревноваться с кодом.
+  assert.match(EDITOR, /joined\.length > 60 \? `\$\{joined\.slice\(0, 59\)\}…` : joined/)
+})
+
+test('память про значения умирает вместе с памятью справки', () => {
+  const SOURCE = read('web/src/lib/signature-help.ts')
+  assert.match(SOURCE, /export function rememberedBrief\(/)
+  assert.match(SOURCE, /export function rememberBrief\(/)
+  /*
+   * `df` после запуска ячейки — другой `df`, и «1 460 × 81» у него может быть
+   * уже не тем числом. Сброс общий с справкой: одно место на обе памяти.
+   */
+  assert.match(SOURCE, /briefs\.clear\(\)/)
 })
 
 /* ------------------------------------------------ подсказка дожидается сама */

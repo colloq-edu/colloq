@@ -3280,6 +3280,7 @@
                 placeholder={isCode ? '' : tr('room.extra.141')}
                 complete={(code, cursor) => session.complete(code, cursor, id)}
                 inspect={(code, cursor) => session.inspect(code, cursor, id)}
+                brief={(code, cursor) => session.brief(code, cursor, id)}
                 sources={codeSources}
                 jump={(code, cursor) => void jumpToDefinition(session, code, cursor, { cellId: id })}
                 mark={landing}

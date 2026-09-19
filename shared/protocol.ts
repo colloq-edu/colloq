@@ -660,7 +660,16 @@ export type ControlClientMessage =
    */
   | { t: 'complete'; id: number; code: string; cursor: number; cellId?: string }
   /** Справка о том, что стоит под кареткой: сигнатура для подсказки над скобкой. */
-  | { t: 'inspect'; id: number; code: string; cursor: number; cellId?: string }
+  /**
+   * `brief` — спрашивают не справку, а ОДНУ СТРОКУ про значение.
+   *
+   * Тем же кадром, потому что вопрос тот же: «что под указателем». Разница в
+   * ответе и в цене: справка это сигнатура с документацией и, если надо,
+   * подъём ядра, а строка про значение — тип и размер объекта, который в ядре
+   * уже лежит. Ядро ради неё не поднимают и статически не гадают: нет ответа —
+   * нет и строки (жалоба владельца 21.09 про «вагон текста» у переменной).
+   */
+  | { t: 'inspect'; id: number; code: string; cursor: number; cellId?: string; brief?: boolean }
   /**
    * «Где это определено» — третий вопрос той же формы, и единственный из трёх,
    * который НЕ идёт в ядро.
@@ -770,6 +779,27 @@ export type DefinitionMiss =
  * успокаивается, а переспрашивает, пока подсказка открыта (CodeEditor.svelte ·
  * `askSignature`), и заменяет строку-причину справкой на месте.
  */
+/**
+ * Короткая правда о значении — то, что показывают наведением на переменную.
+ *
+ * Все поля необязательные, и это форма ответа, а не лень: у `int` есть
+ * значение и нет размера, у `DataFrame` наоборот, а у незнакомого объекта
+ * есть только имя типа — спрашивать у него что-то ещё нельзя, это может
+ * стоить дорого или иметь побочное действие (server/src/kernel/
+ * inspect-static.ts · `_brief_of`).
+ */
+export interface BriefValue {
+  /** `DataFrame`, `ndarray`, `list[str]`, `LinearRegression`. */
+  type: string
+  /** Размер словами типа: `1460 × 81`, `(100, 3)`, `3`. */
+  dims?: string
+  dtype?: string
+  /** Само значение — только у скаляров и строк, обрезанное. */
+  value?: string
+  /** Приписка: устройство тензора, первые ключи словаря, «обучен». */
+  note?: string
+}
+
 export type InspectMiss =
   | 'no-kernel'
   | 'starting'
@@ -1104,7 +1134,15 @@ export type ControlServerMessage =
    * говорит одну приглушённую строку. Поле есть только у промаха: там, где
    * `found: true`, объяснять нечего.
    */
-  | { t: 'inspect:reply'; id: number; found: boolean; text?: string; reason?: InspectMiss }
+  | {
+      t: 'inspect:reply'
+      id: number
+      found: boolean
+      text?: string
+      reason?: InspectMiss
+      /** Ответ на `brief`: тип и размер значения. См. `BriefValue`. */
+      brief?: BriefValue
+    }
   /**
    * Ответ на `define`: куда идти — или почему некуда.
    *

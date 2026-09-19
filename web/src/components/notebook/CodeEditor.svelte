@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import { tr, getLocale } from '@shared/i18n'
+  import { tr, getLocale, formatNumber } from '@shared/i18n'
   import { editorPhrases } from '@/lib/editor-locale'
   /*
    * CodeMirror, its two language modes and the Yjs binding are the largest
@@ -123,7 +123,7 @@
     Tooltip,
     ViewUpdate,
   } from '@codemirror/view'
-  import type { InspectMiss } from '@shared/protocol'
+  import type { BriefValue, InspectMiss } from '@shared/protocol'
   import { questionAt, type Question } from '@shared/python-defs'
   import { INDENT, tabKey } from '@/lib/indent'
   import { caretTarget, hoverTarget, moduleAliases } from '@/lib/hover-target'
@@ -131,6 +131,8 @@
     helpIsEmpty,
     helpKey,
     parseSignatureHelp,
+    rememberBrief,
+    rememberedBrief,
     rememberHelp,
     rememberedHelp,
     safeLink,
@@ -167,6 +169,12 @@
    * необязательно оно и на проводе: старый сервер его не шлёт, и тогда отказ
    * молчит, как молчал.
    */
+  /** Ответ на вопрос о значении — та же форма, что у `inspect:reply.brief`. */
+  interface KernelBrief {
+    found: boolean
+    brief?: BriefValue
+  }
+
   interface KernelSignature {
     found: boolean
     text?: string
@@ -233,6 +241,14 @@
     complete?: ((code: string, cursor: number) => Promise<KernelCompletions | null>) | null
     /** Справка о том, что стоит под кареткой, — для подсказки над скобкой. */
     inspect?: ((code: string, cursor: number) => Promise<KernelSignature | null>) | null
+    /**
+     * Что это за значение — одной строкой; `null`, если спрашивать некого.
+     *
+     * Отдельным вызовом от `inspect`, потому что это другой вопрос и другая
+     * цена: справка может поднять ядро и сходить к jedi, а строка про значение
+     * спрашивает объект, который в ядре уже лежит, и молчит, если его нет.
+     */
+    brief?: ((code: string, cursor: number) => Promise<KernelBrief | null>) | null
     /**
      * Тексты ячеек кода ЭТОЙ тетради — чтобы знать, что здесь импортировали.
      *
@@ -305,6 +321,7 @@
     onoverflow,
     complete = null,
     inspect = null,
+    brief = null,
     sources = null,
     jump = null,
     mark = null,
@@ -352,6 +369,7 @@
     | 'onoverflow'
     | 'complete'
     | 'inspect'
+    | 'brief'
     | 'sources'
     | 'jump'
   > = {}
@@ -368,6 +386,7 @@
     handlers.onoverflow = onoverflow
     handlers.complete = complete
     handlers.inspect = inspect
+    handlers.brief = brief
     handlers.sources = sources
     handlers.jump = jump
   })
@@ -720,6 +739,79 @@
   }
 
   /**
+   * Числа в строке про значение — по-человечески: 1 460, а не 1460.
+   *
+   * Разряды разделяет сам язык комнаты (`Intl`): в русском это узкий пробел, в
+   * английском запятая. Размеры вроде `(100, 3)` и `1460 × 81` приходят от
+   * ядра строкой, и числа в них находятся здесь — иначе пришлось бы либо
+   * форматировать на сервере (где языка комнаты нет), либо разбирать кортеж
+   * на клиенте (где его формы никто не обещал).
+   */
+  function withGroups(text: string): string {
+    return text.replace(/\d{4,}/g, (digits) => formatNumber(Number(digits)))
+  }
+
+  /**
+   * Значение — одной строкой: имя, тип, размер, иногда само значение.
+   *
+   * «Мелкие всплывающие подсказки было бы интересно увидеть: хотя бы тип
+   * данных у переменной, быстрый тип и размерность» — просьба владельца
+   * 21.09, и вторая её половина не менее важна: «он там ещё добавлял детальнее
+   * вагон текста, это не очень прикольно». Поэтому здесь плашка того же слоя и
+   * размера, что строка-причины, а не окно с прокруткой: ни документации, ни
+   * сигнатуры, ни ссылок — тип и размер, дальше человек решает сам.
+   *
+   * Имя приглушено, тип выделен: спрашивают «что это», а не «как называется».
+   */
+  function briefDom(name: string, brief: BriefValue): HTMLElement {
+    const dom = document.createElement('div')
+    dom.className = 'cm-signature cm-signature-brief'
+    const said = document.createElement('span')
+    said.className = 'cm-signature-name'
+    said.textContent = name
+    dom.appendChild(said)
+    const type = document.createElement('b')
+    type.textContent = ` · ${brief.type}`
+    dom.appendChild(type)
+    const tail: string[] = []
+    if (brief.dtype) tail.push(brief.dtype)
+    if (brief.dims) tail.push(withGroups(brief.dims))
+    if (brief.value) tail.push(brief.value)
+    if (brief.note) tail.push(brief.note)
+    if (tail.length > 0) {
+      const rest = document.createElement('span')
+      rest.className = 'cm-signature-facts'
+      const joined = tail.join(' · ')
+      // Шестьдесят знаков — ширина, на которой строка ещё читается целиком и
+      // не начинает соревноваться с кодом под ней.
+      rest.textContent = ` · ${joined.length > 60 ? `${joined.slice(0, 59)}…` : joined}`
+      dom.appendChild(rest)
+    }
+    return dom
+  }
+
+  /**
+   * Спросить ядро о значении — и промолчать, если ответа нет.
+   *
+   * Ни причин, ни переспросов, ни подъёма ядра: про переменную либо есть
+   * мгновенный ответ (объект лежит в памяти ядра), либо ничего. До первого
+   * запуска ячейки переменной не существует — и правильным ответом будет
+   * тишина, а не строка «выполните ячейку».
+   */
+  async function askBrief(view: EditorView, at: number, name: string): Promise<HTMLElement | null> {
+    const ask = handlers.brief
+    if (!ask) return null
+    const key = helpKey(cellId, `=${name}`)
+    const kept = rememberedBrief(key)
+    if (kept) return briefDom(name, kept)
+    const answer = await ask(view.state.doc.toString(), at)
+    if (!answer?.found || !answer.brief) return null
+    rememberBrief(key, answer.brief)
+    return briefDom(name, answer.brief)
+  }
+
+  /**
+   * Почему справки нет — одной приглушённой строкой.  /**
    * Почему справки нет — одной приглушённой строкой.
    *
    * Молчание тут не работает: наведение — жест осознанный, и ответ «ничего»
@@ -813,7 +905,7 @@
     cm: CodeMirror,
     view: EditorView,
     at: number,
-  ): { from: number; to: number; ask: string } | null {
+  ): { from: number; to: number; ask: string; kind: 'help' | 'value' } | null {
     const answer = cm.language.syntaxTree(view.state)
     return hoverTarget({
       tree: answer,
@@ -840,7 +932,7 @@
     cm: CodeMirror,
     view: EditorView,
     at: number,
-  ): { from: number; to: number; ask: string } | null {
+  ): { from: number; to: number; ask: string; kind: 'help' | 'value' } | null {
     return caretTarget({
       tree: cm.language.syntaxTree(view.state),
       doc: view.state.doc.toString(),
@@ -1286,10 +1378,13 @@
 
     async function openPinned(
       view: EditorView,
-      spot: { from: number; to: number; ask: string },
+      spot: { from: number; to: number; ask: string; kind: 'help' | 'value' },
     ): Promise<void> {
       const head = view.state.selection.main.head
-      const dom = await askSignature(view, spot.to, spot.ask)
+      const dom =
+        spot.kind === 'value'
+          ? await askBrief(view, spot.to, spot.ask)
+          : await askSignature(view, spot.to, spot.ask)
       // Пока ходили к ядру, каретка могла уехать — тогда закреплять нечего:
       // окно встало бы у имени, на которое человек уже не смотрит.
       if (!dom || view.state.selection.main.head !== head) return
@@ -1340,7 +1435,17 @@
          */
         const spot = hoverSpot(cm, view, pos)
         if (!spot) return null
-        const dom = await askSignature(view, spot.to, spot.ask)
+        /*
+         * Две разные подсказки на два разных вопроса. Про имя, которое
+         * импортировали или вызывают, спрашивают «что оно делает» — и
+         * отвечает окно со справкой. Про переменную спрашивают «что это и
+         * какого размера» — и отвечает одна строка (lib/hover-target.ts ·
+         * `kind`).
+         */
+        const dom =
+          spot.kind === 'value'
+            ? await askBrief(view, spot.to, spot.ask)
+            : await askSignature(view, spot.to, spot.ask)
         return dom ? signatureTooltip(spot.from, spot.to, dom) : null
       },
       { hoverTime: HOVER_MS },

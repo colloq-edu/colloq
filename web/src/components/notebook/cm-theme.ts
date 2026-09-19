@@ -482,6 +482,35 @@ const theme = EditorView.theme({
     '0%, 100%': { opacity: '0.25' },
     '50%': { opacity: '1' },
   },
+  /*
+   * Строка про значение: `apartments · DataFrame · 1 460 × 81`.
+   *
+   * Та же плашка, что у строки-причины, и это решение: про переменную
+   * спрашивают «что это и какого размера», а не «расскажи всё» — окно с
+   * прокруткой и документацией здесь было бы тем самым «вагоном текста», на
+   * который владелец и пожаловался. Имя приглушено, тип выделен, остальное
+   * тише: глаз идёт по строке слева направо и на типе останавливается.
+   */
+  '.cm-signature-brief': {
+    width: 'auto',
+    maxWidth: 'min(520px, 90vw)',
+    padding: '5px 10px',
+    fontSize: '12px',
+    lineHeight: '1.45',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    color: 'rgb(var(--ink))',
+  },
+  '.cm-signature-brief b': {
+    fontWeight: '700',
+  },
+  '.cm-signature-name': {
+    color: 'rgb(var(--faint))',
+  },
+  '.cm-signature-facts': {
+    color: 'rgb(var(--muted))',
+  },
   '.cm-signature-miss': {
     width: 'auto',
     maxWidth: 'min(420px, 88vw)',

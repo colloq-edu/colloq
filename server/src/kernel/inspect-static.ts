@@ -429,6 +429,229 @@ def facts(ns, expr, limit):
     report = _Report(json.dumps(out))
 
 
+# Сколько знаков значения показываем и сколько элементов смотрим у списка.
+_BRIEF_CHARS = 40
+_BRIEF_PEEK = 20
+
+# Типы, у которых repr() заведомо дёшев и безвреден.
+_PLAIN = (bool, int, float, complex, str, bytes, range, slice, type(None))
+
+
+def _short(text, limit=_BRIEF_CHARS):
+    text = text.replace(chr(10), ' ')
+    return text if len(text) <= limit else text[: limit - 1] + '…'
+
+
+def _type_name(value):
+    """Имя типа с пакетом, если он не встроенный: DataFrame, torch.Tensor."""
+    cls = type(value)
+    name = getattr(cls, '__name__', '?')
+    module = getattr(cls, '__module__', '') or ''
+    if module in ('builtins', '__main__', ''):
+        return name
+    # Показываем верхний пакет, а не внутренний путь: pandas.core.frame.DataFrame
+    # человеку не говорит ничего сверх DataFrame.
+    return name
+
+
+def _elem_type(items):
+    """Один тип на всех — или пусто. Смотрим не больше _BRIEF_PEEK элементов."""
+    seen = None
+    count = 0
+    for item in items:
+        if count >= _BRIEF_PEEK:
+            break
+        count += 1
+        kind = type(item).__name__
+        if seen is None:
+            seen = kind
+        elif seen != kind:
+            return ''
+    return seen or ''
+
+
+def _brief_of(value):
+    """Короткая правда о значении: тип, размер, иногда само значение.
+
+    Строго O(1) и без побочных действий. Незнакомый объект отвечает ОДНИМ
+    именем типа: ни len(), ни repr(), ни str() у него не зовут — у курсора
+    базы, генератора и ленивой коллекции это может стоить дорого, а то и
+    сдвинуть их с места. Наведение мышью не имеет права менять состояние.
+    """
+    import sys
+
+    np0 = sys.modules.get('numpy')
+    # Скаляр numpy проверяется ПЕРВЫМ: np.float64 наследует float, и обычная
+    # ветка показала бы «float64 · np.float64(3.5)» вместо «float64 · 3.5».
+    if np0 is not None and isinstance(value, np0.generic):
+        return {'type': str(value.dtype), 'value': _short(repr(value.item()))}
+
+    if value is None or isinstance(value, _PLAIN):
+        out = {'type': _type_name(value)}
+        if not isinstance(value, (str, bytes)):
+            out['value'] = _short(repr(value))
+            return out
+        out['dims'] = str(len(value))
+        out['value'] = _short(repr(value))
+        return out
+
+    pd = sys.modules.get('pandas')
+    if pd is not None:
+        if isinstance(value, pd.DataFrame):
+            rows, cols = value.shape
+            return {'type': 'DataFrame', 'dims': str(rows) + ' × ' + str(cols)}
+        if isinstance(value, pd.Series):
+            out = {'type': 'Series', 'dims': str(value.shape[0]), 'dtype': str(value.dtype)}
+            name = getattr(value, 'name', None)
+            if name is not None:
+                out['note'] = _short(str(name))
+            return out
+        if isinstance(value, pd.Index):
+            return {'type': type(value).__name__, 'dims': str(len(value)), 'dtype': str(value.dtype)}
+
+    np = sys.modules.get('numpy')
+    if np is not None:
+        if isinstance(value, np.ndarray):
+            return {'type': 'ndarray', 'dtype': str(value.dtype), 'dims': str(tuple(value.shape))}
+
+    torch = sys.modules.get('torch')
+    if torch is not None:
+        if isinstance(value, torch.Tensor):
+            out = {
+                'type': 'Tensor',
+                'dtype': str(value.dtype).replace('torch.', ''),
+                'dims': str(tuple(value.shape)),
+                'note': str(value.device),
+            }
+            if bool(value.requires_grad):
+                out['note'] = out['note'] + ' · grad'
+            return out
+        nn = sys.modules.get('torch.nn')
+        if nn is not None and isinstance(value, nn.Module):
+            out = {'type': _type_name(value)}
+            try:
+                # Счёт параметров — обход списка модулей, а не данных; у сетей
+                # семинара это сотни записей, не миллионы.
+                total = sum(p.numel() for p in value.parameters())
+                out['note'] = str(total) + ' параметров'
+            except Exception:
+                pass
+            return out
+
+    sparse = sys.modules.get('scipy.sparse')
+    if sparse is not None and getattr(sparse, 'issparse', None) is not None:
+        try:
+            if sparse.issparse(value):
+                return {
+                    'type': getattr(value, 'format', 'sparse') + ' sparse',
+                    'dtype': str(value.dtype),
+                    'dims': str(tuple(value.shape)),
+                    'note': str(value.nnz) + ' nnz',
+                }
+        except Exception:
+            pass
+
+    if isinstance(value, (list, tuple, set, frozenset)):
+        kind = type(value).__name__
+        inner = _elem_type(value)
+        return {'type': kind + ('[' + inner + ']' if inner else ''), 'dims': str(len(value))}
+    if isinstance(value, dict):
+        keys = []
+        vals = []
+        count = 0
+        for key in value:
+            if count >= _BRIEF_PEEK:
+                break
+            count += 1
+            keys.append(key)
+            vals.append(value[key])
+        kt = _elem_type(keys)
+        vt = _elem_type(vals)
+        out = {
+            'type': 'dict' + ('[' + kt + ', ' + vt + ']' if kt and vt else ''),
+            'dims': str(len(value)),
+        }
+        first = [str(k) for k in keys[:3]]
+        if first:
+            out['note'] = _short(', '.join(first))
+        return out
+
+    deque = getattr(sys.modules.get('collections'), 'deque', None)
+    if deque is not None and isinstance(value, deque):
+        return {'type': 'deque', 'dims': str(len(value))}
+
+    import types as _t
+
+    if isinstance(value, _t.ModuleType):
+        return {'type': 'module', 'note': getattr(value, '__name__', '')}
+    if isinstance(value, type):
+        return {'type': 'class', 'note': getattr(value, '__name__', '')}
+    if isinstance(value, (_t.FunctionType, _t.BuiltinFunctionType, _t.MethodType)):
+        out = {'type': 'function'}
+        try:
+            import inspect as _i
+
+            out['note'] = _short(
+                getattr(value, '__name__', 'f') + str(_i.signature(value)), 72
+            )
+        except Exception:
+            out['note'] = getattr(value, '__name__', '')
+        return out
+
+    base = sys.modules.get('sklearn.base')
+    if base is not None and getattr(base, 'BaseEstimator', None) is not None:
+        try:
+            if isinstance(value, base.BaseEstimator):
+                out = {'type': _type_name(value)}
+                # Обучен ли — по следам обучения в самом объекте: атрибуты с
+                # подчёркиванием на конце. Ни один метод при этом не зовётся.
+                fitted = any(
+                    k.endswith('_') and not k.startswith('__') for k in vars(value)
+                )
+                out['note'] = 'обучен' if fitted else 'не обучен'
+                return out
+        except Exception:
+            pass
+
+    # Незнакомое: только имя типа. Ни len, ни repr — см. заголовок функции.
+    return {'type': _type_name(value)}
+
+
+def brief(ns, expr):
+    """Короткая строка про значение — по объекту из пространства имён.
+
+    Разбор выражения тот же, что у facts: только точки и getattr, ни вызовов,
+    ни индексов, ни eval. Имени нет — ответа нет: наведение на слово, которого
+    в ядре не существует, обязано молчать.
+    """
+    global report
+    out = {'found': False}
+    try:
+        steps = (expr or '').split('.')
+        if not steps or not steps[0]:
+            report = _Report(json.dumps(out))
+            return
+        if steps[0] not in ns:
+            report = _Report(json.dumps(out))
+            return
+        value = ns[steps[0]]
+        missing = object()
+        for step in steps[1:]:
+            if not step:
+                value = missing
+                break
+            value = getattr(value, step, missing)
+            if value is missing:
+                break
+        if value is not missing:
+            said = _brief_of(value)
+            if said:
+                out = {'found': True, 'brief': said}
+    except Exception:
+        out = {'found': False}
+    report = _Report(json.dumps(out))
+
+
 def _render(found, display, limit):
     """Лучшее из найденного, разложенное по заголовкам IPython.
 
@@ -661,6 +884,70 @@ export function withModuleFacts(live: string, facts: string): string {
 /** Отвечает ли ядро «это модуль»: по тому же разбору, что и у клиента. */
 export function looksLikeModule(text: string): boolean {
   return /^Type: *module\s*$/m.test(text.replace(/\r/g, ''))
+}
+
+/**
+ * Что коротко известно о значении: тип, размер, иногда само значение.
+ *
+ * Всё поля необязательные, и это не лень, а форма ответа: у `int` есть
+ * значение и нет размера, у `DataFrame` — наоборот, а у незнакомого объекта
+ * есть только имя типа, и спрашивать у него что-то ещё мы не имеем права
+ * (inspect-static · `_brief_of`).
+ */
+export interface BriefValue {
+  type: string
+  dims?: string
+  dtype?: string
+  value?: string
+  note?: string
+}
+
+/**
+ * Вопрос про ЗНАЧЕНИЕ имени — самый дешёвый из всех.
+ *
+ * Ни jedi, ни документации, ни метаданных: объект уже посчитан и лежит в
+ * памяти ядра, у него спрашивают тип и размер. Поэтому и бюджет короткий, и
+ * ядро ради этого не поднимают: нет ядра — нет и строки.
+ */
+export function inspectBriefSource(expr: string): string {
+  const module = JSON.stringify(INSPECT_MODULE)
+  return [
+    `if getattr(__import__('sys').modules.get(${module}), 'version', None) != ` +
+      `${JSON.stringify(implVersion())}: ` +
+      `exec(compile(${implLiteral()}, '<colloq-inspect>', 'exec'), ` +
+      `__import__('sys').modules.setdefault(${module}, ` +
+      `__import__('types').ModuleType(${module})).__dict__)`,
+    `__import__('sys').modules[${module}].brief(globals(), ${JSON.stringify(expr)})`,
+  ].join('\n')
+}
+
+/** Разобрать ответ про значение; `null` — сказать нечего или ответа не было. */
+export function parseBrief(raw: unknown): BriefValue | null {
+  let text: string | null = null
+  if (typeof raw === 'string') text = raw
+  else if (raw && typeof raw === 'object') {
+    const wrapper = raw as { status?: unknown; data?: Record<string, unknown> }
+    if (wrapper.status !== undefined && wrapper.status !== 'ok') return null
+    const plain = wrapper.data?.['text/plain']
+    if (typeof plain === 'string') text = plain
+  }
+  if (text === null || text === 'None') return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return null
+  }
+  const row = parsed as { found?: unknown; brief?: unknown } | null
+  if (!row || row.found !== true || !row.brief || typeof row.brief !== 'object') return null
+  const said = row.brief as Record<string, unknown>
+  if (typeof said.type !== 'string' || said.type === '') return null
+  const out: BriefValue = { type: said.type }
+  for (const key of ['dims', 'dtype', 'value', 'note'] as const) {
+    const value = said[key]
+    if (typeof value === 'string' && value !== '') out[key] = value
+  }
+  return out
 }
 
 export interface StaticInspectAnswer {

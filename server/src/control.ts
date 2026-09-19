@@ -85,7 +85,7 @@ import {
 import { moveInCells } from './collab/ops.js'
 import { defineIn } from './definitions.js'
 import { LINE_LENGTH } from './kernel/format.js'
-import { importHeader } from './kernel/inspect-static.js'
+import { importHeader, nameChainAt } from './kernel/inspect-static.js'
 import { kernelBackend } from './kernel/runtime-client.js'
 import {
   actsAfterClass,
@@ -121,6 +121,7 @@ import {
 } from './db.js'
 import {
   answerInput,
+  briefIn,
   clearOutputs,
   completeIn,
   formatSession,
@@ -2746,6 +2747,23 @@ function askKernel(
           start: result.cursorStart,
           end: result.cursorEnd,
         })
+      })
+      .catch(() => send(ws, empty))
+      .finally(() => askDone(ws))
+    return
+  }
+  /*
+   * Вопрос про ЗНАЧЕНИЕ — своя короткая дорога.
+   *
+   * Ни справки, ни подъёма ядра, ни статического разбора: тип и размер
+   * объекта, который в ядре уже лежит. Нет ядра или оно занято — ответ пуст, и
+   * клиент молчит: про переменную либо есть мгновенный ответ, либо ничего
+   * (kernel/index.ts · `briefIn`).
+   */
+  if (message.brief === true) {
+    void briefIn(sessionId, nameChainAt(code, cursor), askRoot)
+      .then((brief) => {
+        send(ws, { t: 'inspect:reply', id, found: brief !== null, ...(brief ? { brief } : {}) })
       })
       .catch(() => send(ws, empty))
       .finally(() => askDone(ws))

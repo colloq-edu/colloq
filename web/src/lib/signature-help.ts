@@ -1,3 +1,5 @@
+import type { BriefValue } from '@shared/protocol'
+
 /**
  * Справка ядра, разобранная на части: сигнатура отдельно, документация отдельно.
  *
@@ -533,6 +535,33 @@ export function rememberHelp(key: string, text: string, now = Date.now()): void 
 }
 
 /**
+ * Строки про значения — своя память, с тем же сроком жизни.
+ *
+ * Отдельной картой, потому что ответ другой формы (не текст ядра, а разобранный
+ * объект) и другой цены: он зависит от того, что в ядре СЕЙЧАС, и живёт ровно
+ * до следующего запуска. Сбрасывается тем же движением, что и справка.
+ */
+const briefs = new Map<string, { at: number; value: BriefValue }>()
+
+export function rememberedBrief(key: string, now = Date.now()): BriefValue | null {
+  const row = briefs.get(key)
+  if (!row) return null
+  if (now - row.at > HELP_TTL_MS) {
+    briefs.delete(key)
+    return null
+  }
+  return row.value
+}
+
+export function rememberBrief(key: string, value: BriefValue, now = Date.now()): void {
+  if (briefs.size >= HELP_MAX) {
+    const oldest = briefs.keys().next()
+    if (!oldest.done) briefs.delete(oldest.value)
+  }
+  briefs.set(key, { at: now, value })
+}
+
+/**
  * Забыть всё: в ядре только что что-то посчитали.
  *
  * Запуск ячейки — единственное событие, после которого прошлый ответ может
@@ -542,4 +571,10 @@ export function rememberHelp(key: string, text: string, now = Date.now()): void 
  */
 export function forgetHelp(): void {
   remembered.clear()
+  /*
+   * И строки про значения — тем же движением, и для них это важнее всего:
+   * `df` после запуска ячейки это другой `df`, и «1460 × 81» у него может
+   * быть уже не тем числом.
+   */
+  briefs.clear()
 }

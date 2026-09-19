@@ -23,11 +23,14 @@
 import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import {
   importHeader,
+  inspectBriefSource,
   inspectFactsSource,
   inspectStaticSource,
   looksLikeModule,
+  parseBrief,
   withModuleFacts,
   nameChainAt,
   parseStaticInspect,
@@ -265,4 +268,139 @@ test('«не нашлось» и «ответа не было» — это ра�
 test('найденное без текста — это не найденное', () => {
   assert.equal(parseStaticInspect(JSON.stringify({ found: true, text: '' }))?.found, false)
   assert.equal(parseStaticInspect(JSON.stringify({ found: true }))?.found, false)
+})
+
+/* ------------------------------------------------------- строка про значение */
+
+/**
+ * «Хотя бы тип данных у переменной, быстрый тип и размерность» — просьба
+ * владельца 21.09; вторая её половина не менее важна: «он там ещё добавлял
+ * детальнее вагон текста, это не очень прикольно».
+ *
+ * Здесь проверяется то, что ломается тихо и дорого: ответ обязан быть O(1) и
+ * БЕЗ побочных действий. У курсора базы данных, у генератора и у ленивой
+ * коллекции `len()` и `repr()` могут стоить минуту работы или сдвинуть их с
+ * места — а наведение мышью не имеет права ни того, ни другого.
+ *
+ * Гоняется настоящим python3: правило живёт в Python, и проверять его
+ * подделкой значило бы проверять свои представления о нём.
+ */
+const PYTHON = (() => {
+  const probe = spawnSync('python3', ['-c', 'print(1)'], { encoding: 'utf8' })
+  return probe.status === 0 ? 'python3' : null
+})()
+
+const HAS = (name: string) =>
+  PYTHON !== null &&
+  spawnSync(PYTHON, ['-c', `import ${name}`], { encoding: 'utf8' }).status === 0
+
+/** Посчитать `setup`, спросить `expr` и вернуть разобранный ответ. */
+function briefOf(setup: string, expr: string): ReturnType<typeof parseBrief> {
+  const code = [
+    setup,
+    inspectBriefSource(expr),
+    "print(__import__('sys').modules['_colloq_inspect'].report)",
+  ].join('\n')
+  const run = spawnSync(PYTHON as string, ['-c', code], { encoding: 'utf8' })
+  assert.equal(run.status, 0, run.stderr)
+  return parseBrief(run.stdout.trim())
+}
+
+test('вопрос про значение ничего не исполняет и ничего не импортирует', () => {
+  const source = inspectBriefSource('df.shape')
+  assert.match(source, /\.brief\(globals\(\), "df\.shape"\)$/)
+  assert.match(source, /getattr\(value, step, missing\)/)
+  assert.doesNotMatch(source, /\beval\(/)
+  // Незнакомому объекту не задают ни одного вопроса, кроме типа: ни len, ни
+  // repr — см. заголовок раздела.
+  assert.match(source, /Незнакомое: только имя типа/)
+})
+
+test('встроенные типы: размер, значение, тип элементов', { skip: PYTHON ? false : 'нет python3' }, () => {
+  assert.deepEqual(briefOf('n = 42', 'n'), { type: 'int', value: '42' })
+  assert.deepEqual(briefOf('flag = True', 'flag'), { type: 'bool', value: 'True' })
+  assert.deepEqual(briefOf('nothing = None', 'nothing'), { type: 'NoneType', value: 'None' })
+  assert.deepEqual(briefOf('names = ["a", "b", "c"]', 'names'), { type: 'list[str]', dims: '3' })
+  // Разнородный список типом элементов не хвастается.
+  assert.deepEqual(briefOf('mixed = [1, "a"]', 'mixed'), { type: 'list', dims: '2' })
+  const pairs = briefOf('pairs = {"alpha": 1.5, "beta": 2.5}', 'pairs')
+  assert.equal(pairs?.type, 'dict[str, float]')
+  assert.equal(pairs?.dims, '2')
+  assert.equal(pairs?.note, 'alpha, beta')
+  const title = briefOf('title = "Цена квартиры в рублях за месяц аренды"', 'title')
+  assert.equal(title?.type, 'str')
+  assert.equal(title?.dims, '38')
+  assert.match(title?.value ?? '', /^'Цена квартиры/)
+})
+
+test('длинное значение обрезается, а не показывается целиком', { skip: PYTHON ? false : 'нет python3' }, () => {
+  const long = briefOf('s = "щ" * 500', 's')
+  assert.equal(long?.dims, '500')
+  assert.ok((long?.value?.length ?? 0) <= 41, `значение длиной ${long?.value?.length}`)
+  assert.match(long?.value ?? '', /…$/)
+})
+
+test('функция, класс и модуль называются одной строкой', { skip: PYTHON ? false : 'нет python3' }, () => {
+  assert.deepEqual(briefOf('def helper(a, b=1): pass', 'helper'), {
+    type: 'function',
+    note: 'helper(a, b=1)',
+  })
+  assert.deepEqual(briefOf('class Thing: pass', 'Thing'), { type: 'class', note: 'Thing' })
+  assert.deepEqual(briefOf('import os', 'os'), { type: 'module', note: 'os' })
+  // Обычный объект — только имя своего типа, и ни слова больше.
+  assert.deepEqual(briefOf('class Thing: pass\nthing = Thing()', 'thing'), { type: 'Thing' })
+})
+
+test('у незнакомого объекта не зовут ни len, ни repr', { skip: PYTHON ? false : 'нет python3' }, () => {
+  /*
+   * Объект, у которого оба метода БРОСАЮТ: если их позовут, ответ станет
+   * пустым или тест упадёт. Так выглядит курсор базы, у которого `len()` —
+   * это запрос, и ленивая коллекция, которую `repr()` заставляет посчитаться.
+   */
+  const setup = [
+    'class Costly:',
+    '    def __len__(self): raise RuntimeError("дорого")',
+    '    def __repr__(self): raise RuntimeError("дорого")',
+    '    def __str__(self): raise RuntimeError("дорого")',
+    'costly = Costly()',
+  ].join('\n')
+  assert.deepEqual(briefOf(setup, 'costly'), { type: 'Costly' })
+})
+
+test('имени нет — ответа нет', { skip: PYTHON ? false : 'нет python3' }, () => {
+  assert.equal(briefOf('x = 1', 'нетТакого'), null)
+  assert.equal(briefOf('x = 1', 'x.нетТакого'), null)
+  assert.equal(briefOf('x = 1', ''), null)
+})
+
+test('цепочка атрибутов читается по точкам', { skip: PYTHON ? false : 'нет python3' }, () => {
+  const setup = 'class Box:\n    def __init__(self): self.size = (3, 4)\nbox = Box()'
+  assert.deepEqual(briefOf(setup, 'box.size'), { type: 'tuple[int]', dims: '2' })
+})
+
+test('pandas и numpy отвечают размером и типом данных', { skip: HAS('numpy') ? false : 'нет numpy' }, () => {
+  const X = briefOf('import numpy as np\nX = np.zeros((100, 3))', 'X')
+  assert.deepEqual(X, { type: 'ndarray', dtype: 'float64', dims: '(100, 3)' })
+  // Скаляр numpy — это ЗНАЧЕНИЕ, а не «np.float64(3.5)».
+  const one = briefOf('import numpy as np\none = np.float64(3.5)', 'one')
+  assert.deepEqual(one, { type: 'float64', value: '3.5' })
+})
+
+test('DataFrame и Series: строки, столбцы, тип данных', { skip: HAS('pandas') ? false : 'нет pandas' }, () => {
+  const setup = 'import pandas as pd\ndf = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})'
+  assert.deepEqual(briefOf(setup, 'df'), { type: 'DataFrame', dims: '2 × 2' })
+  const series = briefOf(setup + '\ns = df["a"]', 's')
+  assert.equal(series?.type, 'Series')
+  assert.equal(series?.dims, '2')
+  assert.equal(series?.dtype, 'float64')
+  assert.equal(series?.note, 'a')
+  // `df.shape` — обычный кортеж, и отвечают про него как про кортеж.
+  assert.deepEqual(briefOf(setup, 'df.shape'), { type: 'tuple[int]', dims: '2' })
+})
+
+test('оценщик sklearn говорит, обучен ли он, — не вызывая методов', {
+  skip: HAS('sklearn') ? false : 'нет sklearn',
+}, () => {
+  const setup = 'from sklearn.linear_model import LinearRegression\nmodel = LinearRegression()'
+  assert.deepEqual(briefOf(setup, 'model'), { type: 'LinearRegression', note: 'не обучен' })
 })

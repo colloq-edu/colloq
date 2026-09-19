@@ -1390,6 +1390,17 @@ export class SessionState {
   }
 
   /**
+   * Одна строка про значение: тип и размер того, что под указателем.
+   *
+   * Тот же кадр, что у справки, с признаком `brief` — и та же дорога мимо
+   * очереди. Разница в ответе: ядро ради этого не поднимают, статически не
+   * гадают, и `null` означает просто «строки не будет».
+   */
+  brief(code: string, cursor: number, cellId?: string): Promise<InspectReply | null> {
+    return this.#ask('inspect', code, cursor, cellId, undefined, true) as Promise<InspectReply | null>
+  }
+
+  /**
    * Где определено имя под кареткой — третий вопрос той же формы и с той же
    * дорогой, но отвечает на него не ядро, а сервер.
    *
@@ -1452,6 +1463,8 @@ export class SessionState {
      * файлом» — без пути точка не от чего считается.
      */
     path?: string,
+    /** Спрашиваем не справку, а строку про значение — см. `brief`. */
+    brief?: boolean,
   ): Promise<ControlServerMessage | null> {
     const socket = this.#control
     if (socket?.readyState !== WebSocket.OPEN) return Promise.resolve(null)
@@ -1482,6 +1495,7 @@ export class SessionState {
             cursor: sent.cursor,
             cellId,
             path,
+            brief,
             // Только у перехода и только когда окно правда резало: у соседей
             // этого поля нет, и `undefined` в кадр не попадает.
             from: kind === 'define' && sent.from > 0 ? sent.from : undefined,
