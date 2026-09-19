@@ -96,6 +96,58 @@
     return () => clearInterval(timer)
   })
 
+  /* ----------------------------------------------------------- телефон */
+
+  /**
+   * Узкое окно — два экрана вместо двух колонок.
+   *
+   * Пульт пробовали с телефона на паре 19.09: «пролистать список всех
+   * студентов невозможно». Две колонки в 390 px шириной — это список высотой в
+   * половину строки под шапкой, вкладками, полосой, счётчиками, поиском и
+   * чипами. Мессенджер в этом месте устроен одинаково везде и не зря: сперва
+   * список во весь экран, нажатие открывает разговор во весь экран, назад
+   * возвращает к списку.
+   *
+   * Порог тот же, что у остальных правил узкого окна (650 px), и читается он
+   * через matchMedia, а не по ширине из resize: у `matchMedia` тот же порог,
+   * что в CSS, и разойтись им нельзя.
+   */
+  let phone = $state(false)
+  $effect(() => {
+    const query = window.matchMedia('(max-width: 650px)')
+    const sync = (): void => { phone = query.matches }
+    sync()
+    query.addEventListener('change', sync)
+    return () => query.removeEventListener('change', sync)
+  })
+  let phonePane = $state<'list' | 'work'>('list')
+
+  /**
+   * Системный «назад» возвращает к списку, а не закрывает пульт.
+   *
+   * Адрес при этом не меняется: маршрут пульта — это ячейка (routes.ts), а не
+   * то, на что в ней смотрят, и заводить под экран работы второй адрес значило
+   * бы, что ссылка на пульт иногда открывается списком, а иногда чужой
+   * работой. Поэтому запись истории своя, с тем же адресом и пометкой в
+   * состоянии; жест «назад» её снимает, `popstate` возвращает список.
+   */
+  function toWork(): void {
+    if (!phone || phonePane === 'work') return
+    phonePane = 'work'
+    history.pushState({ ...(history.state ?? {}), pultPane: 'work' }, '', location.href)
+  }
+  function toList(): void {
+    if (phonePane !== 'work') return
+    // Через историю, а не присваиванием: иначе запись о работе осталась бы в
+    // стопке, и следующий «назад» уводил бы из пульта через пустой шаг.
+    history.back()
+  }
+  $effect(() => {
+    const back = (): void => { phonePane = 'list' }
+    window.addEventListener('popstate', back)
+    return () => window.removeEventListener('popstate', back)
+  })
+
   /* --------------------------------------------------------- комната */
 
   const board = $derived(session.council.boards[cellId] ?? null)
@@ -137,6 +189,14 @@
   /** Чьи строки уже открывали: точка непрочитанного гаснет и не возвращается. */
   let seen = $state.raw<ReadonlySet<string>>(new Set())
   let tab = $state<PultView>('work')
+  /**
+   * Какой экран показан на телефоне; на широком окне видны оба.
+   *
+   * Очередь и оракул рисуются поверх слоя «список/работа» целиком, поэтому вне
+   * вкладки работ экран всегда «список»: иначе после возврата из очереди
+   * открывалась бы чужая работа без планки, которой её закрывают.
+   */
+  const pane = $derived(!phone ? 'both' : tab === 'work' ? phonePane : 'list')
   let helpOpen = $state(false)
   /**
    * Лист регламента: на каком правиле открыт и куда вернуть фокус.
@@ -331,6 +391,14 @@
     cursor = participantId
     keyboard = false
     tab = 'work'
+    // На телефоне открыть работу — значит перейти на её экран целиком.
+    toWork()
+  }
+
+  /** Стрелки ‹ › на телефоне: по ленте, как j и k на клавиатуре. */
+  function step(delta: 1 | -1): void {
+    const next = moveCursor(rows, cursor, delta)
+    if (next !== null) cursor = next
   }
 
   function show(participantId: string | null = cursor): void {
@@ -613,7 +681,7 @@
     <p class="text-ui text-muted">{tr('room.ui.1360')}</p>
   </div>
 {:else}
-  <div class="relative flex h-full min-h-0 w-full flex-col bg-canvas text-ink" data-council-pult={cellId}>
+  <div class="pult-root relative flex h-full min-h-0 w-full flex-col bg-canvas text-ink" data-council-pult={cellId} data-pult-pane={pane}>
     <div class="pult-head" bind:clientHeight={headHeight}>
       <PultHeader
         {cellIndex}
@@ -656,6 +724,7 @@
       {searching}
       {names}
       {counts}
+      {phone}
       groups={groups.length}
       onfilter={(next) => (filter = next)}
       onsearch={(text) => (search = text)}
@@ -672,6 +741,7 @@
         {names}
         shown={shown?.participantId ?? null}
         {sizes}
+        {now}
         onscroll={(at) => (scrolled = at > 0)}
         held={held.size}
         decisionsOff={disabled || settings.studentRun !== 'request'}
@@ -682,8 +752,27 @@
       />
       </aside>
       <div class="pult-work-pane">
+          {#if phone && phonePane === 'work'}
+            <!--
+              Планка экрана работы: назад к списку, чьё это, и стрелки по ленте.
+              Имя стоит здесь, а не в шапке работы: на 390 px два имени подряд —
+              это строка, отнятая у кода.
+            -->
+            <div class="phone-bar">
+              <button type="button" class="phone-back" onclick={toList}>
+                <span aria-hidden="true">‹</span> {tr('room.pult.v3.backToList')}
+              </button>
+              <span class="phone-title">{current === null ? '' : names ? current.name : tr('room.ui.1255', { p0: variants.get(current.participantId) ?? 0 })}</span>
+              <span class="phone-place">{tr('room.pult.v3.place', { index: place, total: ids.length })}</span>
+              <button type="button" class="phone-step" aria-label={tr('room.pult.v3.prevWork')}
+                disabled={place <= 1} onclick={() => step(-1)}><span aria-hidden="true">‹</span></button>
+              <button type="button" class="phone-step" aria-label={tr('room.pult.v3.nextWork')}
+                disabled={place >= ids.length} onclick={() => step(1)}><span aria-hidden="true">›</span></button>
+            </div>
+          {/if}
           <PultWork
             attempt={current}
+            phone={phone && phonePane === 'work'}
             presence={current ? pultPresence(presenceKnown, session.peersById, current.participantId) : 'unknown'}
             {group}
             {groupIndex}
@@ -736,6 +825,7 @@
       inFrame={shown?.shownAt ? spell(Math.max(now - shown.shownAt, 0)) : ''}
       index={place}
       total={ids.length}
+      banner={shown !== null}
       onclear={clearShown}
       onhelp={() => (helpOpen = true)}
     />
@@ -760,19 +850,79 @@
 {/if}
 
 <style>
+  /*
+   * Бюджет постоянной обвязки — 176 px из 650.
+   *
+   * Было 290: шапка в три строки, вкладки по 48 px с полями по 12, полоса
+   * «на экране» в два ряда и строка состояния. В окне 900×650 это почти
+   * половина высоты под то, что за пару не меняется, — а меняются в нём
+   * список слева и работа справа, и им оставалось две с половиной строки и
+   * панель, уезжающая под сгиб.
+   */
+  .pult-root { overflow:hidden; }
   .pult-head { flex-shrink:0; }
-  .pult-nav { display:flex; align-items:center; flex-wrap:wrap; gap:8px; flex-shrink:0; padding:12px var(--pult-pad); background:rgb(var(--surface)); border-bottom:1px solid rgb(var(--line)); }
-  .pult-view-tab { display:inline-flex; align-items:center; justify-content:center; gap:10px; min-height:48px; padding:10px 18px; border:1px solid rgb(var(--line)); background:rgb(var(--canvas)); font-size:16px; font-weight:600; line-height:24px; cursor:pointer; }
+  .pult-nav { display:flex; align-items:center; flex-wrap:nowrap; gap:6px; flex-shrink:0; min-height:44px; padding:5px var(--pult-pad); background:rgb(var(--surface)); border-bottom:1px solid rgb(var(--line)); }
+  .pult-view-tab { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:34px; padding:6px 12px; border:1px solid rgb(var(--line)); background:rgb(var(--canvas)); font-size:14px; font-weight:600; line-height:20px; white-space:nowrap; cursor:pointer; }
   .pult-view-tab[aria-pressed="true"] { background:rgb(var(--primary)); border-color:rgb(var(--primary)); color:rgb(var(--primary-ink)); font-weight:700; }
-  .pult-tab-count { min-width:24px; text-align:center; padding:0 4px; font-variant-numeric:tabular-nums; }
+  .pult-tab-count { min-width:20px; text-align:center; padding:0 3px; font-variant-numeric:tabular-nums; }
   .pult-tab-count.needs-attention { background:rgb(var(--warning)); color:rgb(var(--canvas)); }
-  .pult-pending-link { min-height:44px; padding:10px 14px; margin-left:auto; background:rgb(var(--warning)/.1); border:1px solid rgb(var(--warning)/.35); color:rgb(var(--warning)); font-size:14px; font-weight:600; cursor:pointer; }
-  .pult-nav-status { margin-left:auto; font-size:14px; color:rgb(var(--muted)); }
+  .pult-pending-link { min-height:32px; padding:6px 10px; margin-left:auto; background:rgb(var(--warning)/.1); border:1px solid rgb(var(--warning)/.35); color:rgb(var(--warning)); font-size:13px; font-weight:600; white-space:nowrap; cursor:pointer; }
+  .pult-nav-status { margin-left:auto; font-size:13px; color:rgb(var(--muted)); white-space:nowrap; }
   .pult-work-layout { display:flex; min-height:0; flex:1; }
-  .pult-sidebar { display:flex; flex-direction:column; min-height:0; width:332px; flex-shrink:0; border-right:1px solid rgb(var(--line)); background:rgb(var(--surface)); }
+  /* 336 — ширина, на которой «Запуск выполнен · 1,2 с · 17:24» стоит в строке
+     целиком: ради этой третьей строчки список и расширен. */
+  .pult-sidebar { display:flex; flex-direction:column; min-height:0; width:336px; flex-shrink:0; border-right:1px solid rgb(var(--line)); background:rgb(var(--surface)); }
+  /*
+   * Панель работы не прокручивается целиком НИКОГДА.
+   *
+   * Здесь стояло `@media(max-height:700px){ overflow-y:auto }` вместе с
+   * `min-height:650px` у самой работы — то есть в невысоком окне панель
+   * становилась длинной страницей, и поле ответа с четырьмя действиями лежало
+   * под сгибом. Прокручивается ровно одна зона — код с выводом (PultWork ·
+   * .work-content), а шапка автора и док общения прибиты к своим кромкам.
+   */
   .pult-work-pane { display:flex; flex-direction:column; min-height:0; min-width:0; flex:1; }
-  @media(max-height:700px) { .pult-work-pane { overflow-y:auto; } }
-  @media(max-width:1000px) { .pult-sidebar { width:292px; } .pult-view-tab { padding:10px 14px; } }
-  @media(max-width:800px) { .pult-sidebar { width:268px; } .pult-view-tab { font-size:15px; min-height:44px; padding:9px 10px; } .pult-pending-link { min-height:36px; padding:6px 10px; } }
-  @media(max-width:650px) { .pult-nav-status { display:none; }.pult-work-layout { flex-direction:column; }.pult-sidebar { width:100%; max-height:40%; border-right:0; border-bottom:1px solid rgb(var(--line)); flex-shrink:1; }.pult-work-pane { min-height:260px; }.pult-nav { gap:6px; }.pult-view-tab { font-size:14px; } }
+  /*
+   * Единственная высота, на которой три зоны не складываются: окно ниже
+   * 480 px — это половина ноутбучного экрана, там доку с кодом и шапкой места
+   * нет физически. Здесь панель снова становится страницей — лучше прокрутка,
+   * чем раздавленные в ноль кнопки.
+   */
+  @media(max-height:479px) { .pult-work-pane { overflow-y:auto; } }
+  /* Планка экрана работы на телефоне: назад, имя, место в ленте, стрелки. */
+  .phone-bar { display:none; align-items:center; gap:8px; flex-shrink:0; min-height:44px; padding:4px 8px 4px 4px; border-bottom:1px solid rgb(var(--line)); background:rgb(var(--surface)); }
+  .phone-back { display:flex; align-items:center; gap:4px; flex-shrink:0; min-height:40px; padding:6px 8px; color:rgb(var(--primary)); font-size:15px; font-weight:600; cursor:pointer; }
+  .phone-title { min-width:0; flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:15px; font-weight:700; }
+  .phone-place { flex-shrink:0; color:rgb(var(--muted)); font-size:13px; font-variant-numeric:tabular-nums; }
+  .phone-step { display:flex; align-items:center; justify-content:center; width:40px; min-height:40px; flex-shrink:0; border:1px solid rgb(var(--line)); background:rgb(var(--canvas)); font-size:18px; cursor:pointer; }
+  .phone-step:disabled { opacity:.4; cursor:default; }
+  /* Тот же воздух, что у шапки: на большом мониторе плотность 650-пиксельного
+     окна выглядит скупостью, а высоты там не жалко. */
+  @media(min-width:1200px) and (min-height:800px) {
+    .pult-nav { min-height:52px; padding-block:8px; }
+    .pult-view-tab { min-height:38px; padding:8px 14px; font-size:15px; }
+  }
+  @media(max-width:1000px) { .pult-sidebar { width:324px; } }
+  @media(max-width:860px) { .pult-sidebar { width:280px; } .pult-view-tab { padding:6px 9px; } }
+  @media(max-width:650px) {
+    /*
+     * Телефон: два экрана, а не две колонки.
+     *
+     * Список во весь экран, работа во весь экран, между ними — нажатие и жест
+     * «назад». Пока открыта работа, шапка, вкладки и полоса «на экране»
+     * уходят: их место — это та самая высота, которой не хватало доку общения
+     * и коду. Вернуться к ним — один жест.
+     */
+    .pult-root { height:100dvh; }
+    .pult-nav-status, .pult-pending-link { display:none; }
+    .pult-view-tab { flex:1; min-height:44px; font-size:14px; padding:6px 8px; }
+    .pult-work-layout { flex-direction:row; }
+    .pult-sidebar { width:100%; border-right:0; }
+    .phone-bar { display:flex; }
+    [data-pult-pane='work'] .pult-sidebar { display:none; }
+    [data-pult-pane='list'] .pult-work-pane { display:none; }
+    [data-pult-pane='work'] .pult-head,
+    [data-pult-pane='work'] .pult-nav { display:none; }
+    [data-pult-pane='work'] :global(.projection-banner) { display:none; }
+  }
 </style>

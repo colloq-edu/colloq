@@ -26,6 +26,7 @@ import { groupAttempts } from '../shared/protocol.js'
 import type { CouncilAttempt } from '../shared/protocol.js'
 import {
   GROUP_MIN,
+  attemptRunLine,
   bySubmissionDesc,
   classBar,
   heldArrivals,
@@ -35,7 +36,9 @@ import {
   matchesFilter,
   moveCursor,
   neighbourInGroup,
+  pultClock,
   pultKeyAction,
+  pultRanFor,
   requestReason,
   rowMeaning,
   selectable,
@@ -119,11 +122,11 @@ test('одинаковые ответы сворачиваются с трёх, 
   const built = rows(three)
   assert.deepEqual(
     built.map((row) => row.kind),
-    ['attempt', 'collapsed'],
-    'в ленте один человек и хвост',
+    ['section', 'attempt', 'collapsed'],
+    'в ленте заголовок «Сдали», один человек и хвост',
   )
-  assert.equal(built[0].kind === 'attempt' && built[0].id, 'c', 'стоит самый свежий')
-  assert.equal(built[1].kind === 'collapsed' && built[1].rest, 2)
+  assert.equal(built[1].kind === 'attempt' && built[1].id, 'c', 'стоит самый свежий')
+  assert.equal(built[2].kind === 'collapsed' && built[2].rest, 2)
   // Свёрнутые под курсор не попадают вовсе.
   assert.deepEqual(selectable(built), ['c'])
 })
@@ -135,12 +138,60 @@ test('раскрытая группа даёт шапку и членов с о�
   const built = rows(list, { expanded: new Set(['x=1']) })
   assert.deepEqual(
     built.map((row) => row.kind),
-    ['attempt', 'header', 'attempt', 'attempt'],
+    ['section', 'attempt', 'header', 'attempt', 'attempt'],
   )
-  const header = built[1]
+  const header = built[2]
   assert.equal(header.kind === 'header' && header.count, 3)
-  assert.equal(built[2].kind === 'attempt' && built[2].inGroup, true, 'член группы с отступом')
+  assert.equal(built[3].kind === 'attempt' && built[3].inGroup, true, 'член группы с отступом')
   assert.deepEqual(selectable(built), ['c', 'b', 'a'])
+})
+
+/* -------------------------------------------------------------- секции */
+
+test('лента делится на «Сдали» и «Пишут», и заголовки считают людей, а не строки', () => {
+  /*
+   * «Лучше помечать сданные работы в пульте, а то нихуя не видно» — 19.09.
+   * Порядок и так ставил сданных первыми, но границы между ними и пишущими в
+   * списке не существовало: один ряд людей без отличий.
+   */
+  const list = [
+    ...['a', 'b', 'c'].map((id, at) => attempt({ participantId: id, submittedAt: T + at, text: 'x = 1' })),
+    attempt({ participantId: 'alone', submittedAt: T + 9, text: 'y = 2' }),
+    attempt({ participantId: 'draft1', submittedAt: null, text: 'p' }),
+    attempt({ participantId: 'draft2', submittedAt: null, text: 'q' }),
+  ]
+  const built = rows(list)
+  const sections = built.filter((row) => row.kind === 'section')
+  assert.deepEqual(sections.map((row) => row.kind === 'section' && row.section), ['submitted', 'writing'])
+  // Четверо сдали, хотя строк в ленте две: трое свёрнуты под хвостом группы.
+  assert.equal(sections[0].kind === 'section' && sections[0].count, 4, 'счёт по строкам, а не по людям')
+  assert.equal(sections[1].kind === 'section' && sections[1].count, 2)
+  // Заголовок стоит ПЕРЕД своей половиной.
+  const at = built.findIndex((row) => row.kind === 'section' && row.section === 'writing')
+  assert.equal(built[at + 1].kind === 'attempt' && built[at + 1].id, 'draft1')
+  // И курсору не даётся: j и k их перепрыгивают, Enter на них ничего не значит.
+  assert.deepEqual(selectable(built), ['alone', 'c', 'draft1', 'draft2'])
+  assert.equal(moveCursor(built, 'alone', 1), 'c')
+  assert.equal(moveCursor(built, 'c', 1), 'draft1', 'курсор застрял на заголовке секции')
+})
+
+test('пустая половина заголовка не получает, а отбор и поиск секций не знают вовсе', () => {
+  const drafts = rows([attempt({ participantId: 'd', submittedAt: null })])
+  assert.deepEqual(
+    drafts.map((row) => row.kind),
+    ['section', 'attempt'],
+    'у одних черновиков должен быть один заголовок',
+  )
+  assert.equal(drafts[0].kind === 'section' && drafts[0].section, 'writing')
+  const mixed = [
+    attempt({ participantId: 'ok', submittedAt: T, text: 'a' }),
+    attempt({ participantId: 'draft', submittedAt: null, text: 'b' }),
+  ]
+  // Под отбором заголовок «Сдали · 5» говорил бы о числе, которого в списке
+  // нет: отбор уже разрезал ленту по другому признаку.
+  assert.ok(!rows(mixed, { filter: 'writing' }).some((row) => row.kind === 'section'))
+  assert.ok(!rows(mixed, { search: 'ok' }).some((row) => row.kind === 'section'))
+  assert.ok(rows(mixed).some((row) => row.kind === 'section'))
 })
 
 /* -------------------------------------------------------------- фильтры */
@@ -349,6 +400,51 @@ test('номер варианта идёт по времени сдачи и с�
   assert.equal(numbers.get('early'), 1)
   assert.equal(numbers.get('late'), 2)
   assert.equal(numbers.get('draft'), 3, 'пишущие — в хвосте нумерации, без дырок')
+})
+
+/* ------------------------------------------------------- время запуска */
+
+test('строка запуска говорит, что случилось, сколько считалось и когда', () => {
+  /*
+   * Дословная просьба с пары 19.09: «в пульте консилиума показывать время
+   * запуска». Без часа «Запуск выполнен» не отличает попытку, запущенную пять
+   * минут назад, от запущенной только что, а решают по ним разное.
+   */
+  const at = new Date(2026, 8, 19, 17, 24, 5).getTime()
+  const run = (over: Record<string, unknown>) => ({ state: 'ok', outputs: [], execCount: 1, ranMs: 1200, startedAt: at, by: 'host', ...over })
+  const line = (over: Record<string, unknown>, now = at + 3400) =>
+    attemptRunLine({ run: run(over) as never, runRequest: null }, now).label
+
+  assert.equal(line({}), 'Запуск выполнен · 1,2 с · 17:24')
+  assert.equal(line({ state: 'error', ranMs: 400 }), 'Ошибка запуска · 0,4 с · 17:24')
+  assert.equal(line({ state: 'running', ranMs: null }), 'Считает 3 с', 'живой счётчик — целыми секундами')
+  assert.equal(line({ state: 'queued', ranMs: null }), 'В очереди с 17:24')
+  assert.equal(line({ state: 'error', timedOut: 30, ranMs: null }), 'Остановлен пределом 30 с · 17:24')
+  // Прерванный руками длительности не имеет — и выдуманной не получает.
+  assert.equal(line({ ranMs: null }), 'Запуск выполнен · 17:24')
+  // Не запускали и просит запуск — там часа нет вовсе, слово прежнее.
+  assert.equal(attemptRunLine({ run: null }, at).label, 'Не запускали')
+  assert.equal(
+    attemptRunLine({ run: null, runRequest: { status: 'pending' } }, at).label,
+    'Просит запуск',
+  )
+  // Тон достаётся от attemptExecution: два места, называющие исход, разошлись
+  // бы на первом же новом состоянии.
+  assert.equal(attemptRunLine({ run: run({ state: 'error' }) as never }, at).tone, 'danger')
+  assert.equal(attemptRunLine({ run: run({}) as never }, at).tone, 'positive')
+})
+
+test('час запуска — с секундами там, где по ним сличают запуски', () => {
+  const at = new Date(2026, 8, 19, 7, 4, 9).getTime()
+  assert.equal(pultClock(at), '07:04')
+  assert.equal(pultClock(at, true), '07:04:09')
+  // Короткие запуски — с десятой долей: `spell()` округлил бы весь класс в «0 с».
+  assert.equal(pultRanFor(1200), '1,2 с')
+  assert.equal(pultRanFor(400), '0,4 с')
+  assert.equal(pultRanFor(9900), '9,9 с')
+  // Дальше десятой доли никто не сравнивает — там общие слова регламента.
+  assert.equal(pultRanFor(12_000), '12 с')
+  assert.equal(pultRanFor(95_000), '1 мин 35 с')
 })
 
 /* ----------------------------------------------------------- ядро и полоса */

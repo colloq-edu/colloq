@@ -34,6 +34,8 @@
     sizes: ReadonlyMap<string, number>
     /** Сколько сдач придержано за полосой; 0 — полосы нет. */
     held: number
+    /** Часы окна: живой счётчик «Считает 3 с» в строке того, кто считается. */
+    now: number
     /** Решать просьбы о запуске нельзя (нет связи, ручка не та). */
     decisionsOff: boolean
     onopen: (participantId: string) => void
@@ -55,6 +57,7 @@
     shown,
     sizes,
     held,
+    now,
     decisionsOff,
     onopen,
     onlet,
@@ -87,7 +90,7 @@
     >{tr('room.ui.1320', { count: held })}</button>
   {/if}
   <div
-    class="min-h-0 flex-1 overflow-y-auto"
+    class="pult-scroll min-h-0 flex-1 overflow-y-auto"
     data-pult-scroll
     onscroll={(event) => onscroll(event.currentTarget.scrollTop)}
   >
@@ -100,6 +103,7 @@
           inGroup={row.inGroup}
           variant={row.variant}
           {names}
+          {now}
           selected={cursor === row.id}
           focused={keyboard && cursor === row.id}
           meaning={rowMeaning(row.attempt, cursor, shown)}
@@ -109,6 +113,22 @@
             : null}
           onopen={() => onopen(row.id)}
         />
+      {:else if row.kind === 'section'}
+        <!--
+          Граница ленты: «Сдали · 12» и «Пишут · 5».
+          Липкая внутри прокрутки — уехав, она перестала бы отвечать на
+          единственный вопрос, ради которого её завели: та строка, что сейчас
+          под глазом, из сдавших или из пишущих? Курсору она не даётся, j и k
+          её перепрыгивают: это место в ленте, а не человек.
+        -->
+        <div class="pult-section" data-pult-section={row.section}>
+          {tr(
+            row.section === 'submitted'
+              ? 'room.pult.v3.sections.submitted'
+              : 'room.pult.v3.sections.writing',
+            { count: row.count },
+          )}
+        </div>
       {:else if row.kind === 'collapsed'}
         <!--
           Свёрнутая группа стоит ПОД первым из совпавших и ниже обычной строки:
@@ -158,3 +178,26 @@
     {/each}
   </div>
 </div>
+
+<style>
+  /*
+   * Палец, а не колесо.
+   *
+   * `overscroll-behavior: contain` держит рывок в конце списка внутри списка:
+   * без него доскролленный до низа список на телефоне утягивает за собой всю
+   * страницу, и док общения уезжает из-под большого пальца. Инерция Safari
+   * включается своим префиксом — без неё список листается «по-бумажному»,
+   * рывками по высоте экрана.
+   */
+  .pult-scroll { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .pult-section {
+    position: sticky; top: 0; z-index: 2;
+    display: flex; align-items: center; min-height: 28px;
+    padding: 5px 12px;
+    border-bottom: 1px solid rgb(var(--line));
+    background: rgb(var(--surface));
+    color: rgb(var(--faint));
+    font-size: 12px; font-weight: 700; line-height: 16px; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .pult-section[data-pult-section='submitted'] { color: rgb(var(--accent-text)); }
+</style>

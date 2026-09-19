@@ -4,7 +4,11 @@ import { attemptReview, attemptExecution, pultShortcutAllowed, matchesFilter } f
 
 test('execution success does not imply a correct solution, and a grade does not erase execution status', () => {
   const run = { state: 'ok' as const }
-  assert.equal(attemptReview({ submittedAt: 1, correct: null }).tone, 'neutral')
+  // Submitted and ungraded is the one review state that asks the teacher for
+  // something, so it is the one that is filled rather than tinted.
+  assert.equal(attemptReview({ submittedAt: 1, correct: null }).tone, 'accent')
+  assert.equal(attemptReview({ submittedAt: 1, correct: null }).shape, 'fill')
+  assert.equal(attemptReview({ submittedAt: null, correct: null }).shape, 'outline')
   assert.equal(attemptReview({ submittedAt: 1, correct: false }).tone, 'warning')
   assert.equal(attemptReview({ submittedAt: 1, correct: true }).tone, 'positive')
   assert.equal(attemptExecution({ run }).tone, 'positive')

@@ -19,7 +19,7 @@
  * прокрутки. Два разных порядка — не небрежность: два разных вопроса («какие
  * бывают ответы» против «кто только что сдал»).
  */
-import { tr } from '@shared/i18n'
+import { formatNumber, tr } from '@shared/i18n'
 import { COUNCIL_RERUN_PAUSES, COUNCIL_RUN_LIMITS, type CouncilSettings } from '@shared/notebook'
 import type { CouncilAttempt, CouncilGroup, CouncilStatus } from '@shared/protocol'
 import { groupTitle } from './council-board'
@@ -38,15 +38,31 @@ export interface PultBadge {
   tone: PultTone
   /** Знак перед словом, когда тон о состоянии не договаривает. См. attemptExecution. */
   icon?: string
+  /**
+   * Форма плашки — второй признак поверх цвета.
+   *
+   * Заливка означает «от вас ждут действия»: сдано и не оценено. Контур —
+   * «состояние, которое само пройдёт»: человек ещё пишет. Тон между ними тоже
+   * разный, но одним цветом такие вещи не различают: на проекторе, на чужом
+   * мониторе и у того, кто цвета не различает, остаётся форма и слово.
+   */
+  shape?: 'fill' | 'outline'
 }
 export type PultView = 'work' | 'queue' | 'oracle'
 
-/** Evaluation and execution are separate facts: running code successfully is not a grade. */
+/**
+ * Evaluation and execution are separate facts: running code successfully is not a grade.
+ *
+ * Сданная и НЕ оценённая — залитая плашка акцентом: 19.09 преподаватель вёл
+ * пару и не видел в списке, кого он уже посмотрел, а кого нет («лучше помечать
+ * сданные работы в пульте, а то нихуя не видно»). Бледная «Не проверено» в
+ * общем сером ряду не отличалась ни от черновика, ни от оценённого.
+ */
 export function attemptReview(attempt: Pick<CouncilAttempt, 'submittedAt' | 'correct'>): PultBadge {
-  if (attempt.submittedAt === null) return { label: tr('room.pult.v2.review.draft'), tone: 'neutral' }
+  if (attempt.submittedAt === null) return { label: tr('room.pult.v2.review.draft'), tone: 'neutral', shape: 'outline' }
   if (attempt.correct === true) return { label: tr('room.pult.v2.review.correct'), tone: 'positive' }
   if (attempt.correct === false) return { label: tr('room.pult.v2.review.wrong'), tone: 'warning' }
-  return { label: tr('room.pult.v2.review.pending'), tone: 'neutral' }
+  return { label: tr('room.pult.v3.review.waiting'), tone: 'accent', shape: 'fill' }
 }
 
 export function attemptExecution(attempt: {
@@ -74,6 +90,97 @@ export function attemptExecution(attempt: {
   if (attempt.runRequest?.status === 'pending') return { label: tr('room.pult.v2.execution.request'), tone: 'warning' }
   if (attempt.run?.state === 'ok') return { label: tr('room.pult.v2.execution.ok'), tone: 'positive' }
   return { label: tr('room.pult.v2.execution.none'), tone: 'neutral' }
+}
+
+/* ------------------------------------------------------- время запуска */
+
+/**
+ * Час и минута — и секунды там, где по ним сопоставляют.
+ *
+ * Своя, а не `clock()` из lib/history: тот модуль ради двух строк тянет за
+ * собой `./api` с сетью и токенами, а этот файл читается ещё и из тестов без
+ * браузера. Правило форматирования то же самое, до знака.
+ *
+ * Секунды нужны в открытой работе и в очереди: «запущен в 17:24:05» — это то,
+ * чем преподаватель сличает свой запуск с чужим, когда за минуту их три, и
+ * «17:24» у всех трёх не отвечает ни на один вопрос.
+ */
+export function pultClock(at: number, seconds = false): string {
+  const date = new Date(at)
+  const two = (value: number): string => String(value).padStart(2, '0')
+  const hhmm = `${two(date.getHours())}:${two(date.getMinutes())}`
+  return seconds ? `${hhmm}:${two(date.getSeconds())}` : hhmm
+}
+
+/**
+ * Сколько считал законченный запуск.
+ *
+ * До десяти секунд — с десятой долей: почти все запуски консилиума короткие, и
+ * `spell()` округляет их в «0 с» и «1 с», то есть в одно и то же число для
+ * всего класса. Дальше десятой доли никто не сравнивает, и там идёт общий
+ * `pultDuration` — тот же, каким названы пределы регламента.
+ */
+export function pultRanFor(ms: number): string {
+  const safe = Math.max(0, ms)
+  if (safe < 10_000) {
+    return tr('room.pult.v2.rules.sec', {
+      count: formatNumber(safe / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }),
+    })
+  }
+  return pultDuration(safe / 1000)
+}
+
+/**
+ * Строка запуска целиком: что случилось, сколько считалось и КОГДА.
+ *
+ * Час запуска — прямая просьба с пары 19.09: «в пульте консилиума показывать
+ * время запуска». Без него «Запуск выполнен» не отличает попытку, запущенную
+ * пять минут назад, от запущенной только что, а решают по ним разное: первую
+ * пора показывать классу, вторая ещё не досчитала соседей.
+ *
+ * Слово и тон берутся у `attemptExecution` — одно место, где состояние
+ * становится словом, — и к ним прибавляются длительность и время. Не
+ * запускали вовсе и просит запуск — там времени нет, и строка остаётся
+ * прежней: выдуманного часа быть не должно.
+ */
+export function attemptRunLine(
+  attempt: {
+    run: Pick<NonNullable<CouncilAttempt['run']>, 'state' | 'timedOut' | 'startedAt' | 'ranMs'> | null
+    runRequest?: Pick<NonNullable<CouncilAttempt['runRequest']>, 'status'> | null
+  },
+  now: number,
+): PultBadge {
+  const base = attemptExecution(attempt)
+  const run = attempt.run
+  if (!run) return base
+  const time = pultClock(run.startedAt)
+  const limit = timedOutLimit(attempt)
+  if (limit !== null) {
+    return { ...base, label: tr('room.pult.v3.runStopped', { limit: pultDuration(limit), time }) }
+  }
+  switch (run.state) {
+    case 'running':
+      // Живой счётчик — целыми секундами: десятая доля у числа, которое
+      // меняется каждую секунду, читается как мерцание, а не как измерение.
+      return { ...base, label: tr('room.pult.v3.runRunning', { duration: pultDuration(Math.max(now - run.startedAt, 0) / 1000) }) }
+    case 'queued':
+      return { ...base, label: tr('room.pult.v3.runQueued', { time }) }
+    case 'error':
+      return {
+        ...base,
+        label: run.ranMs === null
+          ? tr('room.pult.v3.runFailedAt', { time })
+          : tr('room.pult.v3.runFailed', { duration: pultRanFor(run.ranMs), time }),
+      }
+    case 'ok':
+      return {
+        ...base,
+        label: run.ranMs === null
+          ? tr('room.pult.v3.runDoneAt', { time })
+          : tr('room.pult.v3.runDone', { duration: pultRanFor(run.ranMs), time }),
+      }
+  }
+  return base
 }
 
 export function pultShortcutAllowed(action: PultAction, view: PultView, navigation: boolean, overlay = false): boolean {
@@ -112,9 +219,9 @@ export function filterLabel(filter: PultFilter): string {
 }
 
 /**
- * Строка списка. Три вида, и только первый выбирается курсором: шапка группы и
- * свёрнутый хвост — это не люди, а места в ленте, и Enter на них означал бы
- * «показать классу» неизвестно чью работу.
+ * Строка списка. Четыре вида, и только первый выбирается курсором: шапка
+ * группы, свёрнутый хвост и заголовок секции — это не люди, а места в ленте, и
+ * Enter на них означал бы «показать классу» неизвестно чью работу.
  */
 export type PultRow =
   | {
@@ -129,6 +236,15 @@ export type PultRow =
       variant: number
     }
   | { kind: 'collapsed'; id: string; groupKey: string; rest: number; faces: CouncilAttempt[] }
+  /**
+   * Заголовок половины ленты: «Сдали · N» и «Пишут · N».
+   *
+   * Порядок в ленте и так ставит сданные первыми (bySubmissionDesc), но граница
+   * между «уже сдал» и «ещё пишет» ничем не была отмечена, и в окне, где видно
+   * две строки с половиной, её не существовало вовсе: список выглядел как один
+   * ряд людей без отличий. Курсору строка не даётся — как шапке группы и хвосту.
+   */
+  | { kind: 'section'; id: string; section: 'submitted' | 'writing'; count: number }
   | {
       kind: 'header'
       id: string
@@ -293,10 +409,44 @@ export function listRows(input: PultListInput): PultRow[] {
     })
     for (const member of rest) rows.push(row(member, true))
   }
-  return rows
+  return withSections(rows, ordered, filter === 'all' && needle === '')
 }
 
-/** Только по людям: шапка группы и свёрнутый хвост курсору не даются. */
+/**
+ * Две секции — только в полном списке и только без поиска.
+ *
+ * Под отбором «с ошибкой» заголовок «Сдали · 5» говорил бы о числе, которого в
+ * списке нет: отбор уже разрезал ленту по другому признаку, и второй разрез
+ * поверх первого читается как ошибка счёта. Поиск — то же самое: в нём стоят
+ * найденные, а не «все сдавшие».
+ *
+ * Счёт — по людям, а не по строкам: свёрнутая группа прячет своих под хвостом,
+ * и «Сдали · 3» при восьми сдавших было бы враньём ровно там, где на число
+ * смотрят, чтобы понять, ждать ли ещё кого-то.
+ */
+function withSections(rows: PultRow[], ordered: readonly CouncilAttempt[], on: boolean): PultRow[] {
+  if (!on) return rows
+  const submitted = ordered.filter(isSubmitted).length
+  const writing = ordered.length - submitted
+  const out: PultRow[] = []
+  let openedSubmitted = false
+  let openedWriting = false
+  for (const row of rows) {
+    const draft = row.kind === 'attempt' && row.attempt.submittedAt === null
+    if (!draft && !openedSubmitted && submitted > 0) {
+      out.push({ kind: 'section', id: 'section:submitted', section: 'submitted', count: submitted })
+      openedSubmitted = true
+    }
+    if (draft && !openedWriting && writing > 0) {
+      out.push({ kind: 'section', id: 'section:writing', section: 'writing', count: writing })
+      openedWriting = true
+    }
+    out.push(row)
+  }
+  return out
+}
+
+/** Только по людям: шапка группы, свёрнутый хвост и заголовок секции курсору не даются. */
 export function selectable(rows: readonly PultRow[]): string[] {
   return rows.filter((row) => row.kind === 'attempt').map((row) => row.id)
 }

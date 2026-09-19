@@ -2,6 +2,20 @@
   import { tr } from '@shared/i18n'
   import { cn, spell } from '@/lib/utils'
 
+  /**
+   * Четыре действия над работой — и они всегда на экране.
+   *
+   * До этого ряд стоял последним в колонке, которая целиком прокручивалась в
+   * невысоком окне: «Показать классу», «Запустить» и обе отметки уезжали под
+   * сгиб, и чтобы отметить работу верной, надо было сначала долистать до них.
+   * Теперь ряд — дно дока, прибитого к низу панели, и прокручивается над ним
+   * только код с выводом.
+   *
+   * На телефоне четыре кнопки равной ширины по 44 px: подписи там короткие
+   * («Классу», «Запуск», «Верно», «Правки») — не ради краткости, а потому что
+   * четыре цели нажатия в 360 px шириной иначе не помещаются, а уменьшать их
+   * ниже пальца нельзя.
+   */
   interface Props {
     /** Эта работа сейчас в зале. */
     onScreen: boolean
@@ -50,21 +64,28 @@
   <div class="actions-main">
     <button type="button" class="pult-button pult-button--primary action-show"
       disabled={disabled || (!onScreen && writing)} onclick={onScreen ? onclear : onshow}>
-      {onScreen ? tr('room.pult.v2.workClear') : tr('room.ui.1336')}
+      <span class="act-long">{onScreen ? tr('room.pult.v2.workClear') : tr('room.ui.1336')}</span>
+      <span class="act-short">{onScreen ? tr('room.pult.v3.shortClear') : tr('room.pult.v3.shortShow')}</span>
       <span aria-hidden="true">{onScreen ? '×' : '↗'}</span>
     </button>
     <button type="button" class="pult-button action-run" disabled={disabled || running || queued}
       title={ran ? tr('room.ui.1338') : tr('room.ui.1337')} data-pult-run onclick={onrun}>
-      <span aria-hidden="true">▶</span> {tr('room.ui.1337')}
+      <span aria-hidden="true">▶</span>
+      <span class="act-long">{tr('room.ui.1337')}</span>
+      <span class="act-short">{tr('room.pult.v3.shortRun')}</span>
     </button>
     <div class="actions-grades" role="group" aria-label={tr('room.pult.v2.workReview')}>
       <button type="button" class={cn('pult-button action-grade', correct === true && 'pult-button--selected')}
         data-tone="positive" aria-pressed={correct === true} disabled={disabled} onclick={() => onmark(true)}>
-        <span aria-hidden="true">✓</span> {tr('room.pult.v2.workCorrect')}
+        <span aria-hidden="true">✓</span>
+        <span class="act-long">{tr('room.pult.v2.workCorrect')}</span>
+        <span class="act-short">{tr('room.pult.v3.shortCorrect')}</span>
       </button>
       <button type="button" class={cn('pult-button action-grade', correct === false && 'pult-button--selected')}
         data-tone="warning" aria-pressed={correct === false} disabled={disabled} onclick={() => onmark(false)}>
-        <span aria-hidden="true">↺</span> {tr('room.pult.v2.workRevise')}
+        <span aria-hidden="true">↺</span>
+        <span class="act-long">{tr('room.pult.v2.workRevise')}</span>
+        <span class="act-short">{tr('room.pult.v3.shortRevise')}</span>
       </button>
     </div>
   </div>
@@ -81,14 +102,27 @@
 </div>
 
 <style>
-  .actions { flex-shrink: 0; padding: 12px 24px; border-top: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
-  .actions-main { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-height: 44px; }
-  .actions :global(.pult-button) { min-height: 42px; padding: 10px 12px; font-size: 14px; line-height: 20px; white-space: nowrap; }
-  .actions :global(.action-show), .actions :global(.action-run) { font-size: 15px; }
-  .actions-grades { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+  .actions { flex-shrink: 0; }
+  .actions-main { display: flex; align-items: center; gap: 8px; }
+  .actions :global(.pult-button) { min-height: 38px; padding: 8px 12px; font-size: 14px; line-height: 20px; white-space: nowrap; }
+  .actions-grades { display: flex; align-items: center; gap: 8px; margin-left: auto; }
   .actions :global(.action-grade[data-tone='positive'][aria-pressed='true']) { border-color: rgb(var(--positive)); background: rgb(var(--positive) / 0.1); color: rgb(var(--positive)); }
   .actions :global(.action-grade[data-tone='warning'][aria-pressed='true']) { border-color: rgb(var(--warning)); background: rgb(var(--warning) / 0.1); color: rgb(var(--warning)); }
-  .actions-run-state { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-top: 10px; }
-  .actions-queued { margin: 10px 0 0; }
-  @media (max-width: 1000px) { .actions { padding-inline: 16px; } }
+  .actions-run-state { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-top: 8px; }
+  .actions-queued { margin: 8px 0 0; }
+  .act-short { display: none; }
+  /* Узкая панель работы: подписи короткие, но кнопки остаются кнопками.
+     760 — та ширина окна, на которой четыре полных подписи перестают
+     помещаться в панель работы рядом со списком. */
+  @media (max-width: 760px) {
+    .actions :global(.pult-button) { padding: 8px 10px; }
+    .act-long { display: none; }
+    .act-short { display: inline; }
+  }
+  @media (max-width: 650px) {
+    .actions-main { gap: 6px; }
+    .actions-grades { gap: 6px; margin-left: 0; flex: 2; }
+    .actions :global(.pult-button) { flex: 1; min-width: 0; min-height: 44px; padding: 8px 4px; font-size: 14px; }
+    .actions-main > :global(.pult-button) { flex: 1; }
+  }
 </style>

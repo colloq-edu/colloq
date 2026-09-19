@@ -129,8 +129,36 @@ test('браузер заблокировал окно — кнопка гово
 test('сохранённый черновик не выдаётся за текущий набор', () => {
   assert.match(ROW, /attemptReview\(attempt\)/, 'оценка и черновик определяются отдельно от запуска')
   assert.doesNotMatch(ROW, /room\.ui\.1312/, 'нельзя ставить «сейчас» по наличию черновика')
-  assert.match(ROW, /clock\(attempt\.submittedAt \?\? attempt\.updatedAt\)/)
+  assert.match(ROW, /pultClock\(attempt\.submittedAt \?\? attempt\.updatedAt\)/)
   assert.match(ROW, /presence\s*===\s*'offline'/)
+})
+
+test('сданная работа отличается от черновика словом и формой, а не только цветом', () => {
+  /*
+   * Жалоба с пары 19.09: «лучше помечать сданные работы в пульте, а то нихуя
+   * не видно». Сданная и не оценённая — залитая плашка акцентом, черновик —
+   * контурная и приглушённая строка. Одним цветом такие вещи не различают:
+   * строку читают краем глаза, посреди фразы к классу.
+   */
+  const pult = code(read('web/src/lib/council-pult.ts'))
+  assert.match(pult, /room\.pult\.v3\.review\.waiting'\), tone: 'accent', shape: 'fill'/)
+  assert.match(pult, /room\.pult\.v2\.review\.draft'\), tone: 'neutral', shape: 'outline'/)
+  assert.match(ROW, /data-shape=\{review\.shape\}/, 'форма плашки не доезжает до разметки')
+  assert.match(ROW, /data-draft=\{draft\?'yes':'no'\}/, 'черновик не помечен на строке')
+  assert.match(ROW, /\[data-draft='yes'\][\s\S]{0,120}opacity:\.65/, 'черновик не приглушён')
+  const css = read(`${PULT}/pult.css`)
+  assert.match(css, /\.pult-badge\[data-shape="fill"\][\s\S]{0,140}background: rgb\(var\(--accent\)\)/)
+  assert.match(css, /\.pult-badge\[data-shape="outline"\][\s\S]{0,160}background: transparent/)
+})
+
+test('время запуска стоит в строке списка и в открытой работе', () => {
+  // «В пульте консилиума показывать время запуска» — дословная просьба с пары.
+  // Строка списка: «Запуск выполнен · 1,2 с · 17:24». Работа: с секундами,
+  // потому что за минуту запусков бывает три.
+  assert.match(ROW, /attemptRunLine\(attempt, now\)/, 'строка запуска собирается не общей функцией')
+  assert.match(WORK, /pultClock\(run\.startedAt, true\)/, 'в работе нет секунд в моменте запуска')
+  assert.match(QUEUE, /room\.pult\.v3\.queueRunning/, 'в очереди не сказано, когда запущен идущий')
+  assert.match(QUEUE, /room\.pult\.v3\.queueSince/, 'в очереди не сказано, с какого времени ждут')
 })
 
 test('просьба о запуске вытесняет время кнопкой — не открывая работу', () => {
@@ -276,8 +304,37 @@ test('регламент читается предложением в шапке
   assert.match(HEADER, /class="pult-value"[\s\S]{0,400}?onrules\(part\.rule, event\.currentTarget\)/)
   assert.match(HEADER, /aria-expanded=\{openRule === part\.rule\}/, 'не видно, о чём открыт лист')
   assert.doesNotMatch(HEADER, /room\.pult\.v2\.private/, 'строка «личный пульт» вернулась на место регламента')
-  // Ниже 650 px от предложения остаётся имя — и оно же дверь.
-  assert.match(HEADER, /@media\(max-width:650px\)[\s\S]*?\.pult-rules-line \{ display:none/)
+  // Ниже 860 px от предложения остаётся имя — и оно же дверь. Порог переехал
+  // с 650: в одной строке с заголовком и подписью предложение перестаёт
+  // помещаться раньше, чем окно становится телефоном.
+  assert.match(HEADER, /@media\(max-width:860px\)[\s\S]*?\.pult-rules-line \{ display:none/)
+})
+
+test('шапка окна — одна строка, а не три', () => {
+  /*
+   * Бюджет постоянной обвязки в окне 900×650: шапка ≤ 56 px. Было ~90 на одну
+   * только шапку (заголовок 26/32, подпись, регламент отдельной строкой), и
+   * вместе со вкладками и полосой «на экране» — 290 px из 650.
+   */
+  assert.match(HEADER, /\.pult-header \{[^}]*display:flex[^}]*align-items:center/)
+  const height = HEADER.match(/\.pult-header \{[^}]*min-height:(\d+)px/)?.[1]
+  assert.ok(height && Number(height) <= 56, `шапка обещает ${height ?? '?'} px`)
+  // Заголовок — подпись окна, а не титул: 26/32 занимали высоту двух строк.
+  const title = HEADER.match(/h1 \{[^}]*font-size:(\d+)px/)?.[1]
+  assert.ok(title && Number(title) <= 20, `заголовок ${title ?? '?'} px`)
+  const tab = WINDOW.match(/\.pult-view-tab \{[^}]*min-height:(\d+)px/)?.[1]
+  assert.ok(tab && Number(tab) <= 48, `вкладки обещают ${tab ?? '?'} px`)
+  const status = code(read(`${PULT}/PultStatusLine.svelte`))
+  const line = status.match(/\.pult-status \{[^}]*min-height:(\d+)px/)?.[1]
+  assert.ok(line && Number(line) <= 32, `строка состояния обещает ${line ?? '?'} px`)
+  // Полоса «на экране» — одна строка и без переносов.
+  const screen = code(read(`${PULT}/PultOnScreen.svelte`))
+  assert.match(screen, /\.projection-banner \{[^}]*flex-wrap: nowrap/)
+  const banner = screen.match(/\.projection-banner \{[^}]*min-height: (\d+)px/)?.[1]
+  assert.ok(banner && Number(banner) <= 40, `полоса обещает ${banner ?? '?'} px`)
+  // И когда она видна, строка состояния не повторяет то же имя.
+  assert.match(WINDOW, /banner=\{shown !== null\}/)
+  assert.match(status, /\{#if !banner\}/)
 })
 
 test('лист забирает клавиатуру целиком: за ним не ходят по списку', () => {
@@ -291,9 +348,60 @@ test('вывод, не поехавший со стопкой, пульт про
   assert.match(WINDOW, /wantOutputs\(cellId, attempt\.participantId\)/)
 })
 
-test('плита кода не растёт от чужого кода и честно говорит, сколько скрыла', () => {
-  assert.match(WORK, /max-height: 240px; overflow: auto/)
-  assert.match(WORK, /room\.pult\.codeLines/, 'полный счёт строк без выдуманного числа скрытых')
+test('длинный код показан началом и кнопкой, а не окошком с прокруткой', () => {
+  /*
+   * Плита кода имела свою прокрутку на 240 px ВНУТРИ прокрутки панели: колесо
+   * над кодом двигало код, чуть ниже — панель, и попасть в нужную было делом
+   * наугад. Теперь первые сорок строк и кнопка «показать весь код»; вывод
+   * идёт сразу под кодом в той же ленте, и своей вертикальной прокрутки у
+   * него нет — только горизонтальная, ради широких таблиц.
+   */
+  assert.match(WORK, /const CODE_LINES = 40/)
+  assert.match(WORK, /slice\(0, CODE_LINES\)/)
+  assert.match(WORK, /room\.pult\.v3\.codeAll/, 'не сказано, сколько строк за кнопкой')
+  assert.doesNotMatch(WORK, /\.work-code-scroll \{[^}]*max-height/, 'окошко с прокруткой вернулось')
+  assert.match(WORK, /\.work-code-scroll \{ overflow-x: auto; \}/)
+  assert.doesNotMatch(WORK, /\.work-output \{[^}]*max-height/, 'у вывода снова своя вертикальная прокрутка')
+  assert.match(WORK, /\.work-output \{ overflow-x: auto; \}/)
+})
+
+test('панель работы не прокручивается целиком: три зоны и док, прибитый к низу', () => {
+  /*
+   * Главная жалоба владельца 19.09: «типа надо листать куда-то что-то, нет
+   * фиксированной области общения». В невысоком окне вся правая панель
+   * становилась длинной страницей (`@media(max-height:700px)` в окне и
+   * `min-height:650px` у работы), и письма, поле ответа и четыре действия
+   * лежали под сгибом.
+   */
+  assert.doesNotMatch(WINDOW, /max-height:700px[\s\S]{0,80}overflow-y:auto/, 'панель снова прокручивается целиком')
+  assert.doesNotMatch(WORK, /\.work \{[^}]*min-height: 650px/, 'работа снова выше окна')
+  assert.match(WORK, /\.work-content \{[^}]*flex: 1; min-height: 0; overflow-y: auto/, 'прокручивается не середина')
+  assert.match(WORK, /\.work-dock \{[^}]*flex-shrink: 0/, 'док не прибит к низу')
+  // Порядок зон: шапка, прокрутка, док. Письма уехали в док и в ленте их нет.
+  const order = ['work-header', 'data-pult-work-scroll', 'data-pult-dock']
+  let at = -1
+  for (const mark of order) {
+    const next = WORK.indexOf(mark)
+    assert.ok(next > at, `${mark} стоит не на своём месте`)
+    at = next
+  }
+  assert.ok(WORK.indexOf('<PultLetters') > WORK.indexOf('data-pult-dock'), 'письма остались в прокрутке')
+  assert.ok(WORK.indexOf('<PultReply') > WORK.indexOf('data-pult-dock'))
+  assert.ok(WORK.indexOf('<PultActions') > WORK.indexOf('data-pult-dock'))
+  // Лента писем — со своей прокруткой, на последнем письме и без писем пустая.
+  const letters = code(read(`${PULT}/PultLetters.svelte`))
+  assert.match(letters, /\{#if letters\.length > 0\}/, 'пустая лента занимает место')
+  assert.match(letters, /box\.scrollTop = box\.scrollHeight/, 'лента открывается не на последнем письме')
+  assert.match(letters, /max-height: min\(30dvh, \d+px\); overflow-y: auto/)
+})
+
+test('удалить с занятия — не самая крупная кнопка в шапке работы', () => {
+  // Самое разрушительное действие в окне стояло красной рамкой рядом с именем
+  // и было заметнее всего остального. Меню «⋯», подтверждение — прежнее.
+  assert.match(WORK, /aria-haspopup="menu"/)
+  assert.match(WORK, /role="menu"/)
+  assert.match(WORK, /data-pult-remove/, 'кнопки «удалить» в пульте нет')
+  assert.doesNotMatch(WORK, /pult-button--danger[^>]*data-pult-remove/, 'красная кнопка вернулась в шапку')
 })
 
 test('вывод подписан тем, кто запускал, и окрашен исходом', () => {
@@ -302,7 +410,7 @@ test('вывод подписан тем, кто запускал, и окраш
   // «запускали вы» — строка автора; в пульте смотрит преподаватель, и «вы»
   // называло бы запускавшим его самого.
   assert.doesNotMatch(WORK, /room\.ui\.1061/)
-  assert.match(WORK, /execution\?\.label/, 'явная подпись запуска')
+  assert.match(WORK, /execution\.label/, 'явная подпись запуска')
 })
 
 /* ------------------------------- что переехало из тетради вместе с консолью */
@@ -323,7 +431,7 @@ test('черновик оракула правят в поле, а не подт
 
 // Recipient changes, retained drafts and actual sends are verified in the browser audit.
 
-test('удалить с занятия можно из работы видимой кнопкой и общим меню бана', () => {
+test('удалить с занятия можно из работы — меню «⋯» и общее меню бана', () => {
   assert.match(WORK, /data-pult-remove/, 'кнопки «удалить» в пульте нет')
   assert.match(WORK, /data-pult-remove[^>]*>[\s\S]*?tr\('room\.ui\.78'\)[\s\S]*?<\/button>/)
   assert.match(WINDOW, /import \{ askToBan, banTargetOf \} from '@\/lib\/bans'/)
@@ -377,6 +485,45 @@ test('просьбу о запуске студент шлёт из листа, 
   assert.match(CELL, /tr\('room\.ui\.1260'\)/)
   assert.match(WINDOW, /session\.council\.approveRunRequest\(cellId, attempt\.participantId, request\.id\)/)
   assert.match(WINDOW, /session\.council\.declineRunRequest\(cellId, attempt\.participantId, request\.id\)/)
+})
+
+/* ------------------------------------------------------------ телефон */
+
+test('на телефоне пульт — два экрана, а не две колонки', () => {
+  /*
+   * «Пульт на телефоне вообще полное говно неудобное, пролистать список всех
+   * студентов невозможно» — 19.09. Две колонки в 390 px: под шапкой,
+   * вкладками, полосой, счётчиками, поиском и чипами списку оставалось
+   * полстроки. Теперь список во весь экран, нажатие открывает работу во весь
+   * экран, системный «назад» возвращает к списку — и не закрывает пульт.
+   */
+  assert.match(WINDOW, /matchMedia\('\(max-width: 650px\)'\)/, 'порог узкого окна читается не из matchMedia')
+  assert.match(WINDOW, /let phonePane = \$state<'list' \| 'work'>\('list'\)/)
+  assert.match(WINDOW, /history\.pushState\(\{ \.\.\.\(history\.state \?\? \{\}\), pultPane: 'work' \}, '', location\.href\)/)
+  assert.match(WINDOW, /addEventListener\('popstate'/, 'жест «назад» не слушают')
+  assert.match(WINDOW, /history\.back\(\)/, '«‹ Работы» уходит мимо истории')
+  // Экраны переключает разметка, а не перестроение: адрес пульта — ячейка.
+  assert.match(WINDOW, /data-pult-pane=\{pane\}/)
+  assert.match(WINDOW, /\[data-pult-pane='work'\] \.pult-sidebar \{ display:none; \}/)
+  assert.match(WINDOW, /\[data-pult-pane='list'\] \.pult-work-pane \{ display:none; \}/)
+  // Планка работы: назад, имя, место в ленте, стрелки к соседним работам.
+  assert.match(WINDOW, /room\.pult\.v3\.backToList/)
+  assert.match(WINDOW, /room\.pult\.v3\.prevWork/)
+  assert.match(WINDOW, /room\.pult\.v3\.nextWork/)
+  assert.match(WINDOW, /\.pult-root \{ height:100dvh; \}/, 'адресная строка браузера срежет док')
+  // Список листается пальцем, а не колесом.
+  assert.match(LIST, /overscroll-behavior: contain; -webkit-overflow-scrolling: touch/)
+  // Подсказка о клавишах на телефоне не занимает места: клавиш там нет.
+  const status = code(read(`${PULT}/PultStatusLine.svelte`))
+  assert.match(status, /@media\(max-width:650px\) \{ \.pult-status \{ display:none; \} \}/)
+})
+
+test('четыре действия на телефоне — равной ширины и в палец высотой', () => {
+  assert.match(ACTIONS, /min-height: 44px/, 'цель нажатия ниже пальца')
+  assert.match(ACTIONS, /\.act-short \{ display: none; \}/, 'коротких подписей нет вовсе')
+  for (const key of ['shortShow', 'shortClear', 'shortRun', 'shortCorrect', 'shortRevise']) {
+    assert.match(ACTIONS, new RegExp(`room\\.pult\\.v3\\.${key}`), `короткой подписи «${key}» нет`)
+  }
 })
 
 /* --------------------------------------------------------------- тема */

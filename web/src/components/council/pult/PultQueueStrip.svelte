@@ -3,8 +3,7 @@
   import Avatar from '@/components/ui/Avatar.svelte'
   import type { CouncilAttempt } from '@shared/protocol'
   import type { CouncilSettings } from '@shared/notebook'
-  import { pultDuration, requestReason, timedOutAttempts, timedOutLimit, type KernelView } from '@/lib/council-pult'
-  import { clock } from '@/lib/history'
+  import { pultClock, pultDuration, requestReason, timedOutAttempts, timedOutLimit, type KernelView } from '@/lib/council-pult'
   import { spell } from '@/lib/utils'
 
   interface Props {
@@ -55,7 +54,9 @@
           <span class="running-label">{tr('room.pult.v2.queue.current')}</span>
           <div class="running-author">
             {#if names}<Avatar name={running.name} color={running.color} avatar={running.avatar} size="md" />{/if}
-            <strong>{who(running)}</strong><span class="running-time">{spell(elapsed)}</span>
+            <!-- Час запуска с секундами: за минуту их бывает три, и «17:24» у
+                 всех трёх не отличает их друг от друга. -->
+            <strong>{who(running)}</strong><span class="running-time">{tr('room.pult.v3.queueRunning', { time: pultClock(running.run!.startedAt, true), duration: spell(elapsed) })}</span>
           </div>
           <!--
             Предел — там, где он срабатывает.
@@ -107,7 +108,9 @@
               </span>
               <div class="attempt-copy">
                 <strong>{who(attempt)}</strong>
-                <span class="request-time" title={clock(attempt.runRequest!.requestedAt)}>{tr('room.pult.v2.queue.waiting', { duration: spell(Math.max(now - attempt.runRequest!.requestedAt, 0)) })}</span>
+                <!-- С какого времени ждёт — словом, а не только в подсказке:
+                     по нему решают, кого пускать первым. -->
+                <span class="request-time">{tr('room.pult.v2.queue.waiting', { duration: spell(Math.max(now - attempt.runRequest!.requestedAt, 0)) })} · {tr('room.pult.v3.queueSince', { time: pultClock(attempt.runRequest!.requestedAt) })}</span>
               </div>
               {#if reason}<span class="request-reason pult-meta">{reason}</span>{/if}
               <div class="row-actions">
@@ -136,6 +139,9 @@
               </span>
               <strong class="queued-author">{who(attempt)}</strong>
               <code>{firstLine(attempt.text)}</code>
+              <!-- С какого времени стоит в очереди: без этого «в очереди 4» —
+                   число без движения, и непонятно, идёт ли она вообще. -->
+              <time class="pult-meta queued-since" datetime={new Date(attempt.run!.startedAt).toISOString()}>{tr('room.pult.v3.queueSince', { time: pultClock(attempt.run!.startedAt) })}</time>
               <button type="button" class="pult-button pult-button--danger" {disabled} data-pult-remove
                 onclick={(event) => onremove(attempt, event)}>{tr('room.ui.78')}</button>
             </li>
@@ -170,7 +176,7 @@
                 </span>
                 <strong class="queued-author">{who(attempt)}</strong>
                 <code>{firstLine(attempt.text)}</code>
-                <time class="pult-meta stopped-time" datetime={new Date(attempt.run!.startedAt).toISOString()}>{clock(attempt.run!.startedAt)}</time>
+                <time class="pult-meta stopped-time" datetime={new Date(attempt.run!.startedAt).toISOString()}>{pultClock(attempt.run!.startedAt)}</time>
               </button>
             </li>
           {/each}
@@ -228,6 +234,7 @@
   .stopped-row:hover { background: rgb(var(--surface)); }
   .stopped-limit { width: 36px; flex-shrink: 0; color: rgb(var(--danger)); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .stopped-time { flex-shrink: 0; }
+  .queued-since { flex-shrink: 0; font-variant-numeric: tabular-nums; }
   @media (max-width: 850px) {
     .queue-content { padding: 20px; }
     .pending-row { flex-wrap: wrap; gap: 12px; }

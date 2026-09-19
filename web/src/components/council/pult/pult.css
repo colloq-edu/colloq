@@ -77,6 +77,19 @@
 [data-council-pult] .pult-badge[data-tone="warning"] { color: rgb(var(--warning)); background: rgb(var(--warning) / .1); }
 [data-council-pult] .pult-badge[data-tone="danger"] { color: rgb(var(--danger)); background: rgb(var(--danger) / .1); }
 [data-council-pult] .pult-badge[data-tone="accent"] { color: rgb(var(--accent-text)); background: rgb(var(--accent) / .1); }
+/*
+ * Форма плашки — второй признак поверх цвета.
+ *
+ * Залитая значит «этого от вас ждут»: сдано и не оценено. Контурная — «состояние
+ * идёт само»: человек ещё пишет. Тон у них тоже разный, но различать состояния
+ * одним цветом нельзя: строка списка читается краем глаза, посреди фразы, и
+ * форма ловится раньше оттенка — а кем-то только она и ловится.
+ */
+[data-council-pult] .pult-badge[data-shape="fill"] { background: rgb(var(--accent)); color: rgb(var(--accent-ink)); font-weight: 700; }
+[data-council-pult] .pult-badge[data-shape="fill"][data-tone="positive"] { background: rgb(var(--positive)); color: rgb(var(--canvas)); }
+[data-council-pult] .pult-badge[data-shape="fill"][data-tone="warning"] { background: rgb(var(--warning)); color: rgb(var(--canvas)); }
+[data-council-pult] .pult-badge[data-shape="fill"][data-tone="danger"] { background: rgb(var(--danger)); color: rgb(var(--canvas)); }
+[data-council-pult] .pult-badge[data-shape="outline"] { background: transparent; box-shadow: inset 0 0 0 1px rgb(var(--line)); color: rgb(var(--muted)); font-weight: 600; }
 [data-council-pult] button:focus-visible, [data-council-pult] input:focus-visible,
 [data-council-pult] select:focus-visible, [data-council-pult] textarea:focus-visible {
   outline: 2px solid rgb(var(--accent-text)); outline-offset: 2px;
