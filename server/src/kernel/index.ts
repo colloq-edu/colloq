@@ -99,8 +99,12 @@ import {
   type KernelPhase,
 } from './jupyter.js'
 import {
+  inspectFactsSource,
   inspectStaticSource,
+  looksLikeModule,
+  nameChainAt,
   parseStaticInspect,
+  withModuleFacts,
   INSPECT_BUDGET_SEC,
   INSPECT_REPORT_EXPR,
   INSPECT_REPORT_KEY,
@@ -3687,6 +3691,20 @@ export async function inspectIn(
   try {
     const live = await kernel.inspect(code, cursor)
     if (live.found && live.text !== null && live.text !== '') {
+      /*
+       * Про модуль живое ядро говорит ничего.
+       *
+       * `Type: module`, адрес объекта в памяти и `<no docstring>` — ровно то,
+       * что увидел преподаватель 21.09 у pandas и seaborn (у первого строка
+       * документации собирается в рантайме, у второго её нет вовсе). Всё
+       * содержательное про пакет лежит рядом с ним на диске, и достаётся оно
+       * вторым коротким вопросом к тому же помощнику. Не вышло — отдаём как
+       * есть: приписка необязательна, ответ без неё хуже, но не сломан.
+       */
+      if (looksLikeModule(live.text) && runtime) {
+        const extra = await moduleFacts(runtime, nameChainAt(code, cursor))
+        return { found: true, text: withModuleFacts(live.text, extra), reason: null }
+      }
       return { found: true, text: live.text, reason: null }
     }
   } catch {
@@ -3694,6 +3712,59 @@ export async function inspectIn(
     return miss('busy')
   }
   return runtime ? await inspectStatically(runtime, code, cursor, help.header ?? '') : miss('unknown')
+}
+
+/**
+ * Сколько ждём приписку про пакет: полсекунды и ни мигом больше.
+ *
+ * Это чтение файлов рядом с пакетом (dist-info), а не разбор исходников: карта
+ * «модуль → дистрибутив» строится один раз на ядро (84 мс на образе
+ * colloq-kernel:base), дальше вопрос стоит единицы миллисекунд. Приписка
+ * необязательна, а shell ядра общий — ждать её дольше значило бы задерживать
+ * чужой Run ради строки «Документация: …».
+ */
+const MODULE_FACTS_WAIT_MS = 500
+
+/**
+ * Имя пакета, его версия и ссылка на документацию — для ЖИВОГО модуля.
+ *
+ * Пустая строка — не беда: ответ ядра уедет как есть. Тем же тихим запуском,
+ * что и статический разбор (`quiet: true`), то есть индикатор ядра у комнаты
+ * не моргает.
+ */
+async function moduleFacts(runtime: Runtime, expr: string): Promise<string> {
+  const kernel = runtime.kernel
+  if (!kernel || expr === '' || kernel.phase !== 'idle') return ''
+  if (runtime.currentCell || runtime.queue.length > 0) return ''
+  let raw: unknown = null
+  try {
+    const status = await Promise.race([
+      kernel.execute(
+        inspectFactsSource(expr),
+        {
+          ...SILENT_HANDLERS,
+          onUserExpressions: (values) => {
+            raw = values[INSPECT_REPORT_KEY]
+          },
+        },
+        {
+          silent: true,
+          storeHistory: false,
+          quiet: true,
+          userExpressions: { [INSPECT_REPORT_KEY]: INSPECT_REPORT_EXPR },
+        },
+      ),
+      new Promise<'abort'>((resolve) => {
+        const timer = setTimeout(() => resolve('abort'), MODULE_FACTS_WAIT_MS)
+        timer.unref?.()
+      }),
+    ])
+    if (status !== 'ok') return ''
+  } catch {
+    return ''
+  }
+  const answer = parseStaticInspect(raw)
+  return answer?.found && answer.text !== null ? answer.text : ''
 }
 
 /**

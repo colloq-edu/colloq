@@ -25,7 +25,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   importHeader,
+  inspectFactsSource,
   inspectStaticSource,
+  looksLikeModule,
+  withModuleFacts,
   nameChainAt,
   parseStaticInspect,
   INSPECT_BUDGET_SEC,
@@ -153,6 +156,80 @@ test('у модуля без документации показывается �
 test('свои значения бюджета и потолка доезжают как есть', () => {
   const source = inspectStaticSource({ code: 'x', cursor: 1, budgetSec: 0.25, limitBytes: 512 })
   assert.match(source, /, 0\.25, 512\)$/)
+})
+
+/* ------------------------------------------------------------- модуль */
+
+/**
+ * Про модуль отвечает его ПАКЕТ, а не объект.
+ *
+ * «module · <module pandas>», «module · <module seaborn>» — то, что
+ * преподаватель увидел 21.09. У pandas строка документации модуля собирается
+ * присваиванием `__doc__` в рантайме, у seaborn её нет вовсе, а IPython про
+ * оба говорит одно: род, адрес в памяти и `<no docstring>`. Имя, под которым
+ * пакет ставят, его версия, описание и ссылка на документацию лежат рядом с
+ * ним на диске (dist-info) и читаются БЕЗ импорта — наведение мышью не имеет
+ * права исполнять чужой код.
+ */
+test('вопрос про живой модуль ничего не импортирует и ничего не вычисляет', () => {
+  const source = inspectFactsSource('plt')
+  // Пространство имён студента уезжает аргументом: модуль там уже есть.
+  assert.match(source, /\.facts\(globals\(\), "plt", \d+\)$/)
+  // Ни eval, ни import пользовательского модуля: только точки и getattr.
+  assert.match(source, /getattr\(value, step, None\)/)
+  assert.doesNotMatch(source, /\beval\(/)
+  assert.doesNotMatch(source, /__import__\((?!'sys'|'types')/)
+  // Карта «модуль → дистрибутив» считается один раз на ядро: 84 мс на образе.
+  assert.match(source, /_dists = md\.packages_distributions\(\)/)
+  assert.match(source, /if _dists is None:/)
+})
+
+test('секции про пакет встают СВЕРХУ, а шапка IPython снимается', () => {
+  const live = [
+    'Type:        module',
+    "String form: <module 'seaborn' from '/usr/local/lib/python3.11/site-packages/seaborn/__init__.py'>",
+    'File:        /usr/local/lib/python3.11/site-packages/seaborn/__init__.py',
+    'Docstring:   <no docstring>',
+  ].join('\n')
+  const facts = [
+    'Module: seaborn',
+    'Type: module',
+    'Package: seaborn 0.13.2',
+    'Summary: Statistical data visualization',
+    'Docs: http://seaborn.pydata.org',
+  ].join('\n')
+  const merged = withModuleFacts(live, facts)
+  assert.ok(merged.startsWith('Module: seaborn\n'), merged)
+  /*
+   * Повторный `Type:` разбор на клиенте — справедливо — считает частью
+   * открытого раздела: ссылка на документацию превратилась бы в
+   * «https://… Type: module». Ведущая шапка снимается целиком.
+   */
+  assert.equal((merged.match(/^Type:/gm) ?? []).length, 1)
+  assert.doesNotMatch(merged, /String form:/)
+  assert.doesNotMatch(merged, /site-packages/)
+  // А документация (какая есть) остаётся на месте.
+  assert.match(merged, /Docstring:/)
+})
+
+test('такая же строка ВНУТРИ документации остаётся текстом', () => {
+  const live = ['Type: module', 'Docstring:', 'Пример:', 'File: example.csv', 'и дальше'].join('\n')
+  const merged = withModuleFacts(live, 'Module: mytool\nType: module')
+  assert.match(merged, /File: example\.csv/)
+  assert.match(merged, /и дальше/)
+})
+
+test('дополнять нечем — ответ уезжает как есть', () => {
+  const live = 'Type: module\nDocstring:\nOS routines.'
+  assert.equal(withModuleFacts(live, ''), live)
+  assert.equal(withModuleFacts(live, '   '), live)
+})
+
+test('«это модуль» узнаётся по тому же слову, что видит клиент', () => {
+  assert.equal(looksLikeModule('Type:        module'), true)
+  assert.equal(looksLikeModule('Signature: f(x)\nType: function'), false)
+  // Не ловим слово посреди документации: заголовок стоит с начала строки.
+  assert.equal(looksLikeModule('Docstring:\n  Type: module (в примере)'), false)
 })
 
 /* ---------------------------------------------------------------- ответ */

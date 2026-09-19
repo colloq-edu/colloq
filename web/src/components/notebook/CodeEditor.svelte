@@ -129,6 +129,8 @@
     parseSignatureHelp,
     rememberHelp,
     rememberedHelp,
+    safeLink,
+    splitPackage,
     splitSignature,
     SIGNATURE_ONE_LINE,
     type SignatureHelp,
@@ -573,6 +575,14 @@
       pre.className = 'cm-signature-sig'
       pre.textContent = help.raw
       body.appendChild(pre)
+    } else if (help.module !== '' || help.pkg !== '') {
+      /*
+       * Карточка модуля — только когда про модуль есть что сказать. Голое
+       * «Type: module» от IPython (приписка про пакет не доехала: ядро занялось,
+       * пакета нет на диске) рисуется прежним путём: мелкая пометка и
+       * документация, если она есть.
+       */
+      body.appendChild(moduleHead(help))
     } else {
       if (help.signature !== '') body.appendChild(signatureBlock(help.signature))
       const notes = [help.type, help.length === '' ? '' : `len ${help.length}`, help.form]
@@ -608,6 +618,80 @@
     // Высота узнаётся только после того, как его вставили в документ.
     requestAnimationFrame(mark)
     return root
+  }
+
+  /**
+   * Шапка модуля: чем он является, а не где лежит.
+   *
+   * «module · <module pandas>» — то, что человек увидел 21.09, наведясь на
+   * `pd`: род и адрес, из которых не следует ничего. У модуля есть ответ
+   * получше, и лежит он в метаданных пакета рядом с ним на диске: под каким
+   * именем его ставят, какой он версии, что делает и где документация
+   * (server/src/kernel/inspect-static.ts · `_package`).
+   *
+   * Подмодуль называется полностью и рядом с пакетом, из которого он взят:
+   * «matplotlib.pyplot · модуль пакета matplotlib 3.11.1». Человек наводится
+   * на `plt`, а ставил `matplotlib`, и связать одно с другим — часть ответа.
+   */
+  function moduleHead(help: SignatureHelp): HTMLElement {
+    const box = document.createElement('div')
+    box.className = 'cm-signature-module'
+    const { name, version } = splitPackage(help.pkg)
+    const title = document.createElement('div')
+    title.className = 'cm-signature-title'
+    const shown = help.module !== '' ? help.module : name
+    const strong = document.createElement('b')
+    strong.textContent = shown
+    title.appendChild(strong)
+    const note = document.createElement('span')
+    note.className = 'cm-signature-kind'
+    if (name !== '' && shown !== name) {
+      // Подмодуль: имя пакета в приписке, потому что ставят именно его.
+      note.textContent = ` · ${tr('room.signature.submodule', { p0: name, p1: version })}`
+    } else if (version !== '') {
+      strong.textContent = `${shown} ${version}`
+      note.textContent = ` · ${tr('room.signature.module')}`
+    } else {
+      note.textContent = ` · ${tr('room.signature.module')}`
+    }
+    title.appendChild(note)
+    box.appendChild(title)
+    if (help.summary !== '') {
+      const line = document.createElement('div')
+      line.className = 'cm-signature-summary'
+      line.textContent = help.summary
+      box.appendChild(line)
+    }
+    if (help.docs !== '') {
+      const line = document.createElement('div')
+      line.className = 'cm-signature-docs'
+      line.append(document.createTextNode(`${tr('room.signature.docs')} `))
+      /*
+       * Ссылка приезжает из метаданных ЧУЖОГО пакета, то есть это чужой текст
+       * в атрибуте `href`. Щёлкнуть дают только по http(s) — `javascript:` в
+       * строке, которую человек читает как «Документация», это исполнение
+       * чужого кода по клику в справке. Не прошло проверку — остаётся текстом.
+       */
+      const safe = safeLink(help.docs)
+      if (safe === null) {
+        line.append(document.createTextNode(help.docs))
+      } else {
+        const link = document.createElement('a')
+        link.target = '_blank'
+        link.rel = 'noopener noreferrer'
+        link.textContent = safe
+        link.href = safe
+        line.appendChild(link)
+      }
+      box.appendChild(line)
+    }
+    if (help.doc !== '') {
+      const pre = document.createElement('pre')
+      pre.className = 'cm-signature-doc'
+      pre.textContent = help.doc
+      box.appendChild(pre)
+    }
+    return box
   }
 
   /**

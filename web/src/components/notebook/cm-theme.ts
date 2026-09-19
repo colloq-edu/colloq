@@ -365,6 +365,46 @@ const theme = EditorView.theme({
   '.cm-signature-default': {
     color: 'rgb(var(--muted))',
   },
+  /*
+   * Карточка модуля: имя с версией крупно, род приглушённо, описание строкой.
+   *
+   * Моноширинным — как и всё остальное в окне: `matplotlib.pyplot` это имя из
+   * кода, и набирать его пропорциональным значило бы сделать вид, что это
+   * проза. Описание и ссылка — тем же шрифтом, но тише: их читают один раз.
+   */
+  '.cm-signature-title': {
+    fontSize: '13px',
+    lineHeight: '1.45',
+    color: 'rgb(var(--ink))',
+  },
+  '.cm-signature-title b': {
+    fontWeight: '700',
+  },
+  '.cm-signature-kind': {
+    fontWeight: '400',
+    color: 'rgb(var(--faint))',
+  },
+  '.cm-signature-summary': {
+    marginTop: '5px',
+    fontSize: '12px',
+    lineHeight: '1.5',
+    color: 'rgb(var(--muted))',
+  },
+  '.cm-signature-docs': {
+    marginTop: '4px',
+    fontSize: '12px',
+    color: 'rgb(var(--faint))',
+    overflowWrap: 'anywhere',
+  },
+  /*
+   * Ссылка подчёркнута и цветом ключевого слова — тем же, каким в этой теме
+   * нарисована ссылка в markdown: в одном окне у ссылки один вид.
+   */
+  '.cm-signature-docs a': {
+    color: syn('keyword'),
+    textDecoration: 'underline',
+    textUnderlineOffset: '2px',
+  },
   '.cm-signature-note': {
     marginTop: '5px',
     fontSize: '11px',

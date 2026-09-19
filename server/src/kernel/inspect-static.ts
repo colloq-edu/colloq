@@ -290,6 +290,145 @@ def _wrap(display, sig):
     return text[:at] + '(\\n' + ''.join('    ' + p + ',\\n' for p in parts) + ')' + text[close + 1:]
 
 
+# Карта «имя верхнего модуля → дистрибутив», посчитанная один раз на ядро.
+#
+# packages_distributions() обходит ВСЕ dist-info окружения: 84 мс и 117 записей
+# на образе colloq-kernel:base (замер 20.09). На один вопрос это дороже самого
+# разбора jedi (9 мс у pd), а меняется карта только при pip install — то есть
+# раз в занятие, и не молча: новое ядро её перечитает.
+_dists = None
+
+
+def _dist_of(top):
+    """Дистрибутив по имени верхнего модуля — БЕЗ импорта самого модуля.
+
+    sklearn живёт в scikit-learn, cv2 в opencv-python, PIL в Pillow: имя, под
+    которым модуль импортируют, и имя, под которым его ставят, совпадают не
+    всегда, а человеку в справке нужно второе.
+    """
+    global _dists
+    if _dists is None:
+        try:
+            import importlib.metadata as md
+            _dists = md.packages_distributions()
+        except Exception:
+            _dists = {}
+    names = _dists.get(top) or []
+    if not names:
+        return None
+    # Несколько дистрибутивов на один модуль (пространства имён вроде
+    # zope.*): берём тот, чьё имя и есть имя модуля, иначе первый.
+    for name in names:
+        if name.replace('-', '_').lower() == top.replace('-', '_').lower():
+            return name
+    return names[0]
+
+
+def _docs_link(meta):
+    """Ссылка на документацию — по меткам Project-URL, потом Home-page."""
+    labelled = {}
+    try:
+        for row in meta.get_all('Project-URL') or []:
+            label, _, url = row.partition(',')
+            labelled[label.strip().lower()] = url.strip()
+    except Exception:
+        pass
+    for key in ('documentation', 'docs', 'doc', 'homepage', 'home-page', 'home'):
+        if labelled.get(key):
+            return labelled[key]
+    try:
+        home = meta.get('Home-page') or ''
+    except Exception:
+        home = ''
+    return home.strip()
+
+
+def _package(full):
+    """Секции про пакет: Package / Summary / Docs. Пусто — метаданных нет.
+
+    Метаданные лежат на диске рядом с пакетом (dist-info), и читаются они БЕЗ
+    импорта: наведение мышью не имеет права исполнять чужой код. У модуля
+    стандартной библиотеки и у файла из папки занятия дистрибутива нет вовсе —
+    тогда этих секций просто не будет.
+    """
+    top = (full or '').split('.')[0]
+    if not top:
+        return []
+    dist = _dist_of(top)
+    if not dist:
+        return []
+    try:
+        import importlib.metadata as md
+        meta = md.metadata(dist)
+    except Exception:
+        return []
+    out = []
+    try:
+        name = meta['Name'] or dist
+    except Exception:
+        name = dist
+    try:
+        version = meta['Version'] or ''
+    except Exception:
+        version = ''
+    out.append('Package: ' + name + ((' ' + version) if version else ''))
+    try:
+        summary = (meta.get('Summary') or '').strip()
+    except Exception:
+        summary = ''
+    # «UNKNOWN» ставит setuptools, когда автор описания не написал.
+    if summary and summary.lower() != 'unknown':
+        out.append('Summary: ' + summary)
+    link = _docs_link(meta)
+    if link:
+        out.append('Docs: ' + link)
+    return out
+
+
+def _module_facts(full):
+    """Всё, что мы знаем о модуле, до его собственной документации."""
+    parts = []
+    if full:
+        parts.append('Module: ' + full)
+    parts.append('Type: module')
+    parts.extend(_package(full))
+    return parts
+
+
+def facts(ns, expr, limit):
+    """Те же секции для ЖИВОГО модуля — по объекту из пространства имён.
+
+    Нужно там, где ответил сам inspect_request: он про модуль говорит «Type:
+    module», «String form: <module 'seaborn' from ...>» и «Docstring: <no
+    docstring>» — то есть ничего. Имя пакета и его описание лежат в
+    метаданных, и достать их можно, ничего не импортируя: объект УЖЕ создан
+    (импорт в ячейке выполнили), нам остаётся прочитать его __name__.
+
+    Разбор выражения — по точкам и только getattr: ни вызовов, ни индексов, ни
+    eval. Наведение мышью не считает чужой код.
+    """
+    global report
+    out = {'found': False, 'why': 'nothing'}
+    try:
+        value = None
+        for i, step in enumerate((expr or '').split('.')):
+            if not step:
+                break
+            value = ns.get(step) if i == 0 else getattr(value, step, None)
+            if value is None:
+                break
+        import types
+        if isinstance(value, types.ModuleType):
+            name = getattr(value, '__name__', '') or expr
+            text = '\\n'.join(_module_facts(name))
+            if len(text) > limit:
+                text = text[:limit]
+            out = {'found': True, 'text': text}
+    except Exception:
+        out = {'found': False, 'why': 'nothing'}
+    report = _Report(json.dumps(out))
+
+
 def _render(found, display, limit):
     """Лучшее из найденного, разложенное по заголовкам IPython.
 
@@ -323,24 +462,30 @@ def _render(found, display, limit):
     rank, d, sig, doc = best
     kind = getattr(d, 'type', '') or ''
     parts = []
-    if sig:
+    if kind == 'module':
+        """Модуль — это пакет, а не объект.
+
+        У pandas строка документации модуля собирается присваиванием __doc__ в
+        рантайме, у seaborn её нет вовсе, и до 21.09 наведение на них отвечало
+        «module · <module pandas>» — словами, из которых человек не узнаёт
+        ничего. Про пакет всё написано рядом с ним на диске: имя, версия,
+        описание, ссылка на документацию (см. _package).
+        """
+        full = getattr(d, 'full_name', '') or getattr(d, 'name', '') or display
+        parts.extend(_module_facts(full))
+    elif sig:
         # У класса сигнатуры нет — есть сигнатура его __init__, и IPython
         # называет её именно так.
         head = 'Init signature' if kind == 'class' else 'Signature'
         parts.append(head + ':\\n' + sig)
-    if kind:
+    if kind and kind != 'module':
         parts.append('Type: ' + kind)
     if doc.strip():
         parts.append('Docstring:\\n' + doc)
-    elif not sig:
-        # Ни сигнатуры, ни документации — но сказать всё равно есть что.
-        #
-        # Самый частый такой случай — модуль: у pandas в __init__.py строки
-        # документации нет вовсе, и до 20.09 наведение на pd отвечало «сказать
-        # нечего», тогда как соседний np (у numpy docstring есть) отвечал целой
-        # страницей. Разница, которой человек объяснить не может. Показываем
-        # хотя бы то, ЧТО это и откуда, — тем же полем, каким это показывает
-        # сам IPython.
+    elif not sig and kind != 'module':
+        # Ни сигнатуры, ни документации, и это не модуль, — но сказать всё
+        # равно есть что: хотя бы род и полное имя, тем же полем, каким это
+        # показывает сам IPython.
         full = getattr(d, 'full_name', '') or getattr(d, 'name', '') or ''
         if not full and not kind:
             return ''
@@ -453,6 +598,69 @@ export function inspectStaticSource(question: StaticInspectQuestion): string {
     `__import__('sys').modules[${module}].look(${JSON.stringify(whole)}, ${line}, ${column}, ` +
       `${JSON.stringify(display)}, ${budget}, ${limit})`,
   ].join('\n')
+}
+
+/**
+ * Вопрос про ЖИВОЙ модуль: имя пакета, версия, описание, ссылка.
+ *
+ * Второй, короткий запрос — и задаётся он только там, где `inspect_request`
+ * уже ответил «Type: module». Сам IPython про модуль говорит три вещи, и все
+ * три бесполезны: род, адрес объекта в памяти и `<no docstring>` — у pandas
+ * строка документации собирается в рантайме, у seaborn её нет вовсе, и
+ * человек видел «module · <module pandas>».
+ *
+ * `globals()` уезжает первым аргументом: код выполняется в пространстве имён
+ * студента, и модуль там УЖЕ лежит — импорт был, иначе `inspect_request` не
+ * ответил бы. Разбор выражения внутри — только по точкам и только `getattr`
+ * (inspect-static · `facts`): наведение мышью не считает чужой код.
+ */
+export function inspectFactsSource(expr: string, limitBytes?: number): string {
+  const limit = Number.isFinite(limitBytes) ? Math.floor(Number(limitBytes)) : INSPECT_LIMIT_BYTES
+  const module = JSON.stringify(INSPECT_MODULE)
+  return [
+    `if getattr(__import__('sys').modules.get(${module}), 'version', None) != ` +
+      `${JSON.stringify(implVersion())}: ` +
+      `exec(compile(${implLiteral()}, '<colloq-inspect>', 'exec'), ` +
+      `__import__('sys').modules.setdefault(${module}, ` +
+      `__import__('types').ModuleType(${module})).__dict__)`,
+    `__import__('sys').modules[${module}].facts(globals(), ${JSON.stringify(expr)}, ${limit})`,
+  ].join('\n')
+}
+
+/**
+ * Ответ живого ядра про модуль — дополненный теми же секциями.
+ *
+ * Секции про пакет встают СВЕРХУ: у IPython всё содержательное (`Docstring:`)
+ * идёт последним, и приписанное после него было бы прочитано разбором как
+ * часть документации. А `String form:` и `File:` у модуля не показываются
+ * вовсе (web/src/lib/signature-help.ts) — адрес объекта в чужом процессе и
+ * путь внутри контейнера человеку в комнате не говорят ничего.
+ */
+export function withModuleFacts(live: string, facts: string): string {
+  const extra = facts.trim()
+  if (extra === '') return live
+  /*
+   * Шапку IPython при этом снимаем, и без этого приписка ломала бы разбор.
+   *
+   * Про модуль IPython говорит ровно три строки — `Type:`, `String form:`,
+   * `File:`, — и все три у нас уже есть или не нужны: род назван в приписке,
+   * адрес объекта в памяти и путь внутри контейнера человеку в комнате не
+   * говорят ничего. А оставленные, они приезжают ПОВТОРНЫМИ заголовками, и
+   * разбор на клиенте — справедливо — считает повтор частью открытого
+   * раздела: ссылка на документацию превращалась бы в «https://… Type:
+   * module». Снимаем только ведущие строки: такая же строка внутри
+   * документации остаётся текстом, каким и была.
+   */
+  const rows = live.replace(/\r/g, '').split('\n')
+  let at = 0
+  while (at < rows.length && /^(?:Type|String form|File):/.test(rows[at])) at++
+  const rest = rows.slice(at).join('\n').replace(/^\n+/, '')
+  return rest === '' ? extra : `${extra}\n${rest}`
+}
+
+/** Отвечает ли ядро «это модуль»: по тому же разбору, что и у клиента. */
+export function looksLikeModule(text: string): boolean {
+  return /^Type: *module\s*$/m.test(text.replace(/\r/g, ''))
 }
 
 export interface StaticInspectAnswer {

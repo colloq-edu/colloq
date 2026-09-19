@@ -44,6 +44,17 @@ const SECTIONS = [
   'Init signature',
   'Call signature',
   'Definition',
+  /*
+   * Четыре наших собственных заголовка — про модуль (server/src/kernel/
+   * inspect-static.ts · `_module_facts`). IPython их не пишет, но разметка та
+   * же, и разбор поэтому остаётся один. Ими закрыта жалоба 21.09: про pandas
+   * и seaborn живое ядро говорит «Type: module» и `<no docstring>`, то есть
+   * ничего, а всё содержательное про пакет лежит рядом с ним на диске.
+   */
+  'Module',
+  'Package',
+  'Summary',
+  'Docs',
   'Docstring',
   'Init docstring',
   'Class docstring',
@@ -87,6 +98,10 @@ const DOCS: readonly Section[] = [
  * а не конец раздела.
  */
 const FACTS: readonly Section[] = [
+  'Module',
+  'Package',
+  'Summary',
+  'Docs',
   'Type',
   'Base Class',
   'String form',
@@ -141,6 +156,14 @@ export interface SignatureHelp {
   form: string
   /** `len()` значения, если ядро его сказало. */
   length: string
+  /** Полное имя модуля: `pandas`, `matplotlib.pyplot`. Только у модулей. */
+  module: string
+  /** Пакет с версией: `pandas 3.0.5` — так, как его ставят, а не импортируют. */
+  pkg: string
+  /** Одна строка о том, что этот пакет делает, — из его же метаданных. */
+  summary: string
+  /** Ссылка на документацию пакета; проверяет её тот, кто рисует. */
+  docs: string
   /**
    * Разобрать не удалось — показать как есть.
    *
@@ -152,7 +175,18 @@ export interface SignatureHelp {
   raw: string
 }
 
-const EMPTY: SignatureHelp = { signature: '', doc: '', type: '', form: '', length: '', raw: '' }
+const EMPTY: SignatureHelp = {
+  signature: '',
+  doc: '',
+  type: '',
+  form: '',
+  length: '',
+  module: '',
+  pkg: '',
+  summary: '',
+  docs: '',
+  raw: '',
+}
 
 /** Склеить строки раздела: хвост строки заголовка плюс всё до следующего. */
 function joinSection(lines: string[]): string {
@@ -235,13 +269,25 @@ export function parseSignatureHelp(text: string): SignatureHelp {
     .filter((part) => part !== '')
     .join('\n\n')
   const lead = joinSection(preamble)
+  const type = value('Type')
+  const module = value('Module')
+  /*
+   * У модуля `String form` — это `<module 'pandas' from '/usr/local/...'>`:
+   * адрес внутри контейнера, который человеку в комнате не говорит ничего.
+   * Вместо него у модуля есть имя пакета, версия и описание.
+   */
+  const isModule = type === 'module' || module !== ''
   return {
     signature,
     doc: lead === '' ? doc : doc === '' ? lead : `${lead}\n\n${doc}`,
-    type: value('Type'),
+    type,
     // См. `form`: у вызываемого это адрес объекта в чужом процессе.
-    form: signature === '' ? value('String form') : '',
+    form: signature === '' && !isModule ? value('String form') : '',
     length: value('Length'),
+    module,
+    pkg: value('Package'),
+    summary: value('Summary'),
+    docs: value('Docs'),
     raw: '',
   }
 }
@@ -254,8 +300,39 @@ export function helpIsEmpty(help: SignatureHelp): boolean {
     help.type === '' &&
     help.form === '' &&
     help.length === '' &&
+    help.module === '' &&
+    help.pkg === '' &&
+    help.summary === '' &&
+    help.docs === '' &&
     help.raw === ''
   )
+}
+
+/**
+ * Пакет, разобранный на имя и версию: `pandas 3.0.5` → `pandas` + `3.0.5`.
+ *
+ * Версия отрезается только если последнее слово на неё похоже — начинается с
+ * цифры. Имя пакета может состоять из двух слов (`ruamel.yaml.clib`), и
+ * отрезать хвост вслепую значило бы врать в шапке.
+ */
+export function splitPackage(pkg: string): { name: string; version: string } {
+  const at = pkg.lastIndexOf(' ')
+  if (at === -1) return { name: pkg, version: '' }
+  const tail = pkg.slice(at + 1)
+  if (!/^\d/.test(tail)) return { name: pkg, version: '' }
+  return { name: pkg.slice(0, at), version: tail }
+}
+
+/**
+ * Ссылка, по которой можно дать щёлкнуть, — или `null`.
+ *
+ * Строка приезжает из метаданных чужого пакета, то есть это ЧУЖОЙ текст в
+ * атрибуте `href`. Всё, кроме http и https, отсюда не выходит: `javascript:`
+ * в ссылке, которую человек видит как «Документация», — это исполнение чужого
+ * кода по клику в справке.
+ */
+export function safeLink(url: string): string | null {
+  return /^https?:\/\/\S+$/i.test(url.trim()) ? url.trim() : null
 }
 
 /* --------------------------------------------------- сигнатура по частям */

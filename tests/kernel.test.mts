@@ -72,9 +72,14 @@ function councilExpressions(asked: boolean, code = ''): Record<string, unknown> 
    * модулем в первой же строке. Иначе разбор справки читал бы отчёт
    * консилиума и всегда отвечал «не нашлось».
    */
-  const text = code.includes('_colloq_inspect')
-    ? JSON.stringify({ found: true, text: 'Signature:\nsns.lmplot(data)\nType: function' })
-    : JSON.stringify({ ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1 })
+  const text = code.includes('.facts(globals()')
+    ? JSON.stringify({
+        found: true,
+        text: 'Module: seaborn\nType: module\nPackage: seaborn 0.13.2\nSummary: Statistical data visualization\nDocs: http://seaborn.pydata.org',
+      })
+    : code.includes('_colloq_inspect')
+      ? JSON.stringify({ found: true, text: 'Signature:\nsns.lmplot(data)\nType: function' })
+      : JSON.stringify({ ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1 })
   return {
     user_expressions: {
       colloq: { status: 'ok', data: { 'text/plain': text }, metadata: {} },
@@ -234,8 +239,17 @@ before(async () => {
              * — статический разбор jedi.
              */
             found: !msg.content.code.includes('NOTFOUND'),
-            // С раскраской: IPython красит справку, о которой никто не просил.
-            data: { 'text/plain': '\u001b[0;31mSignature:\u001b[0m df.head(n=5)' },
+            /*
+             * Про МОДУЛЬ настоящий IPython отвечает ровно этим: род, адрес
+             * объекта в памяти и `<no docstring>` — у seaborn строки
+             * документации нет вовсе. Ради такого ответа и заведена приписка
+             * про пакет (kernel/inspect-static.ts · facts).
+             */
+            data: {
+              'text/plain': msg.content.code.includes('MODULE')
+                ? "\u001b[0;31mType:\u001b[0m        module\nString form: <module 'seaborn' from '/x/seaborn/__init__.py'>\nFile:        /x/seaborn/__init__.py\nDocstring:   <no docstring>"
+                : '\u001b[0;31mSignature:\u001b[0m df.head(n=5)',
+            },
           })
           reply(ws, msg.header, 'status', { execution_state: 'idle' })
           return
@@ -2183,6 +2197,36 @@ test('без права запускать справка ядро не подн
   await inspectIn(room.id, 'df.head', 7, CELLS_KEY, { mayWake: false })
   await wait(300)
   assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'off', 'ядро подняли без права')
+})
+
+test('ответ живого ядра про модуль дополняется именем пакета и ссылкой', async () => {
+  const { ensureKernel, inspectIn } = await import('../server/src/kernel/index.js')
+  const { CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  await ensureKernel(room.id, CELLS_KEY)
+  assert.ok(await until(() => room.status() === 'idle'))
+
+  const before = requests.length
+  const answer = await inspectIn(room.id, 'MODULE sns', 10, CELLS_KEY)
+  assert.equal(answer.found, true)
+  /*
+   * `Type: module` от IPython — это род, адрес объекта в памяти и «нет
+   * документации»: у seaborn её и правда нет. Про ПАКЕТ всё написано рядом с
+   * ним на диске, и одного тихого вопроса хватает, чтобы справка перестала
+   * быть бесполезной.
+   */
+  assert.match(answer.text ?? '', /^Module: seaborn\n/)
+  assert.match(answer.text ?? '', /Package: seaborn 0\.13\.2/)
+  assert.match(answer.text ?? '', /Docs: http:\/\/seaborn\.pydata\.org/)
+  // Адрес в памяти и путь внутри контейнера до комнаты не доезжают.
+  assert.doesNotMatch(answer.text ?? '', /String form:/)
+  assert.doesNotMatch(answer.text ?? '', /__init__\.py/)
+
+  const service = requests.slice(before)
+  assert.equal(service.length, 1, 'приписка ушла не одним запросом')
+  assert.equal(service[0].silent, true)
+  assert.equal(service[0].store_history, false)
+  assert.match(service[0].code, /\.facts\(globals\(\)/)
 })
 
 test('справка второй тетради идёт к ЕЁ ядру и не ждёт занятой первой', async () => {

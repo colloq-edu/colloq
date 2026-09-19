@@ -28,6 +28,8 @@ import {
   parseSignatureHelp,
   rememberHelp,
   rememberedHelp,
+  safeLink,
+  splitPackage,
   splitSignature,
   HELP_TTL_MS,
   SIGNATURE_ONE_LINE,
@@ -152,14 +154,25 @@ test('у класса показывается сигнатура __init__ и о
   assert.equal(help.type, 'type')
 })
 
-test('модуль: «нет документации» — это НЕ документация', () => {
+test('модуль: «нет документации» — это НЕ документация, и адрес в памяти тоже', () => {
   const help = parseSignatureHelp(MODULE)
   assert.equal(help.signature, '')
   assert.equal(help.doc, '')
   assert.equal(help.type, 'module')
-  // Строковый вид у модуля показываем: у него это единственный ответ по делу.
-  assert.match(help.form, /^<module 'seaborn'/)
+  /*
+   * `String form: <module 'seaborn' from '/usr/local/...'>` — адрес внутри
+   * контейнера, который человеку в комнате не говорит ничего; до 21.09 он и
+   * был всем ответом про seaborn. Теперь про модуль отвечает его ПАКЕТ (см.
+   * ниже, раздел про модуль), а строковый вид у модулей не показывается.
+   */
+  assert.equal(help.form, '')
+  /*
+   * Показать всё же есть что — род, — и окно такому ответу достанется
+   * прежнее: мелкая пометка «module» и документация, если она есть. Карточка
+   * пакета рисуется только там, где приписка про пакет доехала.
+   */
   assert.equal(helpIsEmpty(help), false)
+  assert.match(EDITOR, /help\.module !== '' \|\| help\.pkg !== ''/)
 })
 
 test('у значения показывается то, чем оно выглядит, — а у функции никогда', () => {
@@ -209,6 +222,106 @@ test('заголовок ВНУТРИ документации её не раз�
   assert.equal(help.type, 'function')
   // А настоящий хвост — слипшиеся приписки в самом конце — разделом остался.
   assert.doesNotMatch(help.doc, /usr\/lib/)
+})
+
+/* ------------------------------------------------------------- модуль */
+
+/**
+ * «module · <module pandas>» — то, что преподаватель увидел 21.09.
+ *
+ * У pandas строка документации модуля собирается присваиванием `__doc__` в
+ * рантайме, у seaborn её нет вовсе — и IPython про оба говорит `Type: module`,
+ * адрес объекта в памяти и `<no docstring>`. У numpy docstring есть, и ответ
+ * выходил содержательным: разница, которую человек объяснить не может.
+ *
+ * Теперь про модуль спрашивают не объект, а ПАКЕТ: имя, под которым его
+ * ставят, версия, описание и ссылка на документацию — всё это лежит рядом с
+ * ним на диске (server/src/kernel/inspect-static.ts · `_package`) и читается
+ * без единого импорта.
+ */
+const SEABORN = [
+  'Module: seaborn',
+  'Type: module',
+  'Package: seaborn 0.13.2',
+  'Summary: Statistical data visualization',
+  'Docs: http://seaborn.pydata.org',
+  'Docstring:   <no docstring>',
+].join('\n')
+
+const PYPLOT = [
+  'Module: matplotlib.pyplot',
+  'Type: module',
+  'Package: matplotlib 3.11.1',
+  'Summary: Python plotting package',
+  'Docs: https://matplotlib.org',
+  'Docstring:',
+  '`matplotlib.pyplot` is a state-based interface to matplotlib.',
+].join('\n')
+
+test('у модуля читаются пакет, описание и ссылка — и ни адреса, ни пути', () => {
+  const help = parseSignatureHelp(SEABORN)
+  assert.equal(help.module, 'seaborn')
+  assert.equal(help.pkg, 'seaborn 0.13.2')
+  assert.equal(help.summary, 'Statistical data visualization')
+  assert.equal(help.docs, 'http://seaborn.pydata.org')
+  assert.equal(help.type, 'module')
+  // `<no docstring>` — это не документация, а признание, что её нет.
+  assert.equal(help.doc, '')
+  // Адрес объекта в памяти у модуля не показывается никогда.
+  assert.equal(help.form, '')
+  assert.equal(helpIsEmpty(help), false)
+})
+
+test('подмодуль называется полностью, а пакет — тот, который ставят', () => {
+  const help = parseSignatureHelp(PYPLOT)
+  assert.equal(help.module, 'matplotlib.pyplot')
+  assert.deepEqual(splitPackage(help.pkg), { name: 'matplotlib', version: '3.11.1' })
+  assert.match(help.doc, /state-based interface/)
+})
+
+test('модуль без метаданных остаётся собой: имя и документация', () => {
+  // Стандартная библиотека и файл из папки занятия: дистрибутива у них нет.
+  const help = parseSignatureHelp('Module: os\nType: module\nDocstring:\nOS routines.')
+  assert.equal(help.module, 'os')
+  assert.equal(help.pkg, '')
+  assert.equal(help.summary, '')
+  assert.equal(help.docs, '')
+  assert.equal(help.doc, 'OS routines.')
+  assert.equal(helpIsEmpty(help), false)
+})
+
+test('имя пакета не теряет слов, а версия отрезается только похожая на версию', () => {
+  assert.deepEqual(splitPackage('pandas 3.0.5'), { name: 'pandas', version: '3.0.5' })
+  assert.deepEqual(splitPackage('scikit-learn 1.9.0'), { name: 'scikit-learn', version: '1.9.0' })
+  // Ни версии, ни лишнего отрезания: у пакета бывает имя из двух слов.
+  assert.deepEqual(splitPackage('ruamel.yaml.clib'), { name: 'ruamel.yaml.clib', version: '' })
+  assert.deepEqual(splitPackage('My Package'), { name: 'My Package', version: '' })
+})
+
+test('щёлкнуть дают только по http(s): ссылка приезжает из чужих метаданных', () => {
+  assert.equal(safeLink('https://pandas.pydata.org/docs/'), 'https://pandas.pydata.org/docs/')
+  assert.equal(safeLink('  http://seaborn.pydata.org '), 'http://seaborn.pydata.org')
+  /*
+   * `javascript:` в строке, которую человек читает как «Документация», — это
+   * исполнение чужого кода по клику в справке. Метаданные пакета пишет тот,
+   * кто пакет собрал, и доверять им нельзя ни на грош.
+   */
+  assert.equal(safeLink('javascript:alert(1)'), null)
+  assert.equal(safeLink('JavaScript:alert(1)'), null)
+  assert.equal(safeLink('data:text/html,<script>'), null)
+  assert.equal(safeLink('ftp://example.org'), null)
+  assert.equal(safeLink('example.org'), null)
+  assert.equal(safeLink(''), null)
+})
+
+test('окно рисует карточку модуля узлами, и ссылку — только проверенную', () => {
+  assert.match(EDITOR, /function moduleHead\(/)
+  assert.match(EDITOR, /const safe = safeLink\(help\.docs\)/)
+  // href присваивается ПОСЛЕ проверки, и только ей.
+  assert.match(EDITOR, /link\.href = safe/)
+  assert.match(EDITOR, /link\.rel = 'noopener noreferrer'/)
+  assert.match(EDITOR, /link\.target = '_blank'/)
+  assert.doesNotMatch(EDITOR, /innerHTML/)
 })
 
 /* ------------------------------------------------- сигнатура по частям */
