@@ -129,7 +129,10 @@
     parseSignatureHelp,
     rememberHelp,
     rememberedHelp,
+    splitSignature,
+    SIGNATURE_ONE_LINE,
     type SignatureHelp,
+    type SignatureParts,
   } from '@/lib/signature-help'
   import { isJumpClick } from '@/lib/utils'
   import { backspaceRemovesCell } from './cell-keys'
@@ -433,6 +436,83 @@
   const PAST_LINE = 6
 
   /**
+   * Насколько длинный параметр перестаёт быть неразрывным.
+   *
+   * Неразрывность параметра — вся суть раскладки: `x_estimator=None` не должен
+   * разрываться посреди имени. Но параметр шире окна неразрывным быть не
+   * может: он вылез бы за край и завёл ВТОРУЮ полосу прокрутки,
+   * горизонтальную, — то самое, от чего вся эта раскладка и заведена. Семьдесят
+   * два знака — это ширина окна (640 px моноширинным тринадцатым) с запасом;
+   * всё длиннее переносится внутри себя, как обычный текст.
+   */
+  const PARAM_NOWRAP = 72
+
+  /**
+   * Сигнатура потоком: параметры через запятую, перенос только МЕЖДУ ними.
+   *
+   * IPython печатает длинную сигнатуру столбиком, по параметру на строку. У
+   * `sns.lmplot` это сорок три строки — всё окно справки целиком, и
+   * документация оказывается за тремя экранами прокрутки. Между тем в
+   * сигнатуре ищут одно: есть ли такой параметр и как он пишется. Потоком те
+   * же сорок два параметра занимают семь строк, и docstring виден сразу, без
+   * единого движения колеса.
+   *
+   * Каждый параметр — свой `<span>` с `nowrap`: перенос возможен только по
+   * пробелу МЕЖДУ параметрами, и `x_estimator=None` никогда не разрывается
+   * пополам. Запятая лежит ВНУТРИ параметра, а разделителем стоит обычный
+   * пробел — тогда выделенное мышью и скопированное остаётся нормальной
+   * строкой `sns.lmplot(data, *, x=None, …)`, а не набором кусков.
+   *
+   * Имя параметра — цветом текста, аннотация и умолчание — приглушённым: см.
+   * `SignatureParam`. Висячий отступ перенесённых строк — в теме.
+   */
+  function signatureFlow(parts: SignatureParts): HTMLElement {
+    const box = document.createElement('div')
+    box.className = 'cm-signature-sig cm-signature-flow'
+    box.appendChild(document.createTextNode(parts.head))
+    parts.params.forEach((param, index) => {
+      const last = index === parts.params.length - 1
+      const span = document.createElement('span')
+      // Длинный параметр неразрывным не делаем — см. PARAM_NOWRAP.
+      if (param.name.length + param.rest.length <= PARAM_NOWRAP) {
+        span.className = 'cm-signature-param'
+      }
+      span.appendChild(document.createTextNode(param.name))
+      if (param.rest !== '') {
+        const rest = document.createElement('span')
+        rest.className = 'cm-signature-default'
+        rest.textContent = param.rest
+        span.appendChild(rest)
+      }
+      if (!last) span.appendChild(document.createTextNode(','))
+      box.appendChild(span)
+      // Пробел-разделитель — единственное место, где строка может перенестись.
+      if (!last) box.appendChild(document.createTextNode(' '))
+    })
+    box.appendChild(document.createTextNode(parts.tail))
+    return box
+  }
+
+  /**
+   * Сигнатура для окна: потоком, одной строкой или дословно.
+   *
+   * Три случая и ровно три. Разобрали и она длинная — поток. Разобрали и она
+   * короткая — одна строка, уже склеенная из частей (у `df.head` ядро и так
+   * отвечает одной строкой, а у класса — тремя, и склеить их честнее, чем
+   * оставить лесенку на двадцать знаков). Не разобрали — дословно: скобки не
+   * сошлись, это чужое ядро или вовсе не сигнатура, и перестраивать текст по
+   * догадке нельзя.
+   */
+  function signatureBlock(signature: string): HTMLElement {
+    const parts = splitSignature(signature)
+    if (parts && parts.flat.length > SIGNATURE_ONE_LINE) return signatureFlow(parts)
+    const pre = document.createElement('pre')
+    pre.className = 'cm-signature-sig'
+    pre.textContent = parts ? parts.flat : signature
+    return pre
+  }
+
+  /**
    * Окно справки — сигнатура сверху, документация под ней, одна прокрутка на обе.
    *
    * ОДНА, и это несущее решение. Разложить их по двум отсекам было бы красивее
@@ -461,12 +541,7 @@
       pre.textContent = help.raw
       body.appendChild(pre)
     } else {
-      if (help.signature !== '') {
-        const pre = document.createElement('pre')
-        pre.className = 'cm-signature-sig'
-        pre.textContent = help.signature
-        body.appendChild(pre)
-      }
+      if (help.signature !== '') body.appendChild(signatureBlock(help.signature))
       const notes = [help.type, help.length === '' ? '' : `len ${help.length}`, help.form]
         .filter((note) => note !== '')
         .join(' · ')

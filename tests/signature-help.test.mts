@@ -28,7 +28,9 @@ import {
   parseSignatureHelp,
   rememberHelp,
   rememberedHelp,
+  splitSignature,
   HELP_TTL_MS,
+  SIGNATURE_ONE_LINE,
 } from '../web/src/lib/signature-help.js'
 
 function read(rel: string): string {
@@ -207,6 +209,120 @@ test('заголовок ВНУТРИ документации её не раз�
   assert.equal(help.type, 'function')
   // А настоящий хвост — слипшиеся приписки в самом конце — разделом остался.
   assert.doesNotMatch(help.doc, /usr\/lib/)
+})
+
+/* ------------------------------------------------- сигнатура по частям */
+
+/**
+ * Раскладка сигнатуры — про то, ЧТО в ней ищут.
+ *
+ * Ищут имя параметра: «есть ли у lmplot aspect и как он пишется». IPython
+ * печатает длинную сигнатуру столбиком, по параметру на строку, и у
+ * `sns.lmplot` это сорок три строки — всё окно справки, после которого
+ * документация лежит за тремя экранами прокрутки. Потоком те же сорок два
+ * параметра занимают семь строк.
+ *
+ * Разбор ломается молча и потому проверяется здесь по одному случаю: запятая
+ * внутри умолчания разрезала бы параметр пополам и показала бы человеку
+ * параметр, которого нет.
+ */
+test('многострочная сигнатура IPython собирается в поток параметров', () => {
+  const parts = splitSignature(parseSignatureHelp(LMPLOT).signature)
+  assert.ok(parts)
+  assert.equal(parts.head, 'sns.lmplot(')
+  assert.deepEqual(
+    parts.params.map((param) => param.name),
+    ['data', '*', 'x', 'y', 'hue', 'height', 'aspect', 'markers', 'facet_kws'],
+  )
+  assert.equal(parts.tail, ')')
+  // Строка, которую человек выделит и скопирует, — обычная строка Python.
+  assert.equal(
+    parts.flat,
+    "sns.lmplot(data, *, x=None, y=None, hue=None, height=5, aspect=1, markers='o', facet_kws=None)",
+  )
+  // Семь-восемь строк вместо сорока трёх: столько и было задумано.
+  assert.ok(parts.flat.length / 78 < 2, 'поток не помещается в пару строк окна')
+})
+
+test('запятая внутри умолчания параметр не разрезает', () => {
+  const parts = splitSignature('f(a=dict(b=1, c=(2, 3)), sep=", ", names=Dict[str, int])')
+  assert.ok(parts)
+  assert.deepEqual(
+    parts.params.map((param) => param.name + param.rest),
+    ['a=dict(b=1, c=(2, 3))', 'sep=", "', 'names=Dict[str, int]'],
+  )
+})
+
+test('звёздочка, дробь, *args и **kwargs — это параметры целиком', () => {
+  const parts = splitSignature('f(a, /, b, *, c, *args, **kwargs)')
+  assert.ok(parts)
+  assert.deepEqual(
+    parts.params.map((param) => param.name),
+    ['a', '/', 'b', '*', 'c', '*args', '**kwargs'],
+  )
+  // Делить в них нечего: приписки нет ни у одного.
+  assert.deepEqual(
+    parts.params.map((param) => param.rest),
+    ['', '', '', '', '', '', ''],
+  )
+})
+
+test('имя отделяется от аннотации и умолчания по первому двоеточию или равно', () => {
+  const parts = splitSignature("df.head(n: 'int' = 5, key=lambda x: x, flag=False) -> 'Self'")
+  assert.ok(parts)
+  assert.deepEqual(parts.params, [
+    { name: 'n', rest: ": 'int' = 5" },
+    // Двоеточие лямбды стоит ПОСЛЕ `=`, и побеждает первое из двух.
+    { name: 'key', rest: '=lambda x: x' },
+    { name: 'flag', rest: '=False' },
+  ])
+  assert.equal(parts.tail, ") -> 'Self'")
+  assert.equal(parts.flat, "df.head(n: 'int' = 5, key=lambda x: x, flag=False) -> 'Self'")
+})
+
+test('скобка внутри строки за скобку не считается', () => {
+  const parts = splitSignature(`f(sep=")", quote='"', esc="\\"")`)
+  assert.ok(parts)
+  assert.deepEqual(
+    parts.params.map((param) => param.name),
+    ['sep', 'quote', 'esc'],
+  )
+})
+
+test('сигнатура без параметров и без скобок', () => {
+  const empty = splitSignature('f()')
+  assert.ok(empty)
+  assert.deepEqual(empty.params, [])
+  assert.equal(empty.flat, 'f()')
+  // Не сигнатура вовсе: показывать надо дословно, а не перестраивать.
+  assert.equal(splitSignature('numpy.ndarray'), null)
+  assert.equal(splitSignature('f(a, b'), null, 'несошедшиеся скобки разобрались')
+  assert.equal(splitSignature('(a, b)'), null, 'скобки без вызываемого сошли за сигнатуру')
+})
+
+test('короткая сигнатура остаётся одной строкой', () => {
+  const short = splitSignature(parseSignatureHelp(HEAD).signature)
+  assert.ok(short)
+  assert.ok(short.flat.length <= SIGNATURE_ONE_LINE, `${short.flat.length} знаков`)
+  // А длинная — нет: ровно по этому числу выбирается раскладка.
+  const long = splitSignature(parseSignatureHelp(LMPLOT).signature)
+  assert.ok((long?.flat.length ?? 0) > SIGNATURE_ONE_LINE)
+})
+
+test('окно рисует поток спанами и не трогает innerHTML', () => {
+  assert.match(EDITOR, /function signatureFlow\(/)
+  assert.match(EDITOR, /cm-signature-sig cm-signature-flow/)
+  assert.match(EDITOR, /className = 'cm-signature-param'/)
+  assert.match(EDITOR, /rest\.className = 'cm-signature-default'/)
+  // Текст приезжает от ядра: собирается он узлами, а не разметкой.
+  assert.doesNotMatch(EDITOR, /innerHTML/)
+  assert.match(EDITOR, /document\.createTextNode\(' '\)/, 'разделителя-пробела нет — копия слипнется')
+  // Перенос только между параметрами, висячий отступ у перенесённых строк.
+  assert.match(THEME, /'\.cm-signature-param': \{\s*whiteSpace: 'nowrap'/)
+  assert.match(THEME, /'\.cm-signature-flow': \{[\s\S]*?whiteSpace: 'normal'/)
+  assert.match(THEME, /paddingLeft: '2ch'/)
+  assert.match(THEME, /textIndent: '-2ch'/)
+  assert.match(THEME, /'\.cm-signature-default': \{\s*color: 'rgb\(var\(--muted\)\)'/)
 })
 
 /* ----------------------------------------------------------------- память */

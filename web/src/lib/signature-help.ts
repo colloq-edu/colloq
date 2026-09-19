@@ -258,6 +258,154 @@ export function helpIsEmpty(help: SignatureHelp): boolean {
   )
 }
 
+/* --------------------------------------------------- сигнатура по частям */
+
+/**
+ * Сколько знаков сигнатура помещается в строку.
+ *
+ * Восемьдесят — ширина окна справки моноширинным тринадцатым (640 px ≈ 82
+ * знака) с запасом на поля. Всё, что короче, показывается как есть, одной
+ * строкой: разбирать `df.head(n=5)` на части нечего и незачем.
+ */
+export const SIGNATURE_ONE_LINE = 80
+
+/**
+ * Параметр сигнатуры, разделённый надвое: имя и всё остальное.
+ *
+ * Надвое, потому что глазами ищут ИМЯ. В `x_estimator=None` человек читает
+ * `x_estimator`, а `=None` — это шум, который надо видеть, но не читать;
+ * поэтому имя рисуется цветом текста, а аннотация с умолчанием — приглушённым.
+ * `*`, `/`, `*args` и `**kwargs` целиком имя: делить в них нечего.
+ */
+export interface SignatureParam {
+  name: string
+  /** `: int = 5`, `=None`, `` — склеенное с именем даёт параметр дословно. */
+  rest: string
+}
+
+export interface SignatureParts {
+  /** `sns.lmplot(` — вызываемое вместе с открывающей скобкой. */
+  head: string
+  params: SignatureParam[]
+  /** `)` и всё, что после неё: `-> Self`. */
+  tail: string
+  /** Та же сигнатура одной строкой — ровно то, что копируется из окна. */
+  flat: string
+}
+
+const QUOTES = new Set(['"', "'"])
+const OPEN = new Set(['(', '[', '{'])
+const CLOSE = new Set([')', ']', '}'])
+
+/**
+ * Разделить список параметров по запятым ВЕРХНЕГО уровня.
+ *
+ * Скобки и кавычки считаются, потому что запятая живёт и внутри умолчания:
+ * `b=(2, 3)`, `sep=", "`, `Dict[str, int]`. Разделив по каждой запятой, мы
+ * разрезали бы такое умолчание пополам — и показали бы человеку параметр,
+ * которого нет.
+ *
+ * Та же работа, что у `_split` в server/src/kernel/inspect-static.ts, и копия
+ * здесь намеренная: там она внутри исходника на Python, который уезжает в
+ * ядро, и общей функции у них быть не может — разные языки и разные стороны
+ * провода. Проверяются обе.
+ */
+function splitTopLevel(inner: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let quote = ''
+  let start = 0
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]
+    if (quote) {
+      if (ch === '\\') i++
+      else if (ch === quote) quote = ''
+      continue
+    }
+    if (QUOTES.has(ch)) quote = ch
+    else if (OPEN.has(ch)) depth++
+    else if (CLOSE.has(ch)) depth--
+    else if (ch === ',' && depth === 0) {
+      parts.push(inner.slice(start, i))
+      start = i + 1
+    }
+  }
+  parts.push(inner.slice(start))
+  // Перевод строки внутри параметра — это раскладка IPython, а не часть
+  // параметра: он печатает по одному на строку с отступом в четыре пробела.
+  return parts.map((part) => part.replace(/\s+/g, ' ').trim()).filter((part) => part !== '')
+}
+
+/** Имя параметра и всё, что к нему приписано, — по первому `:` или `=`. */
+function splitParam(param: string): SignatureParam {
+  let depth = 0
+  let quote = ''
+  for (let i = 0; i < param.length; i++) {
+    const ch = param[i]
+    if (quote) {
+      if (ch === '\\') i++
+      else if (ch === quote) quote = ''
+      continue
+    }
+    if (QUOTES.has(ch)) quote = ch
+    else if (OPEN.has(ch)) depth++
+    else if (CLOSE.has(ch)) depth--
+    else if (depth === 0 && (ch === ':' || ch === '=')) {
+      return { name: param.slice(0, i).trimEnd(), rest: param.slice(i) }
+    }
+  }
+  return { name: param, rest: '' }
+}
+
+/**
+ * Сигнатура, разобранная на вызываемое, параметры и хвост, — или `null`.
+ *
+ * Ради раскладки, и раскладка тут не украшение. IPython печатает длинную
+ * сигнатуру по параметру на строку: у `sns.lmplot` это сорок три строки, то
+ * есть всё окно справки целиком, и документация оказывается за тремя экранами
+ * прокрутки. А ищут в сигнатуре обычно одно — есть ли такой параметр и как он
+ * называется. Потоком, с переносом только между параметрами, те же сорок два
+ * параметра занимают семь строк, и docstring виден сразу.
+ *
+ * `null` — «разобрать не удалось»: скобки не сошлись, скобок нет вовсе, это
+ * не сигнатура. Тогда показываем дословно то, что прислало ядро: чужой текст
+ * лучше показать как есть, чем перестроить по догадке.
+ */
+export function splitSignature(text: string): SignatureParts | null {
+  if (typeof text !== 'string') return null
+  const src = text.replace(/\r/g, '')
+  const open = src.indexOf('(')
+  if (open === -1) return null
+  let depth = 0
+  let quote = ''
+  let close = -1
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i]
+    if (quote) {
+      if (ch === '\\') i++
+      else if (ch === quote) quote = ''
+      continue
+    }
+    if (QUOTES.has(ch)) quote = ch
+    else if (OPEN.has(ch)) depth++
+    else if (CLOSE.has(ch)) {
+      depth--
+      if (depth === 0) {
+        close = i
+        break
+      }
+    }
+  }
+  // Скобка не закрылась — это не сигнатура целиком, а её обрывок.
+  if (close === -1) return null
+  const head = src.slice(0, open + 1).replace(/\s+/g, ' ').trim()
+  if (head === '(') return null
+  const params = splitTopLevel(src.slice(open + 1, close)).map(splitParam)
+  const tail = `)${src.slice(close + 1).replace(/\s+/g, ' ').trimEnd()}`
+  const flat = head + params.map((param) => param.name + param.rest).join(', ') + tail
+  return { head, params, tail, flat }
+}
+
 /* ------------------------------------------------------------------ память */
 
 /**
