@@ -54,7 +54,31 @@ const requests: { code: string; store_history: boolean; silent: boolean }[] = []
  * with an aborted reply and an idle status; without that the caller waits for
  * ever, which is a property of this fake and not of the thing being tested.
  */
-let held: Array<{ socket: WebSocket; parent: unknown }> = []
+let held: Array<{ socket: WebSocket; parent: unknown; asked?: boolean }> = []
+
+/**
+ * Отчёт входа изоляции консилиума (kernel/council-isolation.ts).
+ *
+ * Настоящее ядро отвечает на `user_expressions` даже молча, и сервер читает
+ * это как «личные копии данных готовы». Без ответа он обязан НЕ запускать
+ * попытку — значит подделка без этой ветки проверяла бы только отказ.
+ */
+function councilExpressions(asked: boolean): Record<string, unknown> {
+  if (!asked) return {}
+  return {
+    user_expressions: {
+      colloq: {
+        status: 'ok',
+        data: {
+          'text/plain': JSON.stringify({
+            ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1,
+          }),
+        },
+        metadata: {},
+      },
+    },
+  }
+}
 
 function reply(socket: WebSocket, parent: unknown, msgType: string, content: unknown): void {
   socket.send(
@@ -207,9 +231,12 @@ before(async () => {
           store_history: msg.content.store_history,
           silent: msg.content.silent,
         })
+        const asked =
+          Object.keys((msg.content as { user_expressions?: object }).user_expressions ?? {}).length >
+          0
         if (swallowExecutes) {
           reply(ws, msg.header, 'status', { execution_state: 'busy' })
-          held.push({ socket: ws, parent: msg.header })
+          held.push({ socket: ws, parent: msg.header, asked })
           return
         }
         reply(ws, msg.header, 'status', { execution_state: 'busy' })
@@ -278,8 +305,16 @@ before(async () => {
           reply(ws, msg.header, 'status', { execution_state: 'idle' })
           return
         }
-        reply(ws, msg.header, 'stream', { name: 'stdout', text: `${msg.content.code}\n` })
-        reply(ws, msg.header, 'execute_reply', { status: 'ok', execution_count: 1 })
+        // Молчаливый запрос вывода не показывает — но вход изоляции ждёт от
+        // него `user_expressions`, и это единственный ответ, который он услышит.
+        if (!msg.content.silent) {
+          reply(ws, msg.header, 'stream', { name: 'stdout', text: `${msg.content.code}\n` })
+        }
+        reply(ws, msg.header, 'execute_reply', {
+          status: 'ok',
+          execution_count: 1,
+          ...councilExpressions(asked),
+        })
         reply(ws, msg.header, 'status', { execution_state: 'idle' })
       })
     })
@@ -345,8 +380,12 @@ function say(text: string): void {
 
 /** Let the held request finish, the way a kernel does when the cell ends. */
 function shellFinish(): void {
-  for (const { socket, parent } of held.splice(0)) {
-    reply(socket, parent, 'execute_reply', { status: 'ok', execution_count: 1 })
+  for (const { socket, parent, asked } of held.splice(0)) {
+    reply(socket, parent, 'execute_reply', {
+      status: 'ok',
+      execution_count: 1,
+      ...councilExpressions(asked === true),
+    })
     reply(socket, parent, 'status', { execution_state: 'idle' })
   }
 }

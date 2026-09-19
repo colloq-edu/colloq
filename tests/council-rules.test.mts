@@ -49,6 +49,20 @@ let sockets: WebSocket[] = []
 let held: Array<{ socket: WebSocket; parent: unknown }> = []
 /** Сколько раз комнату просили прервать — по нему видно, что сигнал не штормит. */
 let interrupts = 0
+/**
+ * Чем подделка отвечает на вход изоляции (kernel/council-isolation.ts).
+ *
+ * `null` — «ядро промолчало»: `user_expressions` пустой, и сервер обязан
+ * НЕ запускать попытку. По умолчанию — обычное подтверждение без пропусков,
+ * иначе ни одна проверка регламента до запуска бы не добралась.
+ */
+let councilReport: Record<string, unknown> | null = {
+  ok: true, copied: 2, skipped: [], failed: [], bytes: 0, ms: 1,
+}
+/** Сколько раз подделку просили выйти из изоляции — выход обязан быть всегда. */
+let isolationExits = 0
+/** Всё, что доехало до ядра: по нему видно, запускали попытку или нет. */
+let seen: string[] = []
 
 function reply(socket: WebSocket, parent: unknown, msgType: string, content: unknown): void {
   socket.send(
@@ -135,13 +149,14 @@ before(async () => {
         }
         if (msg.header.msg_type !== 'execute_request') return
         const code = msg.content.code
+        seen.push(code)
         reply(ws, msg.header, 'status', { execution_state: 'busy' })
         reply(ws, msg.header, 'execute_input', { code, execution_count: 1 })
         /*
          * HANG — попытка, которая не кончается сама. Печатает строку и садится
          * ждать: без этой строки проверить «вывод до остановки сохранён» было
-         * бы нечем. Всё остальное, включая служебные снимки имён вокруг
-         * попытки (COUNCIL_SNAPSHOT_NAMES), отвечает сразу — иначе очередь
+         * бы нечем. Всё остальное, включая вход и выход изоляции вокруг
+         * попытки (council-isolation.ts), отвечает сразу — иначе очередь
          * встала бы ещё до запуска.
          */
         if (code.includes('HANG')) {
@@ -152,7 +167,32 @@ before(async () => {
         if (code.includes('PRINT')) {
           reply(ws, msg.header, 'stream', { name: 'stdout', text: 'готово\n' })
         }
-        reply(ws, msg.header, 'execute_reply', { status: 'ok', execution_count: 1 })
+        /*
+         * Вход изоляции отчитывается `user_expressions` — настоящее ядро
+         * отвечает ими даже на молчаливый запрос, и без этой ветки сервер
+         * справедливо отказался бы запускать хоть одну попытку.
+         */
+        const expressions = (msg.content as { user_expressions?: Record<string, string> })
+          .user_expressions
+        const wantsReport = expressions !== undefined && Object.keys(expressions).length > 0
+        if (code.includes('.leave(globals())')) isolationExits += 1
+        reply(ws, msg.header, 'execute_reply', {
+          status: 'ok',
+          execution_count: 1,
+          ...(wantsReport
+            ? {
+                user_expressions: councilReport
+                  ? {
+                      colloq: {
+                        status: 'ok',
+                        data: { 'text/plain': JSON.stringify(councilReport) },
+                        metadata: {},
+                      },
+                    }
+                  : {},
+              }
+            : {}),
+        })
         reply(ws, msg.header, 'status', { execution_state: 'idle' })
       })
     })
@@ -176,6 +216,9 @@ afterEach(() => {
     reply(socket, parent, 'status', { execution_state: 'idle' })
   }
   interrupts = 0
+  isolationExits = 0
+  seen = []
+  councilReport = { ok: true, copied: 2, skipped: [], failed: [], bytes: 0, ms: 1 }
 })
 
 after(async () => {
@@ -647,6 +690,102 @@ test('пауза 0 не отказывает никому и отсчёта в �
   assert.ok((nextRunAtFor(at.id, at.cell, who, 60) ?? 0) > Date.now())
   // И ручку, снятую преподавателем, никто не переживает.
   assert.equal(nextRunAtFor(at.id, at.cell, who, 0), null)
+
+  const { closeControlRoom } = await import('../server/src/control.js')
+  closeControlRoom(at.id)
+})
+
+/* ------------------------------------------------------ личные копии данных */
+
+/**
+ * Вход не подтвердился — попытка не запускается вовсе.
+ *
+ * Это не осторожность, а единственный честный исход. Отчёт входа
+ * (kernel/council-isolation.ts) — единственное, по чему сервер знает, чьи
+ * сейчас данные в ядре; молчание означает «неизвестно», и запуск на общих
+ * объектах ровно здесь и стоил бы пары: студент получил бы правильный на вид
+ * ответ, испортив `data` всей группе. Поэтому вместо запуска — одна строка без
+ * трейсбека, а выход отрабатывает всё равно: вход мог успеть подменить
+ * привязки и упасть после.
+ */
+test('вход без подтверждения не пускает попытку в ядро и говорит об этом одной строкой', async () => {
+  const at = await room()
+  assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
+  assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
+  councilReport = null
+  const exitsBefore = isolationExits
+  assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
+
+  assert.ok(
+    await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'error', 4000),
+    'попытка не кончилась отказом',
+  )
+  const run = await runOf(at, at.petya)
+  const outputs = run?.outputs ?? []
+  assert.equal(outputs.length, 1, 'к отказу прицепился чужой вывод')
+  const failure = outputs[0] as { kind: string; ename: string; evalue: string; traceback: string[] }
+  assert.equal(failure.kind, 'error')
+  assert.match(failure.evalue, /Не удалось подготовить личные копии/)
+  // Без трейсбека: кадры `<colloq-council>` — не код студента и ему не помогут.
+  assert.deepEqual(failure.traceback, [])
+  assert.doesNotMatch(failure.evalue, /\n/, 'отказ перестал быть одной строкой')
+
+  // Текст попытки до ядра не доехал — а выход отработал.
+  assert.ok(!seen.some((code) => code.includes('PRINT')), 'попытка всё-таки исполнилась')
+  assert.ok(isolationExits > exitsBefore, 'выход не выполнили после неудачного входа')
+
+  // И очередь этим не сломана: следующая попытка при живом входе считается.
+  councilReport = { ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1 }
+  assert.equal(
+    await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT # снова' }),
+    null,
+  )
+  assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
+  assert.ok(
+    await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'ok', 4000),
+    'очередь встала после одного отказа входа',
+  )
+
+  const { closeControlRoom } = await import('../server/src/control.js')
+  closeControlRoom(at.id)
+})
+
+/**
+ * Что осталось общим, названо в начале вывода — до первой строки самой попытки.
+ *
+ * Молчаливая половинчатая изоляция хуже прежней дыры: студент, привыкший, что
+ * данные у него свои, на большой таблице испортил бы их всем и не узнал об
+ * этом. Строка стоит первой, потому что читают её вместе с ответом, и в ней
+ * сразу написано, что делать.
+ */
+test('переменная, не влезшая в бюджет копий, названа строкой перед выводом попытки', async () => {
+  const at = await room()
+  assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
+  assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
+  councilReport = {
+    ok: true,
+    copied: 2,
+    bytes: 10,
+    ms: 3,
+    skipped: [{ name: 'big', bytes: 1288490188 }],
+    failed: [{ name: 'conn', error: 'TypeError: cannot pickle' }],
+  }
+  assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
+  assert.ok(await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'ok', 4000))
+
+  const outputs = (await runOf(at, at.petya))?.outputs ?? []
+  const first = outputs[0] as { kind: string; name: string; text: string }
+  assert.equal(first.kind, 'stream')
+  assert.equal(first.name, 'stderr', 'предупреждение ушло в stdout, к ответу')
+  assert.match(first.text, /Переменная `big` \(1,2 ГБ\)/)
+  assert.match(first.text, /big = big\.copy\(\)/)
+  // Неудачная копия — то же предупреждение, только без размера.
+  assert.match(first.text, /Переменную `conn`/)
+  // А вывод самой попытки идёт следом и не потерян.
+  assert.ok(
+    outputs.some((o) => o.kind === 'stream' && /готово/.test((o as { text: string }).text)),
+    'вывод попытки пропал за предупреждением',
+  )
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)

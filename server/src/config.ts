@@ -241,6 +241,21 @@ export const config = {
    */
   maxSessionBytes: Number(env('MAX_SESSION_MB', '1024')) * 1024 * 1024,
 
+  /**
+   * Сколько памяти одна попытка консилиума может потратить на личные копии
+   * данных (kernel/council-isolation.ts).
+   *
+   * Потолок нужен потому, что ядро в комнате одно и память у него общая: без
+   * него `arr = np.zeros(2_000_000_000)` преподавателя превращал бы каждую
+   * попытку в копию на 16 ГБ и убивал ядро посреди пары у всех сразу. Самый
+   * частый и самый тяжёлый случай семинара — большая таблица pandas — в этот
+   * счёт не идёт вовсе: при Copy-on-Write копия стоит O(1).
+   *
+   * Что в потолок не влезло, остаётся общим, и попытке об этом говорят строкой
+   * в выводе: тихая половинчатая изоляция хуже честно названной.
+   */
+  councilCopyBytes: Number(env('COUNCIL_COPY_MB', '512')) * 1024 * 1024,
+
   /** How often an idle-but-dirty document is written to disk. */
   snapshotIntervalMs: 1500,
   /** Coalescing window for kernel stdout/stderr before it hits the CRDT. */

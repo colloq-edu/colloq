@@ -114,7 +114,7 @@ how the room takes part. In any preset, a cell can be:
 
 * **closed** — the room's rules decide who edits and runs it.
 * **open to shared editing** — anyone in the room can edit and run that one cell, even under Lecture rules.
-* **council** — each cell runs **Only me** (teacher-only execution, the default), **Everyone in turn** (students run directly) or **On request** (each student run needs the teacher's approval). Requests work for drafts as well as submitted answers; editing the text invalidates the request. Approval queues the requested version; it does not submit the answer. All attempts run in the room's **one kernel**, one after another, so students can use the data the teacher prepared. The server removes the names an attempt defines when it finishes; mutation of existing objects and files stays shared. A review mark reaches only the answer's author, and the class sees it only on an answer the teacher shows. Individual sheets are a teaching tool, not independent execution sandboxes or an isolated grading environment.
+* **council** — each cell runs **Only me** (teacher-only execution, the default), **Everyone in turn** (students run directly) or **On request** (each student run needs the teacher's approval). Requests work for drafts as well as submitted answers; editing the text invalidates the request. Approval queues the requested version; it does not submit the answer. All attempts run in the room's **one kernel**, one after another, so students can use the data the teacher prepared. Each attempt gets personal copies of that data, and afterwards the server restores the namespace exactly as it was: it removes the names the attempt defines and undoes its rebindings, so `data = data.dropna()` or `df.drop(..., inplace=True)` in one attempt does not reach the next. Everything else stays shared: files on disk, module state (`np.random.seed`, `pd.set_option`), objects of types that cannot be copied and objects above the `COUNCIL_COPY_MB` budget — an attempt is told in its own output which of its variables were left shared. A review mark reaches only the answer's author, and the class sees it only on an answer the teacher shows. Individual sheets are a teaching tool, not independent execution sandboxes or an isolated grading environment.
 
 <details>
 <summary><strong>Room rules and teacher access</strong></summary>
@@ -451,6 +451,7 @@ development backend; the production installer supplies broker configuration.
 | `KERNEL_PIDS` / `KERNEL_ROOM_SUBNET` | Process ceiling of a room container (512 by default) and the subnet of the `colloq-rooms` network (`10.213.0.0/22`). |
 | `COLLOQ_ROOM_NETWORK` | Unset: rooms cannot reach local addresses (LAN, router, the host, cloud metadata), and they refuse to start if that block cannot be installed. `open` lifts the block for a trusted setup; `colloq doctor` then says so. |
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | Application upload limits; these do not limit arbitrary writes from Python. |
+| `COUNCIL_COPY_MB` | How much memory one council attempt may spend on personal copies of the room's data (512 by default). Anything above the budget stays shared, and the attempt is told so in its own output. Copy-on-write pandas copies cost nothing and are not counted. |
 
 </details>
 

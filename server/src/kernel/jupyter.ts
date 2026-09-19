@@ -33,6 +33,19 @@ export interface ExecuteHandlers {
   onError(ename: string, evalue: string, traceback: string[]): void
   /** @param wait `clear_output(wait=True)` — стереть, когда будет чем заменить. */
   onClear(wait: boolean): void
+  /**
+   * Ответ на `opts.userExpressions` — единственный способ услышать ядро молча.
+   *
+   * При `silent: true` в IOPUB не едет НИЧЕГО: ни stream, ни execute_result.
+   * А `user_expressions` ядро считает и кладёт в `execute_reply` и в этом
+   * случае тоже (ipykernel · IPythonKernel.do_execute) — если сам запуск
+   * прошёл со статусом `ok`. Этим отчитывается вход консилиума
+   * (council-isolation.ts), которому надо сказать серверу «копии готовы», не
+   * написав в комнату ни строки.
+   *
+   * Значение каждого ключа — mimebundle вида `{status, data, metadata}`.
+   */
+  onUserExpressions?(values: Record<string, unknown>): void
 }
 
 export type ExecuteStatus = 'ok' | 'error' | 'abort'
@@ -394,11 +407,13 @@ export class JupyterKernel {
    * attempt: the kernel is shared by the room, and anyone who can run a line
    * in it could otherwise read every attempt the teacher has run with
    * `In[-5:]` or `%history` — the one thing the council promises never happens.
+   * @param opts.userExpressions выражения, которые ядро посчитает после кода и
+   * вернёт в `execute_reply` — см. `ExecuteHandlers.onUserExpressions`.
    */
   async execute(
     code: string,
     handlers: ExecuteHandlers,
-    opts?: { silent?: boolean; storeHistory?: boolean },
+    opts?: { silent?: boolean; storeHistory?: boolean; userExpressions?: Record<string, string> },
   ): Promise<ExecuteStatus> {
     // A kernel that has been quiet since before the break may not be there any
     // more, and the socket will not say so. Between two cells run back to back
@@ -416,7 +431,7 @@ export class JupyterKernel {
         code,
         silent: opts?.silent === true,
         store_history: opts?.storeHistory ?? opts?.silent !== true,
-        user_expressions: {},
+        user_expressions: opts?.userExpressions ?? {},
         /*
          * input() has to work. A seminar called "Intro to Python" reaches for
          * it in the first fifteen minutes, and with stdin refused the cell dies
@@ -1071,6 +1086,18 @@ export class JupyterKernel {
       if (!pending) return
       const status = content.status
       pending.status = status === 'ok' || status === 'error' || status === 'abort' ? status : 'ok'
+      /*
+       * Ответ на `user_expressions` — до settle, как и справка ниже: после
+       * него писать уже некуда. Ядро не считает выражения на упавшем запуске
+       * и присылает пустой объект — значит пустота здесь означает «не
+       * подтверждено», и слушатель обязан читать её именно так.
+       */
+      if (pending.handlers.onUserExpressions) {
+        const values = content.user_expressions
+        pending.handlers.onUserExpressions(
+          values && typeof values === 'object' ? (values as Record<string, unknown>) : {},
+        )
+      }
       /*
        * `print?` ничего не печатает — и это не фигура речи.
        *

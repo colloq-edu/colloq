@@ -2250,8 +2250,8 @@ export const serverMessages: MessageCatalog = {
     "en": "The class is over. This room is now read-only."
   },
   "server.councilSharedKernel": {
-    "ru": "Решения выполняются по очереди в общем ядре. Новые переменные, созданные решением, удаляются после запуска. Изменения общих объектов и файлов сохраняются. Не используйте этот режим для задач, требующих изолированного выполнения.",
-    "en": "Solutions run one at a time in the shared kernel. New variables created by a solution are removed after execution. Changes to shared objects and files persist. Do not use this mode for tasks requiring isolated execution."
+    "ru": "Решения выполняются по очереди в общем ядре, но каждое получает личные копии данных: таблицы, массивы и списки после него остаются прежними. Новые переменные, созданные решением, удаляются после запуска. Общими остаются файлы, настройки модулей и то, что не удалось скопировать, — о последнем решение читает в своём выводе. Не используйте этот режим для задач, требующих изолированного выполнения.",
+    "en": "Solutions run one at a time in the shared kernel, but each one gets personal copies of the data: tables, arrays and lists are left as they were. New variables created by a solution are removed after execution. Files, module settings and anything that could not be copied stay shared — a solution is told about the last of these in its own output. Do not use this mode for tasks requiring isolated execution."
   },
   "server.defaultNotebook": {
     "ru": "Тетрадь.ipynb",
@@ -2456,6 +2456,46 @@ export const serverMessages: MessageCatalog = {
   "server.council.hintNotInCouncil": {
     "ru": "Консилиум в этой ячейке закрыт",
     "en": "The council is closed in this cell"
+  },
+  "server.council.copyFailed": {
+    "ru": "Не удалось подготовить личные копии переменных: {p0} — запуск не выполнен",
+    "en": "Could not prepare personal copies of the variables: {p0} — the run did not happen"
+  },
+  "server.council.copyNoAnswer": {
+    "ru": "ядро не подтвердило подготовку",
+    "en": "the kernel did not confirm them"
+  },
+  "server.council.copyTooBig": {
+    "ru": "[Colloq] Переменная `{p0}` ({p1}) слишком велика для личной копии — попытка работает с общей. Меняйте копию: {p0} = {p0}.copy()",
+    "en": "[Colloq] Variable `{p0}` ({p1}) is too large to copy for this attempt — it works on the shared one. Change a copy instead: {p0} = {p0}.copy()"
+  },
+  "server.council.copyShared": {
+    "ru": "[Colloq] Переменную `{p0}` не удалось скопировать — попытка работает с общей. Меняйте копию: {p0} = {p0}.copy()",
+    "en": "[Colloq] Variable `{p0}` could not be copied — this attempt works on the shared one. Change a copy instead: {p0} = {p0}.copy()"
+  },
+  "server.council.copyMore": {
+    "ru": {
+      "one": "[Colloq] …и ещё {count} такая переменная.",
+      "few": "[Colloq] …и ещё {count} такие переменные.",
+      "many": "[Colloq] …и ещё {count} таких переменных.",
+      "other": "[Colloq] …и ещё {count} такой переменной."
+    },
+    "en": {
+      "one": "[Colloq] …and {count} more variable like it.",
+      "other": "[Colloq] …and {count} more variables like it."
+    }
+  },
+  "server.council.sizeKb": {
+    "ru": "{p0} КБ",
+    "en": "{p0} kB"
+  },
+  "server.council.sizeMb": {
+    "ru": "{p0} МБ",
+    "en": "{p0} MB"
+  },
+  "server.council.sizeGb": {
+    "ru": "{p0} ГБ",
+    "en": "{p0} GB"
   },
   "server.stoppedTheRunTookLongerThanThe.87bfc0": {
     "ru": "Остановлено: запуск шёл дольше {p0}. Предел задаёт преподаватель — ядро одно на всю комнату.",

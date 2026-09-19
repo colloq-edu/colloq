@@ -67,6 +67,16 @@ import {
 } from './jupyter.js'
 import { dataBudgetFor, OutputWriter } from './outputs.js'
 import { CouncilOutputBuffer, type CouncilJob } from './council.js'
+import {
+  councilEnterSource,
+  councilEnterRefusal,
+  councilSkipNotes,
+  parseCouncilReport,
+  COUNCIL_EXIT_SOURCE,
+  COUNCIL_REPORT_EXPR,
+  COUNCIL_REPORT_KEY,
+  type CouncilIsolationReport,
+} from './council-isolation.js'
 import { durationWords } from '@shared/text'
 import type { CouncilRun } from '@shared/protocol'
 import { closeTerminal, terminalPhase } from './terminal.js'
@@ -1807,39 +1817,40 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
 const COUNCIL_REPORT_MS = 400
 
 /**
- * Имена, которые попытка завела в общем ядре, живут не дольше попытки.
+ * Попытка консилиума работает с личными копиями данных, а после неё ядро
+ * возвращается в точности к тому, что было.
  *
  * Ядро в комнате одно — это устройство продукта, а не недосмотр: попытка
  * должна видеть `df`, `np` и всё, что преподаватель подготовил в общей ячейке.
- * А вот в обратную сторону это была дыра, и притом молчаливая: `secret = 42` в
- * попытке одного студента отвечал на `print(secret)` в попытке следующего.
- * Попытка, забывшая объявить переменную, проходила за счёт чужой; два
- * одинаковых текста давали разный результат в зависимости от порядка запуска;
- * преподаватель ставил «верно» по выводу, который принадлежал не той работе.
+ * А вот в обратную сторону это была дыра, и притом молчаливая. Сначала по
+ * именам: `secret = 42` в попытке одного студента отвечал на `print(secret)` в
+ * попытке следующего. Потом, на живом семинаре 19.09, — по данным: в задании
+ * стояла строка `# data = data.dropna()`, один человек её раскомментировал, и
+ * `data` стал другим у ВСЕХ, включая тех, кто уже сдал.
  *
- * Чиним не изоляцией пространства имён (`exec` в свежем словаре ломает и эхо
- * последнего выражения, и магии, и номера строк в трейсбеке — то есть всё, чем
- * попытка похожа на ячейку), а уборкой ПОСЛЕ: снимок имён до запуска, снятие
- * новых после. Два молчаливых запроса вокруг попытки, по миллисекунде каждый.
+ * Прежняя уборка (снимок имён до, снятие новых после) закрывала только первую
+ * половину и по устройству не могла закрыть вторую: перепривязка меняет имя,
+ * которое БЫЛО, а мутация на месте не меняет имён вовсе.
  *
- * Чего это не чинит и что поэтому сказано вслух (README, подсказка ручки
- * studentRun): мутации того, что уже было. `df.drop(...)` в попытке меняет
- * общий `df` — как и в обычной ячейке, и по той же причине.
+ * Поэтому вокруг попытки теперь два других молчаливых запроса
+ * (council-isolation.ts): вход подменяет привязки личными копиями и
+ * отчитывается через `user_expressions`, выход возвращает каждую привязку,
+ * снимает новые имена, откатывает cwd и rcParams. Изоляции пространства имён
+ * (`exec` в свежем словаре) по-прежнему нет: она ломает и эхо последнего
+ * выражения, и магии, и номера строк в трейсбеке — то есть всё, чем попытка
+ * похожа на ячейку.
+ *
+ * Что остаётся общим — и о чём сказано вслух (COUNCIL_SHARED_KERNEL_NOTE,
+ * README, docs/pages · council.html):
+ *   · файлы на диске: `df.to_csv('out.csv')` пишет в общий каталог комнаты;
+ *   · объекты вне списка копируемых типов — тензор torch, открытый файл,
+ *     генератор, соединение с базой (council-isolation.ts · _plan);
+ *   · объекты сверх бюджета `COUNCIL_COPY_MB` — эти названы в выводе попытки;
+ *   · состояние модулей: `np.random.seed`, `pd.set_option`, `sys.path`,
+ *     `warnings.filterwarnings`, счётчик выполнения ядра;
+ *   · GPU: память карты и её контексты у комнаты одни.
  */
-const COUNCIL_SNAPSHOT_NAMES = '_colloq_before = frozenset(globals())'
-const COUNCIL_RESTORE_NAMES = [
-  'try:',
-  '    _colloq_seen = _colloq_before',
-  'except NameError:',
-  '    _colloq_seen = None',
-  'if _colloq_seen is not None:',
-  '    for _colloq_n in [n for n in list(globals())',
-  "                      if n not in _colloq_seen and not n.startswith('_colloq_')]:",
-  '        globals().pop(_colloq_n, None)',
-  "globals().pop('_colloq_n', None)",
-  "globals().pop('_colloq_seen', None)",
-  "globals().pop('_colloq_before', None)",
-].join('\n')
+const COUNCIL_ENTER_SOURCE = councilEnterSource(config.councilCopyBytes)
 
 /** Обработчики для служебного запроса, у которого нет ни вывода, ни зрителей. */
 const SILENT_HANDLERS: Parameters<JupyterKernel['execute']>[1] = {
@@ -1857,6 +1868,54 @@ async function quietly(runtime: Runtime, source: string): Promise<void> {
   } catch {
     /* ядро уже не отвечает — попытке об этом скажет её собственный запуск */
   }
+}
+
+/**
+ * Приготовить попытке личные копии данных — и дождаться подтверждения.
+ *
+ * Подтверждение обязательно, и это главное свойство: `null` отсюда означает
+ * «неизвестно, подменены ли привязки», а на общих объектах попытка не
+ * запускается никогда. Отчёт едет `user_expressions` — при `silent: true` в
+ * IOPUB не приходит ничего, и услышать вход иначе было бы нечем.
+ *
+ * `runOnKernel`, а не `quietly`: ядро, умершее между двумя попытками, здесь
+ * поднимается заново — и попытка считается в свежем, пустом ядре, как считалась
+ * бы и раньше, а не отказывается из-за того, что копировать оказалось нечего.
+ */
+async function enterCouncilIsolation(
+  runtime: Runtime,
+): Promise<{ report: CouncilIsolationReport | null; reason: string | null }> {
+  let raw: unknown = null
+  let reason: string | null = null
+  try {
+    const status = await runOnKernel(
+      runtime,
+      COUNCIL_ENTER_SOURCE,
+      {
+        ...SILENT_HANDLERS,
+        onError: (ename, evalue) => {
+          // Вход ловит свои ошибки сам и отчитывается ими; сюда доходит только
+          // то, что его пережило, — прерывание пределом, смерть ядра. У
+          // KeyboardInterrupt текста нет вовсе, и двоеточие после имени
+          // повисало бы в строке отказа ни на чём.
+          reason = evalue.trim().length > 0 ? `${ename}: ${evalue.trim()}` : ename
+        },
+        onUserExpressions: (values) => {
+          raw = values[COUNCIL_REPORT_KEY]
+        },
+      },
+      {
+        silent: true,
+        storeHistory: false,
+        userExpressions: { [COUNCIL_REPORT_KEY]: COUNCIL_REPORT_EXPR },
+      },
+    )
+    if (status !== 'ok' && reason === null) reason = tr("server.theAttemptWasInterrupted.4f4edf")
+  } catch (err) {
+    reason = errText(err)
+  }
+  const report = parseCouncilReport(raw)
+  return { report, reason: report?.error ?? reason }
 }
 
 /** Первый кадр запуска: он же заявка, и текст под ним — тот, что в задании. */
@@ -2283,16 +2342,34 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   /*
    * Будильник заводится ДО первой строки, ушедшей в ядро, и после проверки на
    * пустую попытку: пустую считать нечего, а всё остальное — уже время,
-   * которое очередь стоит. Снимок имён (`quietly` ниже) идёт в счёт предела
-   * намеренно: он тоже занимает общее ядро.
+   * которое очередь стоит. Личные копии данных (вход ниже) идут в счёт предела
+   * намеренно: они тоже занимают общее ядро.
    */
   armLimit(runtime, active)
   const { buffer } = active
   let state: 'ok' | 'error' = 'ok'
-  // Что было в ядре до попытки — чтобы после снять ровно то, что она завела.
-  // См. COUNCIL_SNAPSHOT_NAMES.
-  await quietly(runtime, COUNCIL_SNAPSHOT_NAMES)
+  // Личные копии данных попытки. См. COUNCIL_ENTER_SOURCE.
+  const { report, reason } = await enterCouncilIsolation(runtime)
   try {
+    if (!report?.ok) {
+      /*
+       * Вход не подтвердился — попытка НЕ запускается.
+       *
+       * Молчание входа означает «неизвестно, чьи сейчас данные в ядре», и
+       * запуск на общих объектах ровно здесь и стоил бы пары: студент получил
+       * бы правильный на вид ответ, испортив данные всей группе. Одна строка
+       * без трейсбека: кадры `<colloq-council>` — не его код и ничего ему не
+       * скажут.
+       */
+      // Имя исключения пустое по той же причине, что у остановки пределом
+      // (council.ts · stopped): карточка рисует «имя: текст», и английское
+      // слово перед русской фразой ничего не добавляет.
+      buffer.error('', councilEnterRefusal(reason), [])
+      state = 'error'
+      return
+    }
+    // Что осталось общим — в начало вывода, до первой строки самой попытки.
+    for (const note of councilSkipNotes(report)) buffer.stream('stderr', note)
     /*
      * Без истории ядра — единственное отличие от ячейки в самом запросе.
      *
@@ -2358,13 +2435,20 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
     state = 'error'
   } finally {
     unwatch()
-    // Имена, заведённые попыткой, не переживают её: следующая попытка — и
-    // следующая общая ячейка — не должны их видеть.
-    await quietly(runtime, COUNCIL_RESTORE_NAMES)
+    /*
+     * Выход — ВСЕГДА, включая ту ветку, где попытку не запускали: вход мог
+     * успеть подменить привязки и упасть после, и тогда единственное, что
+     * вернёт комнате её данные, — вот эта строка.
+     *
+     * Конец попытки собран здесь же, за выходом, а не после `try`: ветка
+     * «вход не подтвердился» выходит из блока раньше, и иначе карточка
+     * осталась бы «считается» навсегда.
+     */
+    await quietly(runtime, COUNCIL_EXIT_SOURCE)
+    finishCouncil(runtime, active, state)
+    // Попытка могла записать файл — панели файлов это так же интересно.
+    notifyWorkspaceChanged(runtime.sessionId)
   }
-  finishCouncil(runtime, active, state)
-  // Попытка могла записать файл — панели файлов это так же интересно.
-  notifyWorkspaceChanged(runtime.sessionId)
 }
 
 /** A kernel that will not come up is an output on the cell, never a crash. */

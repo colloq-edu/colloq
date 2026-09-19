@@ -116,7 +116,7 @@ The server reads the container's environment and `/workspace/colloq/.env`. For m
 | `KERNEL_GPUS` | all GPUs (detected by `colloq-host`) | GPU slices handed out one per GPU room, e.g. `0,1` or MIG ids |
 | `KERNEL_SHM` | `1g` | `/dev/shm` for GPU rooms |
 | `KERNEL_NETWORK` | `colloq` | Docker network shared by the server and room kernels |
-| `MAX_UPLOAD_MB`, `MAX_SESSION_MB`, `OPEN_SEMINAR_CREATION`, `TZ` | `50`, `1024`, `false`, — | As in `.env.example` |
+| `MAX_UPLOAD_MB`, `MAX_SESSION_MB`, `COUNCIL_COPY_MB`, `OPEN_SEMINAR_CREATION`, `TZ` | `50`, `1024`, `512`, `false`, — | As in `.env.example` |
 | `SESSION_SECRET` | generated, kept in `data/session-secret` | Set it only to rotate the key or share it between instances |
 | `COLLOQ_REGISTRY_USER`, `COLLOQ_REGISTRY_TOKEN` | — | Host only: `docker login` for a private registry. Use a read-only token. The variables are not passed to the container, but the resulting `/root/.docker/config.json` is mounted into it read-only, so the server can pull private kernel images. The server already holds the Docker socket, which is root on the VM, so this adds no access |
 | `COLLOQ_HOME` | `/workspace/colloq` | State directory. Mount it from the host at the **same path** |
