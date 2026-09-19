@@ -378,6 +378,15 @@
         -webkit-font-smoothing: antialiased;
       }
 
+      /*
+       * ЗАСТАВКА. Её двойник в приложении — web/src/components/ui/Splash.svelte
+       * (size="screen"), и он встаёт ровно на её место, когда оболочка уходит:
+       * тот же центр окна, та же марка 28, та же полоска 88×2, тот же зазор 16
+       * и те же тайминги. Числа здесь и там — копия друг друга, потому что CSS
+       * приложения к этому мгновению ещё не приехал (лист грузится
+       * неблокирующе, vite.config.ts) и общего источника у них быть не может.
+       * Правятся парой: тронули здесь — правьте Splash.svelte, и наоборот.
+       */
       #boot {
         position: fixed;
         inset: 0;
@@ -410,7 +419,10 @@
         }
       }
 
-      /* The same mark the first screen draws, at the same weights. */
+      /* The same mark the first screen draws, at the same weights — девять
+         клеток из набора значков (web/src/components/ui/Icon.svelte · logo),
+         повторённые здесь руками: набор приезжает с приложением, а эта марка
+         рисуется до него. */
       #boot svg {
         display: block;
         width: 28px;

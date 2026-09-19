@@ -1,5 +1,5 @@
 <script lang="ts">
-  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
+  import RowsSkeleton from '@/components/ui/RowsSkeleton.svelte'
   import { tr, getLocale } from '@shared/i18n'
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
@@ -1672,7 +1672,7 @@
 
       {#if loading && seminars.length === 0}
         <tr class="max-[640px]:block">
-          <td colspan="6" class="px-3 py-4 max-[640px]:block"><ContentSkeleton variant="rows" label={tr('admin.loading.seminars')} /></td>
+          <td colspan="6" class="px-3 py-4 max-[640px]:block"><RowsSkeleton label={tr('admin.loading.seminars')} /></td>
         </tr>
       {:else if shown.length === 0 && !creating}
         <tr class="max-[640px]:block">

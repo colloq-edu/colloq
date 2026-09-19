@@ -1,5 +1,6 @@
 <script lang="ts">
-  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
+  import Splash from '@/components/ui/Splash.svelte'
+  import { firstScreenReady } from '@/lib/boot'
   import { onMount } from 'svelte'
   import AdminShell, { type AdminTab } from '@/admin/AdminShell.svelte'
   import NewSeminar from '@/admin/screens/NewSeminar.svelte'
@@ -184,6 +185,16 @@
     }
   })
 
+  /*
+   * Панели есть что показать, когда она знает, что показывать: состояние
+   * инстанса приехало и ключ из адреса обменян. До этого мгновения на экране
+   * стоит заставка из index.html, и снимать её раньше значит открыть под ней
+   * пустоту (lib/boot.ts).
+   */
+  $effect(() => {
+    if (adminAuth.ready && !exchanging) firstScreenReady()
+  })
+
   onMount(() => {
     const onPop = () => {
       path = location.pathname
@@ -219,7 +230,13 @@
 </script>
 
 {#if !adminAuth.ready || exchanging}
-  <ContentSkeleton />
+  <!--
+    Заставка, а не скелет панели: до ответа сервера неизвестно даже, что здесь
+    будет — панель или форма входа, — а скелет рисовал шапку и строки той,
+    которой может не оказаться. Та же заставка, что в index.html, и в тех же
+    координатах: оболочка уходит ровно на неё (lib/boot.ts).
+  -->
+  <Splash />
 {:else if !adminAuth.me}
   <SignInScreen />
 {:else}

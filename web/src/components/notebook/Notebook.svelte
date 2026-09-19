@@ -1,5 +1,6 @@
 <script lang="ts">
-  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
+  import Splash from '@/components/ui/Splash.svelte'
+  import { firstScreenReady } from '@/lib/boot'
   import { tr } from '@shared/i18n'
   import { tick } from 'svelte'
   import { cellType, findCell, isCellOpen, type CellType } from '@shared/notebook'
@@ -644,6 +645,20 @@
   const cold = $derived(
     ids.current.length === 0 && !collabSynced && (!session.hydrated || session.connected),
   )
+
+  /*
+   * Комнате есть что показать, когда тетрадь перестала быть непрочитанной.
+   *
+   * Это последнее, чего ждёт заставка из index.html: шапка, рельсы и вкладки
+   * рисуются из того, что браузер знает и так, а центр экрана до первого кадра
+   * сокета пуст. Докладывает любая тетрадь, включая вторую, открытую вкладкой:
+   * заставку снимают один раз (lib/boot.ts), и первый доклад — от той, что
+   * человек и ждёт. Оборванная связь тоже гасит `cold`: там показывать нечего,
+   * но и ждать больше нечего.
+   */
+  $effect(() => {
+    if (!cold) firstScreenReady()
+  })
 
   /* ----------------------------------------------------------- viewport */
 
@@ -1718,7 +1733,15 @@
   <div class="px-6">
 
   {#if cold}
-    <ContentSkeleton variant="notebook" label={tr('room.ui.454')} />
+    <!--
+      Заставка, а не скелет ячеек: серые «ячейки» обещали тетрадь, которой ещё
+      никто не видел, — сколько их, какие они и есть ли они вообще. Заставка
+      обещает только ожидание, и это единственное, что здесь известно. Холодный
+      вход её обычно не показывает вовсе: оболочка из index.html висит, пока
+      тетрадь не прочитана (lib/boot.ts), — эта остаётся для смены вкладки и
+      второй тетради, открытой на живом экране.
+    -->
+    <Splash size="pane" label={tr('room.ui.454')} />
   {:else}
   {#each ids.current as id, index (id)}
     {@const showCell = built.has(id) || needsCell(id, index)}

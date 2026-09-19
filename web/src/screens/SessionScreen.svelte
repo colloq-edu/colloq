@@ -23,6 +23,7 @@
   import { ruleRefusal } from '@/lib/rule-refusal'
   import { REVEAL_EVENT, revealCell, type RevealTarget } from '@/lib/reveal'
   import { gridFaviconHref } from '@/lib/logo'
+  import { firstScreenReady } from '@/lib/boot'
   import Avatar from '@/components/ui/Avatar.svelte'
   import AvatarStack from '@/components/ui/AvatarStack.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -655,6 +656,20 @@
   )
   const activePath = $derived(typeof tabs.active === 'string' ? tabs.active : null)
   const activeKind = $derived(activePath ? kindOf(activePath) : null)
+
+  /*
+   * Заставке из index.html пора уходить — кроме одного случая.
+   *
+   * Комната рисуется из того, что браузер знает и без сети: шапка, рельсы,
+   * вкладки. Ждать под заставкой стоит только тетрадь — единственное здесь,
+   * что до первого кадра сокета пусто; о ней докладывает сама тетрадь
+   * (Notebook.svelte · cold). Пульт, проекция, консилиум и открытый файл
+   * ничего такого не ждут, и держать над ними заставку было бы враньём
+   * (lib/boot.ts).
+   */
+  $effect(() => {
+    if (mode !== 'room' || activeKind !== 'notebook') firstScreenReady()
+  })
 
   /** Тетради комнаты: список живёт в документе и приходит ко всем. */
   const books = watchBooks(session.doc)

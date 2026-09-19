@@ -1,5 +1,5 @@
 <script lang="ts">
-  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
+  import RowsSkeleton from '@/components/ui/RowsSkeleton.svelte'
   import { tr } from '@shared/i18n'
   /**
    * Папка семинара деревом.
@@ -991,7 +991,7 @@
   {/snippet}
 
   {#if !session.filesArrived && !listed}
-    <div class="px-2"><ContentSkeleton variant="rows" /></div>
+    <div class="px-2"><RowsSkeleton /></div>
   {/if}
 
   {#each visible as entry (entry.path)}

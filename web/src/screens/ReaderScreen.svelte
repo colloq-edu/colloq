@@ -8,7 +8,8 @@
   изменить, и нечему давать сбой.
 -->
 <script lang="ts">
-  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
+  import Splash from '@/components/ui/Splash.svelte'
+  import { firstScreenReady } from '@/lib/boot'
   import { tr, getLocale } from '@shared/i18n'
   import { api, ApiError } from '@/lib/api'
   import Icon from '@/components/ui/Icon.svelte'
@@ -200,6 +201,16 @@
     return () => {
       cancelled = true
     }
+  })
+
+  /*
+   * Читалке есть что показать, когда приехал курс или публикация — или когда
+   * уже известно, что их нет (`missing`, отказ). До этого на экране стоит
+   * заставка из index.html; снимать её раньше значит показать пустой грунт
+   * страницы, за которой человек сюда и пришёл (lib/boot.ts).
+   */
+  $effect(() => {
+    if (missing || courseView !== null || seminar !== null || failure !== null) firstScreenReady()
   })
 
   /*
@@ -406,7 +417,9 @@
             <PublicNotebook cells={step.cells} publication={seminar.id} />
           </div>
         {:else if loading}
-          <ContentSkeleton variant="notebook" label={tr('room.ui.874')} />
+          <!-- Страница уже нарисована — шапка, рельса шагов, — и едет только
+               тетрадь шага: заставка панельная, по центру этого места. -->
+          <Splash size="pane" label={tr('room.ui.874')} />
         {:else if noSuchStep}
           <!--
             Семинар жив, а этой отметки в нём нет. Причин две, и сервер их не
@@ -498,7 +511,9 @@
         > {tr('room.ui.552')} </button>
       </div>
     {:else}
-      <ContentSkeleton label={tr('room.ui.874')} />
+      <!-- Страницы ещё нет вовсе: заставка вместо экрана — та же и там же, где
+           её рисовала оболочка из index.html, так что перехода не видно. -->
+      <Splash label={tr('room.ui.874')} />
     {/if}
   </div>
 {/if}

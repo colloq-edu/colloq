@@ -1,6 +1,7 @@
 import { mount } from 'svelte'
 import './index.css'
 import { initializeLanguage, onLanguageChange } from './lib/i18n.svelte'
+import { firstScreenReady, whenFirstScreen } from './lib/boot'
 import { tr } from '@shared/i18n'
 
 const target = document.getElementById('root')
@@ -96,6 +97,10 @@ let offered = false
 function offerReload(): void {
   if (offered) return
   offered = true
+  // Под заставкой, которая больше ничего не дождётся, стоять нечему: кусок
+  // экрана не доехал, и сколько ни жди — не доедет. Оболочка уходит, и строка
+  // с «Обновить» оказывается на виду, а не поверх обещания загрузки.
+  firstScreenReady()
   const bar = document.createElement('div')
   bar.setAttribute('role', 'alert')
   bar.style.cssText = [
@@ -163,11 +168,40 @@ void (async () => {
   ])
   mount(App, { target })
   await stylesApplied()
-  dismissShell()
   // Give the styled join form a frame before using spare bandwidth for the
   // room. The build's head listener only preloads modules; their evaluation
   // still waits for entry. A saved identity already warmed them in the head.
+  //
+  // Стоит ПЕРЕД ожиданием первого экрана, хотя оболочка ещё на месте: событие
+  // говорит «форма отрисована», а не «заставки больше нет», и придерживать его
+  // до конца ожидания значило бы отнять у холодного входа в комнату всю ту
+  // фору, ради которой оно заведено.
   requestAnimationFrame(() => {
     requestAnimationFrame(() => window.dispatchEvent(new Event('colloq:ready')))
   })
+  /*
+   * И только теперь — оболочку снимают.
+   *
+   * Смонтированный App — это ещё не экран: под оболочкой в этот миг стоит
+   * `{#await}` над куском маршрута и пустые `session`/`adminAuth`. Уходя
+   * здесь, заставка открывала скелет — серую вёрстку экрана, о котором ещё
+   * ничего не известно. Ждём, пока первому экрану будет что показать
+   * (lib/boot.ts), и не дольше потолка: дальше на месте данных встаёт та же
+   * заставка приложения, в тех же координатах.
+   */
+  await whenFirstScreen()
+  /*
+   * Кадр на отрисовку доложенного: `firstScreenReady` зовут из эффекта, то
+   * есть после правки DOM, но до того, как её покажут. Без этой паузы между
+   * уходящей оболочкой и готовым экраном успевал мелькнуть пустой грунт.
+   *
+   * С запасным будильником: фоновая вкладка кадров не выдаёт вовсе, и ждать
+   * там нечего — оболочку всё равно никто не видит, а висеть до возвращения
+   * на вкладку она не должна.
+   */
+  await new Promise<void>((paint) => {
+    requestAnimationFrame(() => paint())
+    setTimeout(paint, 100)
+  })
+  dismissShell()
 })().catch(offerReload)

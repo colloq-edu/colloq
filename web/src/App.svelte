@@ -3,8 +3,9 @@
   import { OPEN_ROOM } from '@shared/rules'
   import { onMount } from 'svelte'
   import Icon from '@/components/ui/Icon.svelte'
-  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
+  import Splash from '@/components/ui/Splash.svelte'
   import JoinScreen from '@/screens/JoinScreen.svelte'
+  import { firstScreenReady } from '@/lib/boot'
   import { api, ApiError } from '@/lib/api'
   import {
     loadIdentity,
@@ -113,6 +114,8 @@
   let session = $state<SessionInfo | null>(null)
   let identity = $state<StoredIdentity | null>(null)
   let failure = $state<{ missing: boolean; message: string } | null>(null)
+  /** О комнате знают, а не догадываются: см. `enter`. */
+  let confirmed = $state(false)
   let attempt = $state(0)
   /** Что сказать на экране входа тому, кого туда вернули не по его воле. */
   let notice = $state<string | null>(null)
@@ -149,9 +152,7 @@
   }
 
   /** What this browser already knows about a room, with no request at all. */
-  function knownRoom(id: string): SessionInfo {
-    const cached =
-      recallSessionInfo(id)
+  function knownRoom(id: string, cached: SessionInfo | null): SessionInfo {
     // An unknown name stays empty rather than becoming a guess: it is only a
     // display fallback for the document's own title, and anything written here
     // could end up seeded into the shared document as the seminar's name.
@@ -186,7 +187,16 @@
     failure = null
     notice = null
     identity = id ? loadIdentity(id) : null
-    session = id ? knownRoom(id) : null
+    const cached = id ? recallSessionInfo(id) : null
+    /*
+     * «Про комнату известно» — это ответ сервера или память браузера, но НЕ
+     * заглушка из `knownRoom`: у неё пустое имя и угаданные правила, и снимать
+     * по ней заставку значит показать форму входа, на которой вместо названия
+     * занятия стоит серая полоса. Ровно тот кадр, ради которого заставку и
+     * держат (lib/boot.ts).
+     */
+    confirmed = cached !== null
+    session = id ? knownRoom(id, cached) : null
   }
 
   // Seeded during initialisation rather than from the effect below, so the very
@@ -216,6 +226,24 @@
     if (locale === localeShown) return
     localeShown = locale
     void reloadAreaMessages(locale).then(messagesChanged, () => {})
+  })
+
+  /**
+   * Когда снимать заставку из index.html — на тех экранах, которые рисует сам
+   * App (lib/boot.ts · кто докладывает).
+   *
+   * Их два. Экран отказа — это уже экран: ждать под заставкой больше нечего, и
+   * висеть она обязана не дольше, чем есть надежда. Форма входа — это экран,
+   * как только известно, КУДА входят: у неё в шапке название занятия, и до
+   * ответа сервера там стоит заглушка.
+   *
+   * Остальные ветки докладывают о себе сами, когда доедут: панель, читалка,
+   * комната. Обмен ключа на вход (`claiming`) намеренно молчит — это один
+   * запрос, и заставка над ним честнее, чем мелькнувшая строка «Открываем
+   * пульт…» под ней.
+   */
+  $effect(() => {
+    if (failure || (session && !identity && confirmed)) firstScreenReady()
   })
 
   onMount(() => {
@@ -249,6 +277,7 @@
         if (cancelled) return
         rememberSessionInfo(info)
         session = info
+        confirmed = true
       })
       .catch((error: unknown) => {
         if (cancelled) return
@@ -376,6 +405,7 @@
         }
         saveIdentity(next)
         session = res.session
+        confirmed = true
         identity = next
       })
       .catch((cause: unknown) => {
@@ -429,7 +459,7 @@
   -->
   {#key courseId ? `c:${courseId}` : `p:${publicSeminar?.id ?? ''}`}
     {#await reader()}
-      <ContentSkeleton />
+      <Splash />
     {:then Reader}
       <Reader
         course={courseId}
@@ -440,7 +470,7 @@
   {/key}
 {:else if isAdmin}
   {#await adminScreen()}
-    <ContentSkeleton />
+    <Splash />
   {:then AdminScreen}
     <AdminScreen />
   {/await}
@@ -457,7 +487,7 @@
     SessionScreen.
   -->
   {#await adminScreen()}
-    <ContentSkeleton />
+    <Splash />
   {:then AdminScreen}
     <AdminScreen />
   {/await}
@@ -523,7 +553,7 @@
   -->
   {#key me.token}
     {#await workspace()}
-      <ContentSkeleton />
+      <Splash />
     {:then Workspace}
       <Workspace
         session={room}
