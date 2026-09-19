@@ -12,20 +12,36 @@
    * порядок может разойтись.
    *
    * Нажатие на файл открывает его, а не копирует строку для ячейки: открывать
-   * стало чем. Строка для ячейки осталась кнопкой в полосе действий, и она
-   * по-прежнему первая — на семинаре по данным её нажимают чаще всего.
+   * стало чем.
+   *
+   * Всё остальное, что со строкой можно сделать, живёт в меню под правой
+   * кнопкой — и только там. Полоса из трёх значков по наведению, стоявшая тут
+   * раньше, умела ровно три вещи, занимала место размера файла и на планшете
+   * доставалась только выделенной строке; в неё же упиралось каждое следующее
+   * действие, потому что четвёртый значок в строку 26 пикселей высотой уже не
+   * лез. Вместо полосы — одна кнопка «⋯», открывающая то же меню: правая
+   * кнопка неочевидна, а на телефоне её нет вовсе.
    */
   import type { FileEntry } from '@shared/protocol'
   import { api } from '@/lib/api'
   import { getSessionState } from '@/lib/session.svelte'
   import { formatBytes, splitFileName } from '@/lib/utils'
+  import ContextMenu, { type ContextMenuItem } from '@/components/ui/ContextMenu.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { copyText } from '@/lib/clipboard'
   import { iconFor } from '@/lib/file-icons'
   import { permitsIn } from '@/lib/may'
   import { dropFolder, movedPaths, planMove, readsInside, type Row } from '@/lib/tree-move'
   import { watchBooks } from '@/lib/yreactive.svelte'
-  import { baseOf, joinPath, kindOf, parentOf, safeSegment, whySegmentRefused } from '@shared/paths'
+  import {
+    baseOf,
+    joinPath,
+    kindOf,
+    parentOf,
+    runnerFor,
+    safeSegment,
+    whySegmentRefused,
+  } from '@shared/paths'
 
   /** One file still on the wire, and the bytes the browser has actually flushed. */
   interface Upload {
@@ -42,9 +58,16 @@
     active?: string | null
     /** Файл переименовали: вкладка на него должна поехать следом. */
     onrename?: (from: string, to: string) => void
+    /**
+     * Запустить скрипт — тем же `file:run`, которым его запускает полоса над
+     * редактором (editor/FileBar.svelte). Здесь этого действия не было, и
+     * добавлено оно только пунктом меню: своей кнопки в строке дерева у запуска
+     * нет и не должно быть — на .py в папке смотрят чаще, чем запускают.
+     */
+    onrun?: (path: string) => void
   }
 
-  let { onopen, active = null, onrename }: Props = $props()
+  let { onopen, active = null, onrename, onrun }: Props = $props()
 
   const session = getSessionState()
 
@@ -75,6 +98,14 @@
   let noteTimer: number | undefined
   let errorRender = $state<() => string | null>(() => null)
   const error = $derived(errorRender())
+  /**
+   * Что именно только что легло в буфер — самой строкой, а не словом.
+   *
+   * Отметка переехала из строки файла под дерево. В строке было место на одно
+   * слово («скопировано»), а копировать можно и путь, и имя: слово на оба
+   * случая оставляет гадать, что забрали. Под деревом место есть, и туда
+   * помещается сам путь — то, что человек сейчас вставит в ячейку.
+   */
   let copied = $state<string | null>(null)
   let confirming = $state<string | null>(null)
   const isHost = $derived(session.me.role === 'host')
@@ -236,21 +267,16 @@
     return peersByPath.get(path) ?? NOBODY
   }
 
-  /** Кнопка 24 пикселя, зазор между ними два; сорок — место под размер файла. */
-  const BUTTON = 24
-  const GAP = 2
-  const SIZE_LANE = 40
-
   /**
-   * Ширина полосы действий — по числу кнопок в строке, а не константой.
+   * Сорок пикселей — место под размер файла, и оно же под кнопку меню.
    *
-   * Действия лежат absolute и в раскладке не участвуют: полоса, рассчитанная на
-   * две кнопки, третью выкладывает поверх имени файла. Так это однажды и
-   * случилось, когда у PDF появилось «открыть».
+   * Раньше ширина этой полосы считалась по числу значков в строке: полоса,
+   * рассчитанная на две кнопки, третью выкладывала поверх имени файла — так
+   * однажды и случилось, когда у PDF появилось «открыть». Кнопка теперь одна и
+   * навсегда одна, сколько бы действий ни прибавилось в меню, так что считать
+   * больше нечего.
    */
-  const laneWidth = $derived(
-    Math.max(SIZE_LANE, (isHost ? 3 : 2) * BUTTON + ((isHost ? 3 : 2) - 1) * GAP),
-  )
+  const SIZE_LANE = 40
 
   function toggle(path: string): void {
     // Тап по стрелке — тоже прикосновение к строке: раскрыв папку пальцем,
@@ -282,6 +308,16 @@
    */
   function pick(entry: FileEntry, detail = 1): void {
     if (detail > 1) return
+    /*
+     * Долгое нажатие пальцем кончается нажатием — и браузер шлёт `click`
+     * следом за тем, как меню уже открылось. Без этой строки вызванное пальцем
+     * меню открывало бы заодно файл, по которому его вызвали: вкладка поверх
+     * меню, а меню всё ещё про файл, который в эту секунду грузится.
+     */
+    if (heldOpen) {
+      heldOpen = false
+      return
+    }
     // Выделение — до любых отказов ниже: строка, по которой нажали, показывает
     // свои действия, даже если открыть файл правило комнаты не дало.
     picked = entry.path
@@ -479,50 +515,14 @@
     window.clearTimeout(copyTimer)
     // Иначе таймер развернёт папку в панели, которой на экране уже нет.
     window.clearTimeout(hoverTimer)
+    // А эти открыли бы меню на строке, которой уже нет, — и держали бы её
+    // запись в памяти вместе со всем деревом.
+    window.clearTimeout(holdTimer)
+    window.clearTimeout(heldTimer)
+    // И подсветку копии вместе с памятью о том, каким дерево было до неё.
+    window.clearTimeout(freshTimer)
+    window.clearTimeout(waitTimer)
   })
-
-  /** The line a student would actually type to open this file from a cell. */
-  function snippetFor(name: string): string {
-    const path = `'${name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
-    const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
-    switch (ext) {
-      case 'csv':
-        return `pd.read_csv(${path})`
-      case 'tsv':
-        return `pd.read_csv(${path}, sep='\\t')`
-      case 'jsonl':
-      case 'ndjson':
-        return `pd.read_json(${path}, lines=True)`
-      case 'parquet':
-        return `pd.read_parquet(${path})`
-      case 'xlsx':
-      case 'xls':
-        return `pd.read_excel(${path})`
-      case 'json':
-        return `json.load(open(${path}))`
-      case 'npy':
-      case 'npz':
-        return `np.load(${path})`
-      case 'pt':
-      case 'pth':
-        return `torch.load(${path})`
-      case 'png':
-      case 'jpg':
-      case 'jpeg':
-      case 'gif':
-      case 'webp':
-        return `Image.open(${path})`
-      case 'py':
-        // Скрипт запускают, а не читают: `%run` — то, что человек на самом деле
-        // хочет напечатать в ячейке, когда несёт туда имя файла.
-        return `%run ${name}`
-      case 'txt':
-      case 'md':
-        return `open(${path}).read()`
-      default:
-        return `open(${path}, 'rb').read()`
-    }
-  }
 
   function percent(upload: Upload): number {
     // A zero-byte file has nothing to report and is already there by the time
@@ -638,14 +638,536 @@
     window.setTimeout(() => (deleting = null), 600)
   }
 
-  async function copySnippet(path: string) {
+  /**
+   * Положить в буфер — и показать строкой, ЧТО именно туда легло.
+   *
+   * Одна дверь на оба пункта меню: путь и имя отличаются только текстом, а
+   * отказ буфера у них общий (на http без localhost `navigator.clipboard`
+   * попросту нет — см. lib/clipboard.ts).
+   *
+   * Две с половиной секунды, а не полторы: прочитать `data/train.csv` дольше,
+   * чем увидеть галочку.
+   */
+  async function copyInto(text: string): Promise<void> {
     try {
-      await copyText(snippetFor(path))
-      copied = path
+      await copyText(text)
+      copied = text
       window.clearTimeout(copyTimer)
-      copyTimer = window.setTimeout(() => (copied = null), 1400)
+      copyTimer = window.setTimeout(() => (copied = null), 2600)
     } catch {
       errorRender = () => (tr('room.ui.622'))
+    }
+  }
+
+  /* --------------------------------------------------------------- меню */
+
+  /**
+   * Что сейчас под меню: строка дерева или пустое место панели.
+   *
+   * Запись, а не путь строкой: у меню спрашивают и `dir`, и имя, и расширение,
+   * а искать строку в списке на каждый пункт значило бы искать её заново после
+   * каждой чужой правки дерева. Пропажу самой строки ловит эффект ниже — он и
+   * закрывает меню, повисшее над файлом, которого уже нет.
+   */
+  type MenuOn = { kind: 'entry'; entry: FileEntry } | { kind: 'panel' }
+
+  /** Где стоит меню — в координатах окна. `null` — меню закрыто. */
+  let menuAt = $state<{ x: number; y: number } | null>(null)
+  let menuOn = $state<MenuOn | null>(null)
+  /** Куда вернуть фокус, когда меню закроют: строка или кнопка «⋯». */
+  let menuOpener = $state<HTMLElement | null>(null)
+  /** Сама панель: по ней ходят стрелки вверх-вниз. */
+  let panel = $state<HTMLElement | null>(null)
+
+  function openMenu(
+    point: { x: number; y: number },
+    on: MenuOn,
+    opener: HTMLElement | null,
+  ): void {
+    menuOn = on
+    menuOpener = opener
+    menuAt = point
+    // Подсказка про правую кнопку нужна ровно до первого открытого меню.
+    rememberTip()
+  }
+
+  function closeMenu(): void {
+    menuAt = null
+    menuOn = null
+    menuOpener = null
+  }
+
+  /*
+   * Строку, над которой висело меню, могли убрать — своей же кнопкой,
+   * перетаскиванием или из соседней вкладки. Меню про исчезнувший файл — это
+   * набор действий, каждое из которых ответит «его больше нет».
+   */
+  $effect(() => {
+    const on = menuOn
+    if (on?.kind !== 'entry') return
+    if (!session.files.some((entry) => entry.path === on.entry.path)) closeMenu()
+  })
+
+  /** Кнопка имени внутри строки — то, чему возвращают фокус и по чему ходят стрелки. */
+  function nameButtonIn(row: EventTarget | null): HTMLElement | null {
+    return row instanceof HTMLElement ? row.querySelector<HTMLElement>('[data-row-name]') : null
+  }
+
+  function onRowMenu(event: MouseEvent, entry: FileEntry): void {
+    event.preventDefault()
+    // Своя строка перебивает панель: то же событие всплывает к секции, а та
+    // открывает меню про корень папки занятия.
+    event.stopPropagation()
+    picked = entry.path
+    openMenu({ x: event.clientX, y: event.clientY }, { kind: 'entry', entry }, nameButtonIn(event.currentTarget))
+  }
+
+  function onPanelMenu(event: MouseEvent): void {
+    event.preventDefault()
+    openMenu({ x: event.clientX, y: event.clientY }, { kind: 'panel' }, null)
+  }
+
+  /** «⋯» открывает то же меню — и вторым нажатием закрывает его. */
+  function onMoreClick(event: MouseEvent, entry: FileEntry): void {
+    event.stopPropagation()
+    const button = event.currentTarget as HTMLElement
+    if (menuOn?.kind === 'entry' && menuOn.entry.path === entry.path) {
+      closeMenu()
+      return
+    }
+    picked = entry.path
+    const box = button.getBoundingClientRect()
+    // От кнопки вниз, а не от указателя: нажать «⋯» можно и с клавиатуры, и
+    // тогда никакого указателя нет вовсе. За правую кромку окна меню не уедет
+    // — его прижмёт сам компонент.
+    openMenu({ x: box.left, y: box.bottom + 2 }, { kind: 'entry', entry }, button)
+  }
+
+  /* ------------------------------------------------- клавиши на строке */
+
+  /**
+   * Клавиатура на строке дерева.
+   *
+   * Shift+F10 и клавиша «меню» — общесистемный способ позвать контекстное меню,
+   * и он единственный, каким до него добирается тот, у кого нет мыши. F2 и
+   * Delete — то же, что в любом файловом менеджере; стрелки ходят по строкам,
+   * потому что Tab внутри дерева из ста файлов — это сто нажатий.
+   */
+  function onRowKeydown(event: KeyboardEvent, entry: FileEntry): void {
+    const row = event.currentTarget as HTMLElement
+    if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+      event.preventDefault()
+      const box = row.getBoundingClientRect()
+      picked = entry.path
+      openMenu({ x: box.left + 8, y: box.bottom + 2 }, { kind: 'entry', entry }, row)
+      return
+    }
+    if (event.key === 'F2') {
+      event.preventDefault()
+      if (mayRename) startRename(entry)
+      else errorRender = () => whyEdit
+      return
+    }
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      event.preventDefault()
+      askRemove(entry)
+      return
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      step(row, event.key === 'ArrowDown' ? 1 : -1)
+    }
+  }
+
+  /**
+   * Соседняя строка — по разметке, а не по списку `visible`.
+   *
+   * Список знает пути, а фокус ставят элементу, и сопоставлять одно с другим
+   * пришлось бы через `querySelector` по пути — то есть через селектор,
+   * собранный из имени файла, которое человек придумал сам (кавычка в имени, и
+   * селектор невалиден). Порядок кнопок в разметке и есть порядок дерева.
+   */
+  function step(from: HTMLElement, by: number): void {
+    if (!panel) return
+    const rows = [...panel.querySelectorAll<HTMLElement>('[data-row-name]')]
+    const now = rows.indexOf(from)
+    if (now < 0) return
+    // По краям — стоим. Круг по списку файлов уводил бы с последней строки на
+    // первую, а дерево читают сверху вниз.
+    rows[now + by]?.focus()
+  }
+
+  /* -------------------------------------------------- долгое нажатие */
+
+  let holdTimer: number | undefined
+  /** Откуда начали держать — чтобы отличить нажатие от прокрутки. */
+  let holdFrom: { x: number; y: number } | null = null
+  /** Меню открылось пальцем: следующий `click` по этой строке — эхо жеста. */
+  let heldOpen = false
+  let heldTimer: number | undefined
+
+  /**
+   * Полсекунды пальцем на строке — то же меню.
+   *
+   * Правой кнопки на телефоне нет, а «⋯» требует сперва попасть по строке и
+   * только потом по значку. Полсекунды — общая для платформ планка долгого
+   * нажатия; меньше срабатывало бы у тех, кто просто ведёт пальцем по списку.
+   *
+   * Android присылает `contextmenu` на то же самое нажатие, и меню от этого
+   * открывается дважды подряд в одной точке — то есть ровно один раз на
+   * экране. iOS `contextmenu` не шлёт вовсе, и без таймера меню там не
+   * открывалось бы ничем.
+   */
+  function onRowPointerDown(event: PointerEvent, entry: FileEntry): void {
+    if (event.pointerType !== 'touch') return
+    const row = event.currentTarget
+    holdFrom = { x: event.clientX, y: event.clientY }
+    window.clearTimeout(holdTimer)
+    holdTimer = window.setTimeout(() => {
+      holdFrom = null
+      heldOpen = true
+      // Эхо живёт полсекунды: если `click` за ним так и не придёт (палец увели
+      // с экрана), следующий настоящий тап не должен пропасть.
+      window.clearTimeout(heldTimer)
+      heldTimer = window.setTimeout(() => (heldOpen = false), 700)
+      picked = entry.path
+      openMenu({ x: event.clientX, y: event.clientY }, { kind: 'entry', entry }, nameButtonIn(row))
+    }, 500)
+  }
+
+  /** Палец поехал — это прокрутка, а не нажатие. */
+  function onRowPointerMove(event: PointerEvent): void {
+    if (!holdFrom) return
+    if (Math.abs(event.clientX - holdFrom.x) < 10 && Math.abs(event.clientY - holdFrom.y) < 10) {
+      return
+    }
+    endHold()
+  }
+
+  function endHold(): void {
+    window.clearTimeout(holdTimer)
+    holdFrom = null
+  }
+
+  /* ------------------------------------------------------------ права */
+
+  /**
+   * Переименовать и убрать может преподаватель — и это не то же самое, что
+   * `files`.
+   *
+   * `tree:move` на сервере преподавательский целиком (control.ts), а удаление
+   * — преподавательское с одним исключением: СВОЮ личную тетрадь автор убирает
+   * сам. Фраза выбирается так же, как везде в комнате: правило комнаты важно
+   * ровно до звонка, после звонка человеку важно только то, что пара кончилась
+   * (lib/may.ts · CLASS_IS_OVER).
+   */
+  const mayRename = $derived(isHost && may.files)
+  const whyEdit = $derived(may.files ? tr('room.files.menu.hostOnly') : may.filesWhy)
+  const mayRemove = (path: string): boolean => isHost || myBook(path)
+
+  function askRemove(entry: FileEntry): void {
+    if (!mayRemove(entry.path)) {
+      errorRender = () => whyEdit
+      return
+    }
+    confirming = entry.path
+  }
+
+  /**
+   * Дерево в тот миг, когда попросили копию, — чтобы узнать её в лицо.
+   *
+   * Имя копии выбирает сервер (там нет гонки за занятое имя), и вкладке оно
+   * приезжает обычным списком файлов. В дереве из сотни строк новая строка
+   * появляется где-то посередине, и найти её глазами — та же работа, от
+   * которой дублирование и избавляет. Поэтому список запоминается до отправки,
+   * а появившийся путь подсвечивается на полторы секунды.
+   *
+   * `$state`, а не обычная переменная: эффект ниже читает её первой строкой, и
+   * обычная не была бы его зависимостью — он не проснулся бы никогда.
+   */
+  let beforeCopy = $state<Set<string> | null>(null)
+  /** Строка, которая только что появилась копией. */
+  let freshCopy = $state<string | null>(null)
+  let freshTimer: number | undefined
+  let waitTimer: number | undefined
+
+  function duplicate(entry: FileEntry): void {
+    if (!may.files) {
+      errorRender = () => (may.filesWhy + '.')
+      return
+    }
+    errorRender = () => (null)
+    beforeCopy = new Set(session.files.map((row) => row.path))
+    // Сервер мог и отказать — тогда нового пути не появится вовсе. Без этого
+    // срока память о запросе жила бы до конца пары и подсветила бы чужой файл,
+    // который кто-нибудь загрузил через полчаса.
+    window.clearTimeout(waitTimer)
+    waitTimer = window.setTimeout(() => (beforeCopy = null), 5000)
+    // Имя копии выбирает сервер: занятое имя здесь не отказ, а обычное дело —
+    // дублируют одно и то же дважды подряд (shared/protocol.ts · tree:copy).
+    session.send({ t: 'tree:copy', path: entry.path })
+  }
+
+  $effect(() => {
+    const was = beforeCopy
+    if (!was) return
+    const added = session.files.filter((row) => !was.has(row.path))
+    if (added.length === 0) return
+    beforeCopy = null
+    window.clearTimeout(waitTimer)
+    // Первая из появившихся: копия одна, а всё остальное в этот же кадр —
+    // чужие загрузки, и подсвечивать их незачем.
+    freshCopy = added[0].path
+    window.clearTimeout(freshTimer)
+    freshTimer = window.setTimeout(() => (freshCopy = null), 1600)
+  })
+
+  /** Завести что-нибудь ВНУТРИ этой папки: цель переезжает туда же. */
+  function startDraftIn(kind: 'file' | 'dir' | 'book', dir: string): void {
+    // Свёрнутая папка раскрывается: строка ввода стоит там, где появится файл,
+    // и в закрытой папке её не видно вовсе — поле молча ушло бы «никуда».
+    if (dir && !expanded.has(dir)) expanded = new Set(expanded).add(dir)
+    target = dir
+    startDraft(kind)
+  }
+
+  function uploadInto(dir: string): void {
+    if (dir && !expanded.has(dir)) expanded = new Set(expanded).add(dir)
+    target = dir
+    picker?.click()
+  }
+
+  /* ------------------------------------------------------ состав меню */
+
+  function copyItem(text: string, label: string): ContextMenuItem {
+    return { label, icon: 'copy', run: () => void copyInto(text) }
+  }
+
+  function fileItems(entry: FileEntry): ContextMenuItem[] {
+    const path = entry.path
+    const kind = kindOf(path)
+    const runner = runnerFor(path)
+    const items: ContextMenuItem[] = []
+    /*
+     * «Открыть» — ровно то же, что щелчок по строке, и поэтому его нет у
+     * двоичного файла: щелчок по нему означает «дай мне его сюда», то есть уже
+     * «Скачать». Два пункта, делающие одно и то же, читаются как два разных
+     * действия, и одно из них человек выберет наугад.
+     */
+    if (kind !== 'binary') {
+      items.push({
+        label: tr('room.files.menu.open'),
+        icon: kind === 'notebook' ? 'notebook' : 'file',
+        // Внести .ipynb в комнату — ДОБАВИТЬ тетрадь, и правило у этого своё
+        // (shared/rules.ts · ownBooks). Тот же ответ даёт сервер.
+        disabled: kind === 'notebook' && !isBook(path) && !may.ownBook,
+        why: may.ownBookWhy,
+        run: () => pick(entry),
+      })
+    }
+    if (runner && onrun) {
+      items.push({
+        label: tr('room.files.menu.run'),
+        icon: 'play',
+        disabled: !may.run,
+        why: may.runWhy,
+        run: () => onrun?.(path),
+      })
+    }
+    items.push(
+      { ...copyItem(path, tr('room.files.menu.copyPath')), gap: items.length > 0 },
+      copyItem(entry.name, tr('room.files.menu.copyName')),
+      {
+        gap: true,
+        label: tr('room.files.menu.download'),
+        icon: 'download',
+        run: () => void download(path),
+      },
+      {
+        label: tr('room.files.menu.duplicate'),
+        icon: 'copy-plus',
+        // Копия ДОБАВЛЯЕТ файл, как «новый файл» и как загрузка, — значит и
+        // правило у неё `files`, а не роль (server/src/control.ts · tree:copy).
+        disabled: !may.files,
+        why: may.filesWhy,
+        run: () => duplicate(entry),
+      },
+      {
+        gap: true,
+        label: tr('room.files.menu.rename'),
+        icon: 'pencil',
+        keys: 'F2',
+        disabled: !mayRename,
+        why: whyEdit,
+        run: () => startRename(entry),
+      },
+      {
+        label: tr('room.files.menu.remove'),
+        icon: 'trash',
+        keys: 'Del',
+        danger: true,
+        disabled: !mayRemove(path),
+        why: whyEdit,
+        // В то же подтверждение строкой ниже, что и раньше: второе окно поверх
+        // меню спрашивало бы одно и то же дважды.
+        run: () => (confirming = path),
+      },
+    )
+    return items
+  }
+
+  function folderItems(entry: FileEntry): ContextMenuItem[] {
+    const path = entry.path
+    const shut = collapsed.has(path)
+    return [
+      {
+        label: shut ? tr('room.files.menu.expand') : tr('room.files.menu.collapse'),
+        icon: shut ? 'chevron-right' : 'chevron-down',
+        run: () => toggle(path),
+      },
+      {
+        gap: true,
+        label: tr('room.files.menu.newFileHere'),
+        icon: 'file-plus',
+        disabled: !may.files,
+        why: may.filesWhy,
+        run: () => startDraftIn('file', path),
+      },
+      {
+        label: tr('room.files.menu.newDirHere'),
+        icon: 'folder-plus',
+        disabled: !may.files,
+        why: may.filesWhy,
+        run: () => startDraftIn('dir', path),
+      },
+      {
+        label: tr('room.files.menu.newBookHere'),
+        icon: 'notebook',
+        disabled: !may.ownBook,
+        why: may.ownBookWhy,
+        run: () => startDraftIn('book', path),
+      },
+      {
+        label: tr('room.files.menu.uploadHere'),
+        icon: 'upload',
+        disabled: !may.files,
+        why: may.filesWhy,
+        run: () => uploadInto(path),
+      },
+      { ...copyItem(path, tr('room.files.menu.copyPath')), gap: true },
+      {
+        label: tr('room.files.menu.duplicate'),
+        icon: 'copy-plus',
+        disabled: true,
+        // Теми же словами, которыми отказал бы сервер: одна фраза на оба конца
+        // (server/src/control.ts · tree:copy).
+        why: tr('server.files.copyFolder'),
+        run: () => {},
+      },
+      {
+        gap: true,
+        label: tr('room.files.menu.rename'),
+        icon: 'pencil',
+        keys: 'F2',
+        disabled: !mayRename,
+        why: whyEdit,
+        run: () => startRename(entry),
+      },
+      {
+        label: tr('room.files.menu.remove'),
+        icon: 'trash',
+        keys: 'Del',
+        danger: true,
+        disabled: !mayRemove(path),
+        why: whyEdit,
+        run: () => (confirming = path),
+      },
+    ]
+  }
+
+  /** Пустое место панели: только то, что кладут В папку занятия. */
+  function panelItems(): ContextMenuItem[] {
+    return [
+      {
+        label: tr('room.files.menu.newFile'),
+        icon: 'file-plus',
+        disabled: !may.files,
+        why: may.filesWhy,
+        run: () => startDraft('file'),
+      },
+      {
+        label: tr('room.files.menu.newDir'),
+        icon: 'folder-plus',
+        disabled: !may.files,
+        why: may.filesWhy,
+        run: () => startDraft('dir'),
+      },
+      {
+        label: tr('room.files.menu.newBook'),
+        icon: 'notebook',
+        disabled: !may.ownBook,
+        why: may.ownBookWhy,
+        run: () => startDraft('book'),
+      },
+      {
+        gap: true,
+        label: tr('room.files.menu.upload'),
+        icon: 'upload',
+        disabled: !may.files,
+        why: may.filesWhy,
+        run: () => picker?.click(),
+      },
+    ]
+  }
+
+  const menuItems = $derived.by(() => {
+    const on = menuOn
+    if (!on) return []
+    if (on.kind === 'panel') return panelItems()
+    return on.entry.dir ? folderItems(on.entry) : fileItems(on.entry)
+  })
+
+  const menuTitle = $derived(menuOn?.kind === 'entry' ? menuOn.entry.name : null)
+
+  const menuLabel = $derived.by(() => {
+    const on = menuOn
+    if (!on) return ''
+    if (on.kind === 'panel') return tr('room.files.menu.panel')
+    return on.entry.dir ? tr('room.files.menu.folder') : tr('room.files.menu.file')
+  })
+
+  /* ----------------------------------------------------- подсказка раз */
+
+  /**
+   * «Правая кнопка — действия с файлом» — одной строкой и ровно до тех пор,
+   * пока человек ни разу меню не открывал.
+   *
+   * Подсказка, висящая всегда, перестаёт быть подсказкой и становится частью
+   * интерфейса, которую перестают читать. Флаг лежит в браузере, а не в
+   * комнате: это про руку, а не про занятие, и в приватном окне его просто не
+   * будет — тогда подсказка покажется ещё раз, и это не беда.
+   */
+  const TIP_KEY = 'colloq.files.menuTip'
+
+  function tipWasSeen(): boolean {
+    try {
+      return localStorage.getItem(TIP_KEY) === '1'
+    } catch {
+      // Хранилище закрыто (приватное окно, запрет на куки) — считаем, что
+      // показывать незачем: подсказка не стоит исключения на каждый кадр.
+      return true
+    }
+  }
+
+  let tipSeen = $state(tipWasSeen())
+
+  function rememberTip(): void {
+    if (tipSeen) return
+    tipSeen = true
+    try {
+      localStorage.setItem(TIP_KEY, '1')
+    } catch {
+      /* хранилища нет — подсказка просто вернётся в следующий раз */
     }
   }
 
@@ -881,6 +1403,7 @@
      которую можно было бы подсветить. Для файлов с диска её не рисуют: там про
      то же самое говорит пунктирная кнопка внизу. -->
 <section
+  bind:this={panel}
   class="relative flex shrink-0 flex-col gap-0 px-3 pb-1 pt-5 {!dragFiles && dragInto === ''
     ? 'ring-1 ring-inset ring-accent'
     : !dragFiles && dragDeny === ''
@@ -891,6 +1414,7 @@
   ondragover={(event) => aim(event, null)}
   ondragleave={onDragLeave}
   ondrop={(event) => onDrop(event, null)}
+  oncontextmenu={onPanelMenu}
 >
   <!-- Полоса уводит заголовок к действиям, так что кнопки читаются как тихий
        конец заголовка, а не как значки, повешенные на него. -->
@@ -1000,9 +1524,11 @@
     {@const here = peersIn(entry.path)}
     <div
       class="group relative flex h-[26px] items-center transition-colors duration-100
-             {active === entry.path || picked === entry.path
-        ? 'bg-raised'
-        : 'hover:bg-raised focus-within:bg-raised'}
+             {freshCopy === entry.path
+        ? 'bg-accent/10'
+        : active === entry.path || picked === entry.path
+          ? 'bg-raised'
+          : 'hover:bg-raised focus-within:bg-raised'}
              {dragInto === entry.path
         ? 'ring-1 ring-inset ring-accent'
         : dragDeny === entry.path
@@ -1014,6 +1540,12 @@
       ondragend={onDragEnd}
       ondragover={(event) => aim(event, entry)}
       ondrop={(event) => onDrop(event, entry)}
+      oncontextmenu={(event) => onRowMenu(event, entry)}
+      onpointerdown={(event) => onRowPointerDown(event, entry)}
+      onpointermove={onRowPointerMove}
+      onpointerup={endHold}
+      onpointercancel={endHold}
+      onpointerleave={endHold}
       role="presentation"
     >
       <!-- Открытый файл отмечен полосой у самого края: она не занимает места в
@@ -1056,7 +1588,8 @@
         <button
           type="button"
           draggable={mayDrag}
-          class="flex min-w-0 flex-1 items-center self-stretch text-left font-mono text-code
+          data-row-name
+          class="row-name flex min-w-0 flex-1 items-center self-stretch text-left font-mono text-code
                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset
                  focus-visible:ring-accent/40
                  {entry.dir
@@ -1067,24 +1600,20 @@
           title={entry.dir ? entry.path : tr('room.extra.269', { p0: entry.path })}
           onclick={(event) => pick(entry, event.detail)}
           ondblclick={() => startRename(entry)}
+          onkeydown={(event) => onRowKeydown(event, entry)}
         >
           <span class="truncate">{splitFileName(entry.name).stem}</span>
           <span class="shrink-0">{splitFileName(entry.name).ext}</span>
         </button>
 
-        {#if copied === entry.path}
-          <span class="flex shrink-0 items-center gap-1 pr-2 text-2xs font-medium text-positive">
-            <Icon name="check" size={11} /> {tr('room.ui.594')} </span>
-        {:else}
-          <!--
-            Полоса размера — она же полоса действий: обе начинаются в одном
-            месте, так что числа стоят колонкой, а действия не наезжают на имя.
-            Ширина считается по числу кнопок в ЭТОЙ строке.
-          -->
-          <div
-            class="relative mr-2 flex h-6 shrink-0 items-center justify-end"
-            style={`min-width:${entry.dir ? 0 : laneWidth}px`}
-          >
+        <!--
+          Полоса размера — она же место кнопки меню: обе начинаются в одном
+          месте, так что числа стоят колонкой, а «⋯» не наезжает на имя.
+        -->
+        <div
+          class="relative mr-2 flex h-6 shrink-0 items-center justify-end"
+          style={`min-width:${entry.dir ? 0 : SIZE_LANE}px`}
+        >
             {#if here.length > 0}
               <!-- Кто держит файл открытым. Стоит поверх размера и не прячется
                    под указателем: это то, ради чего на строку и смотрят. -->
@@ -1107,57 +1636,40 @@
               </span>
             {/if}
             <!--
-              Полоса действий: указателю — по наведению, пальцу — по выделенной
-              строке (см. `picked`). `pointer-events-none`, пока её не видно, —
-              не украшение: полоса лежит поверх размера, и невидимая «Убрать»
-              ловила тап по правому краю строки.
+              Одна кнопка вместо прежней полосы из трёх значков: указателю — по
+              наведению, пальцу — по выделенной строке (см. `picked`).
+              `pointer-events-none`, пока её не видно, — не украшение: кнопка
+              лежит поверх размера, и невидимой она ловила тап по правому краю
+              строки.
+
+              `after:-inset-2` растит цель до сорока пикселей, не сдвинув в
+              строке ни одного пикселя: рисунок остаётся 24×24, а пальцем по
+              нему попадают. Соседние строки этим не задеть — их кнопки в то же
+              время `pointer-events-none`.
             -->
             <span
-              class="absolute inset-y-0 right-0 flex items-center gap-0.5 bg-raised transition-opacity
+              class="absolute inset-y-0 right-0 flex items-center bg-raised transition-opacity
                      duration-100 group-hover:pointer-events-auto group-hover:opacity-100
                      group-focus-within:pointer-events-auto group-focus-within:opacity-100
                      {picked === entry.path ? 'opacity-100' : 'pointer-events-none opacity-0'}"
             >
-              {#if !entry.dir}
-                <button
-                  type="button"
-                  class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                  title={tr('room.extra.272', { p0: snippetFor(entry.path) })}
-                  aria-label={tr('room.ui.596')}
-                  onclick={() => void copySnippet(entry.path)}
-                >
-                  <Icon name="copy" size={12} />
-                </button>
-                <button
-                  type="button"
-                  class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                  title={tr('room.ui.597')}
-                  aria-label={tr('room.extra.273', { p0: entry.name })}
-                  onclick={() => void download(entry.path)}
-                >
-                  <Icon name="download" size={12} />
-                </button>
-              {/if}
-              <!-- Убрать файл — преподавательское: папка общая в обе стороны, и
-                   раздатка, по которой работает класс, была в одном нажатии от
-                   любого. Исключение одно — СВОЯ личная тетрадь: её автор завёл
-                   сам, она считается против его потолка своих тетрадей, и не
-                   дать ему её убрать значит запереть его после трёх черновиков.
-                   Сервер разрешает ровно это же (routes/files.ts). -->
-              {#if isHost || myBook(entry.path)}
-                <button
-                  type="button"
-                  class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
-                  title={tr('room.ui.598')}
-                  aria-label={tr('room.extra.274', { p0: entry.name })}
-                  onclick={() => (confirming = entry.path)}
-                >
-                  <Icon name="trash" size={12} />
-                </button>
-              {/if}
+              <button
+                type="button"
+                data-menu-button
+                aria-haspopup="menu"
+                aria-expanded={menuOn?.kind === 'entry' && menuOn.entry.path === entry.path}
+                class="relative flex h-6 w-6 items-center justify-center text-muted
+                       transition-colors duration-100 after:absolute after:-inset-2
+                       after:content-[''] hover:text-ink focus-visible:outline-none
+                       focus-visible:ring-2 focus-visible:ring-accent/40"
+                title={tr('room.files.menu.more')}
+                aria-label={tr('room.files.menu.moreFor', { p0: entry.name })}
+                onclick={(event) => onMoreClick(event, entry)}
+              >
+                <Icon name="more" size={13} />
+              </button>
             </span>
-          </div>
-        {/if}
+        </div>
       {/if}
     </div>
 
@@ -1307,6 +1819,27 @@
     {/if}
   </button>
 
+  <!-- Правая кнопка — единственное, о чём в этой панели нельзя догадаться по
+       виду: «⋯» появляется только под указателем, а меню под ним шире, чем
+       одна кнопка. Строка уходит навсегда, как только меню открыли хоть раз, —
+       подсказка, висящая всегда, перестаёт быть подсказкой. -->
+  {#if !tipSeen && listed}
+    <p class="px-2 pt-1.5 text-2xs leading-snug text-faint">{tr('room.files.menu.tip')}</p>
+  {/if}
+
+  <!-- Что легло в буфер — целиком и под деревом. В строке файла на это было
+       место под одно слово, а кладут туда путь: «скопировано» без самого пути
+       заставляет проверять буфер вставкой. Полоса той же формы, что у ошибки
+       и у предупреждения выше, только цвет кромки другой. -->
+  {#if copied}
+    <div
+      class="mt-1.5 flex items-baseline gap-1.5 border-l-2 border-positive bg-surface px-2 py-1"
+    >
+      <span class="shrink-0 text-2xs text-muted">{tr('room.files.menu.copied')}</span>
+      <span class="min-w-0 flex-1 break-all font-mono text-2xs text-ink">{copied}</span>
+    </div>
+  {/if}
+
   <!-- Полоса прибита к нижнему краю видимого: панель лежит в одной
        прокручиваемой полосе с остальными, и в комнате, где список длиннее
        экрана, слова отказа дописывались ниже пунктирной кнопки — то есть за
@@ -1358,3 +1891,30 @@
     </div>
   {/if}
 </section>
+
+<!--
+  Меню стоит ВНЕ панели и позиционируется от окна: панель лежит в одной
+  прокручиваемой полосе с остальными, а `overflow` обрезает и по вертикали —
+  меню, открытое у нижней строки, срезало бы ровно там, где на него смотрят.
+  Тот же приём, что у меню бана и у меню доступа на вкладке тетради.
+-->
+<ContextMenu
+  at={menuAt}
+  label={menuLabel}
+  title={menuTitle}
+  items={menuItems}
+  opener={menuOpener}
+  onclose={closeMenu}
+/>
+
+<style>
+  /*
+   * Долгое нажатие по строке зовёт наше меню — и на iOS одновременно с ним
+   * системную выноску «Копировать / Поделиться». Две панели поверх одной
+   * строки, и верхняя не наша. Гасится ровно на именах строк: выделять текст
+   * в панели файлов больше негде, а в остальной комнате выноска законна.
+   */
+  .row-name {
+    -webkit-touch-callout: none;
+  }
+</style>

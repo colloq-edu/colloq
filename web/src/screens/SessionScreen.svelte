@@ -3378,6 +3378,7 @@
       onopen={openFile}
       active={activePath}
       onrename={(from, to) => tabs.rename(from, to)}
+      onrun={runFile}
     />
     <PeoplePanel />
   </div>

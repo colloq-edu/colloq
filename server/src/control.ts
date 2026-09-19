@@ -182,13 +182,16 @@ import {
   typedRunningCommand,
 } from './kernel/terminal.js'
 import {
+  copyFile,
   deleteFile,
   forgetTree,
+  freeCopyName,
   listFiles,
   listTree,
   makeDir,
   makeFile,
   movePath,
+  sessionBytes,
   statPath,
   treeDelta,
   type FileTree,
@@ -229,13 +232,16 @@ import {
   createBook,
   dropBook,
   forgetMissingBooks,
+  isBookFile,
   moveBook,
   onBookRulesChanged,
   onBooksWritten,
   openBook,
   ownsBookAt,
+  projectBooks,
   type BookAuthor,
 } from './collab/books.js'
+import { config } from './config.js'
 import { stopAll, undoTurn } from './ai/agent.js'
 import { onCouncilOracle } from './ai/council.js'
 import { evicted } from './bans.js'
@@ -3701,6 +3707,96 @@ export function dispatch(
         message.t === 'tree:mkdir' ? makeDir(sessionId, wanted) : makeFile(sessionId, wanted)
       if (outcome !== 'ok') {
         send(ws, { t: 'error', message: treeTrouble(outcome, wanted) })
+        return
+      }
+      broadcastFiles(sessionId)
+      return
+    }
+
+    /*
+     * Продублировать файл — копией рядом, под свободным именем.
+     *
+     * Правило — `files`, то же, что у «нового файла» и у загрузки, и стоит оно
+     * тут по той же причине: копия ДОБАВЛЯЕТ запись в папку. Переименование и
+     * удаление остались преподавательскими, потому что убирают прежний путь, а
+     * это нет — исходный файл после копии лежит там же и таким же.
+     *
+     * Имя выбирает сервер (`freeCopyName`), а не тот, кто нажал. Занятость тут
+     * не отказ, а обычное дело: дублируют одно и то же дважды подряд, и вторая
+     * копия обязана называться «(копия 2)», а не отвечать «уже есть».
+     */
+    case 'tree:copy': {
+      const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
+      if (!wanted) {
+        send(ws, { t: 'error', message: refusedPath(message.path) })
+        return
+      }
+      if (
+        !may(
+          sessionId,
+          getRules(sessionId).files,
+          payload,
+          ws,
+          tr("server.onlyTheTeacherMayCreateFilesIn.a33c2f"),
+        )
+      ) {
+        return
+      }
+      /*
+       * Тетрадь комнаты — это документ, а файл под ней проекция, и пишется она
+       * с задержкой в полторы секунды после последней правки (collab/books.ts ·
+       * WRITE_AFTER_MS). Копировать её файл, не дописав проекцию, — значит
+       * отдать человеку тетрадь без последней ячейки, которую он только что и
+       * набрал. Копия при этом остаётся обычным .ipynb в папке: внести её в
+       * комнату — отдельное действие с отдельным правилом (`ownBooks`).
+       */
+      if (isBookFile(sessionId, wanted)) projectBooks(sessionId)
+      const info = statPath(sessionId, wanted)
+      if (!info) {
+        send(ws, { t: 'error', message: tr("server.thisFileIsNoLongerInThe.b66e1e") })
+        return
+      }
+      if (info.dir) {
+        send(ws, { t: 'error', message: tr('server.files.copyFolder') })
+        return
+      }
+      // Потолок на один файл — тот же, что у загрузки: копия занимает место
+      // ровно так же, как принесённый с диска файл того же размера.
+      if (info.size > config.maxUploadBytes) {
+        send(ws, {
+          t: 'error',
+          message: tr('server.files.copyTooBig', {
+            p0: baseOf(wanted),
+            p1: Math.round(config.maxUploadBytes / 1024 / 1024),
+          }),
+        })
+        return
+      }
+      /*
+       * И потолок на комнату целиком. Считается обходом папки, а не счётчиком
+       * загрузок (routes/files.ts · usedBytes): счётчик живёт в маршруте, и
+       * тащить его сюда значило бы замкнуть два модуля друг на друга ради
+       * действия, которое человек нажимает раз в семинар. Цена расхождения
+       * названа там же вслух: счётчик и так не знает о записях из ячейки.
+       */
+      if (sessionBytes(sessionId) + info.size > config.maxSessionBytes) {
+        send(ws, {
+          t: 'error',
+          message: tr('server.files.copyNoRoom', {
+            p0: Math.round(config.maxSessionBytes / 1024 / 1024),
+            p1: baseOf(wanted),
+          }),
+        })
+        return
+      }
+      // Несохранённый хвост открытого документа — на диск до копирования: иначе
+      // копия отстаёт от того, что человек видит на экране, ровно на последние
+      // полсекунды набора. Тот же порядок, что у `tree:move` ниже.
+      flushFile(sessionId, wanted)
+      const landing = freeCopyName(sessionId, wanted)
+      const copied = copyFile(sessionId, wanted, landing)
+      if (copied !== 'ok') {
+        send(ws, { t: 'error', message: treeTrouble(copied, landing, wanted) })
         return
       }
       broadcastFiles(sessionId)

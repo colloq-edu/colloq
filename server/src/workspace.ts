@@ -1,10 +1,11 @@
+import { tr } from '@shared/i18n'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { createAnchoredFilesystem } from './secure-files.js'
 import path from 'node:path'
 import { config } from './config.js'
 import type { FileEntry, FilesDelta } from '@shared/protocol'
-import { MAX_DEPTH, MAX_PATH, baseOf, kindOf, normalizePath, parentOf } from '@shared/paths'
+import { MAX_DEPTH, MAX_PATH, MAX_SEGMENT, baseOf, kindOf, normalizePath, parentOf } from '@shared/paths'
 
 export const workspaceFs = createAnchoredFilesystem(config.workspaceDir, {
   allowUnsafeDevelopment: process.env.NODE_ENV !== 'production' &&
@@ -745,6 +746,94 @@ export function deleteFile(sessionId: string, name: string): boolean {
   }
 }
 
+/**
+ * Сколько байт за раз переносит копирование.
+ *
+ * Не «прочитать файл целиком»: потолок на один файл — пятьдесят мегабайт
+ * (config.maxUploadBytes), и буфер такого размера в синхронном обработчике
+ * комнаты — это полсекунды паузы всему инстансу и пик памяти, который заметит
+ * соседний семинар. Четверть мегабайта — обычный размер, на котором ядро и так
+ * работает страницами.
+ */
+const COPY_CHUNK = 256 * 1024
+
+/**
+ * Скопировать файл рядом, не тронув исходный.
+ *
+ * Пишется во временное имя и переносится на место — ровно как `writeText` выше
+ * и как загрузка (routes/files.ts), и по той же причине: копия появляется в
+ * дереве целой или не появляется вовсе. Наполовину скопированный CSV читается
+ * pandas без ошибки, и о потере узнают по числам.
+ *
+ * Занятое имя не заменяется: сначала `link`, который занятость отвергает сам
+ * (тот же приём, что у `movePath`), и только на файловой системе без жёстких
+ * ссылок — `rename`, перед которым занятость проверена отдельно. Имя копии
+ * выбирает `freeCopyName`, так что попасть сюда занятым оно может только в
+ * гонке — но гонка эта настоящая: две вкладки дублируют один файл в одну
+ * секунду.
+ *
+ * Папки здесь нет намеренно: `openRead` отвергает и её, и символическую ссылку,
+ * и это правильный ответ — рекурсивную копию с потолком комнаты на каждом шаге
+ * панель обещать не должна.
+ */
+export function copyFile(sessionId: string, from: string, to: string): TreeResult {
+  const source = resolveInSession(sessionId, from)
+  const target = resolveInSession(sessionId, to)
+  if (!source || !target) return 'bad-name'
+  if (source === target) return 'exists'
+  if (workspaceFs.existsSync(target)) return 'exists'
+  let held: ReturnType<typeof workspaceFs.openRead>
+  try {
+    held = workspaceFs.openRead(source)
+  } catch {
+    // Решение принял не этот код, а ядро (secure-files.ts · openRead): папка,
+    // символическая ссылка и исчезнувший путь — всё это «копировать нечего».
+    return 'missing'
+  }
+  const tmp = path.join(path.dirname(target), `.${baseOf(to)}.saving-${randomUUID()}`)
+  let out: number | null = null
+  try {
+    out = workspaceFs.openSync(tmp, 'wx')
+    const chunk = Buffer.allocUnsafe(COPY_CHUNK)
+    // Смещением, а не потоком: дескриптор источника удерживается всё время
+    // копирования, и позиция в нём наша — чужая запись в тот же файл не
+    // сдвинет её под нами.
+    let at = 0
+    for (;;) {
+      const read = fs.readSync(held.fd, chunk, 0, chunk.length, at)
+      if (read === 0) break
+      // writeSync вправе записать меньше, чем просили: остаток дописывается
+      // здесь же, иначе копия молча выйдет короче оригинала.
+      let written = 0
+      while (written < read) {
+        written += fs.writeSync(out, chunk, written, read - written, at + written)
+      }
+      at += read
+    }
+    fs.closeSync(out)
+    out = null
+    if (!linked(tmp, target)) workspaceFs.renameSync(tmp, target)
+    forgetTree(sessionId)
+    return 'ok'
+  } catch (err) {
+    try {
+      workspaceFs.rmSync(tmp, { force: true })
+    } catch {
+      /* родителя подменили — убирать нечего и нечем */
+    }
+    return whyFailed(err)
+  } finally {
+    held.close()
+    if (out !== null) {
+      try {
+        fs.closeSync(out)
+      } catch {
+        /* уже закрыт */
+      }
+    }
+  }
+}
+
 /* ------------------------------------------------------------- содержимое */
 
 /**
@@ -913,6 +1002,50 @@ export function freeName(sessionId: string, rel: string): string {
     if (!statPath(sessionId, candidate)) return candidate
   }
   return rel
+}
+
+/**
+ * Как назвать копию: `train.py` → `train (копия).py` → `train (копия 2).py`.
+ *
+ * Не `freeName`, и разница существенная. Та приписывает к имени номер и нужна
+ * там, где отказ был бы хуже занятого имени (оракул заводит файл посреди хода);
+ * здесь же имя видит человек, и `train 2.py` рядом с `train.py` не говорит,
+ * который из них копия. Слово берётся из словаря, потому что комната бывает
+ * английской, а имя файла — то, что студент потом печатает в ячейке.
+ *
+ * Расширение остаётся на своём месте: `train (копия).py` открывается
+ * редактором, а `train.py (копия)` — уже нет.
+ */
+export function freeCopyName(sessionId: string, rel: string): string {
+  const dir = parentOf(rel)
+  const base = baseOf(rel)
+  const dot = base.lastIndexOf('.')
+  const stem = dot > 0 ? base.slice(0, dot) : base
+  const ext = dot > 0 ? base.slice(dot) : ''
+  /*
+   * Длинное имя подрезается, и только здесь — не в чужом имени, а в том, которое
+   * сочиняем мы сами. `safeSegment` отвергает сегмент длиннее MAX_SEGMENT
+   * целиком, и без подрезки дублирование файла со стосемнадцатибуквенным именем
+   * (обычная выгрузка из LMS) отвечало бы «имя не годится» про имя, которого
+   * человек не набирал.
+   */
+  const room = (suffix: string): string => {
+    const left = MAX_SEGMENT - suffix.length - 1 - ext.length
+    const head = left > 0 ? stem.slice(0, left).trimEnd() : ''
+    // Головы не осталось вовсе — значит имя состоит из одного расширения;
+    // тогда копия зовётся просто словом.
+    const name = head ? `${head} ${suffix}${ext}` : `${suffix}${ext}`
+    return dir ? `${dir}/${name}` : name
+  }
+  const first = room(tr('server.files.copySuffix'))
+  if (!statPath(sessionId, first)) return first
+  for (let n = 2; n < 100; n++) {
+    const candidate = room(tr('server.files.copySuffixN', { p0: n }))
+    if (!statPath(sessionId, candidate)) return candidate
+  }
+  // Сто копий одного файла — не та задача, ради которой стоит выдумывать сотый
+  // способ назвать имя: пусть отвечает «занято» тот, кто копирует.
+  return first
 }
 
 /** Текстовый ли это файл по имени и по содержимому разом. */

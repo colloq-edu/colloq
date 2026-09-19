@@ -2246,18 +2246,6 @@ export const roomMessages: MessageCatalog = {
     "ru": "Загрузить файлы",
     "en": "Upload files"
   },
-  "room.ui.594": {
-    "ru": "скопировано",
-    "en": "copied"
-  },
-  "room.ui.596": {
-    "ru": "Скопировать строку для ячейки",
-    "en": "Copy a line for a cell"
-  },
-  "room.ui.597": {
-    "ru": "Скачать",
-    "en": "Download"
-  },
   "room.ui.598": {
     "ru": "Удалить",
     "en": "Delete"
@@ -4250,18 +4238,6 @@ export const roomMessages: MessageCatalog = {
     "ru": "{p0} — здесь",
     "en": "{p0} — here"
   },
-  "room.extra.272": {
-    "ru": "Скопировать {p0}",
-    "en": "Copy {p0}"
-  },
-  "room.extra.273": {
-    "ru": "Скачать {p0}",
-    "en": "Download {p0}"
-  },
-  "room.extra.274": {
-    "ru": "Убрать {p0}",
-    "en": "Remove {p0}"
-  },
   "room.extra.275": {
     "ru": "Достигнут лимит глубины дерева файлов. Содержимое папки можно посмотреть из ячейки через os.listdir().",
     "en": "The file tree depth limit was reached. Inspect the folder contents from a cell using os.listdir()."
@@ -4729,6 +4705,134 @@ export const roomMessages: MessageCatalog = {
   "room.files.loading": {
     "ru": "Загружается {name}",
     "en": "Loading {name}"
+  },
+  /*
+   * Меню строки в панели файлов — всё, что со строкой можно сделать.
+   *
+   * Глаголы, а не существительные: пункт меню — это то, что случится по
+   * нажатию. Многоточие там, где следом спросят ещё раз («Удалить…» ведёт в
+   * подтверждение строкой ниже, «Загрузить…» открывает выбор файла) — общая
+   * договорённость интерфейсов, и здесь она держится.
+   */
+  "room.files.menu.file": {
+    "ru": "Действия с файлом",
+    "en": "File actions"
+  },
+  "room.files.menu.folder": {
+    "ru": "Действия с папкой",
+    "en": "Folder actions"
+  },
+  "room.files.menu.panel": {
+    "ru": "Действия с файлами занятия",
+    "en": "Class file actions"
+  },
+  "room.files.menu.more": {
+    "ru": "Действия",
+    "en": "Actions"
+  },
+  "room.files.menu.moreFor": {
+    "ru": "Действия: {p0}",
+    "en": "Actions: {p0}"
+  },
+  "room.files.menu.open": {
+    "ru": "Открыть",
+    "en": "Open"
+  },
+  "room.files.menu.run": {
+    "ru": "Запустить",
+    "en": "Run"
+  },
+  "room.files.menu.copyPath": {
+    "ru": "Скопировать путь",
+    "en": "Copy path"
+  },
+  "room.files.menu.copyName": {
+    "ru": "Скопировать имя",
+    "en": "Copy name"
+  },
+  "room.files.menu.download": {
+    "ru": "Скачать",
+    "en": "Download"
+  },
+  "room.files.menu.duplicate": {
+    "ru": "Дублировать",
+    "en": "Duplicate"
+  },
+  "room.files.menu.rename": {
+    "ru": "Переименовать",
+    "en": "Rename"
+  },
+  "room.files.menu.remove": {
+    "ru": "Удалить…",
+    "en": "Delete…"
+  },
+  "room.files.menu.expand": {
+    "ru": "Развернуть",
+    "en": "Expand"
+  },
+  "room.files.menu.collapse": {
+    "ru": "Свернуть",
+    "en": "Collapse"
+  },
+  "room.files.menu.newFileHere": {
+    "ru": "Новый файл здесь",
+    "en": "New file here"
+  },
+  "room.files.menu.newDirHere": {
+    "ru": "Новая папка здесь",
+    "en": "New folder here"
+  },
+  "room.files.menu.newBookHere": {
+    "ru": "Новая тетрадь здесь",
+    "en": "New notebook here"
+  },
+  "room.files.menu.uploadHere": {
+    "ru": "Загрузить сюда…",
+    "en": "Upload here…"
+  },
+  "room.files.menu.newFile": {
+    "ru": "Новый файл",
+    "en": "New file"
+  },
+  "room.files.menu.newDir": {
+    "ru": "Новая папка",
+    "en": "New folder"
+  },
+  "room.files.menu.newBook": {
+    "ru": "Новая тетрадь",
+    "en": "New notebook"
+  },
+  "room.files.menu.upload": {
+    "ru": "Загрузить…",
+    "en": "Upload…"
+  },
+  /*
+   * Одна фраза на «переименовать» и «удалить»: правило у них одно и то же —
+   * преподавательское, потому что оба УБИРАЮТ прежний путь (control.ts ·
+   * tree:move, tree:remove). После звонка её место занимает «Занятие
+   * закончено»: человеку важно не правило, а то, что пара кончилась.
+   */
+  "room.files.menu.hostOnly": {
+    "ru": "Переименовывать и удалять файлы может только преподаватель",
+    "en": "Only the teacher can rename and delete files"
+  },
+  "room.files.menu.tip": {
+    "ru": "Правая кнопка — действия с файлом",
+    "en": "Right-click a file for its actions"
+  },
+  "room.files.menu.close": {
+    "ru": "Закрыть меню",
+    "en": "Close the menu"
+  },
+  /*
+   * Отклик копирования — строкой под деревом, а не отметкой в строке файла.
+   * В строке помещается одно слово, а положить в буфер можно и путь, и имя:
+   * «скопировано» без того, ЧТО скопировано, оставляет гадать. Под деревом
+   * место есть, и туда влезает сам путь.
+   */
+  "room.files.menu.copied": {
+    "ru": "Скопировано:",
+    "en": "Copied:"
   },
   "room.terminal.author": {
     "ru": "запустил {name}",

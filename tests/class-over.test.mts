@@ -357,6 +357,7 @@ const CLOSED: ControlClientMessage[] = [
   { t: 'format' },
   { t: 'cells:move', cellId: 'c_nope', direction: 1 },
   { t: 'tree:new', path: 'заметка.txt' },
+  { t: 'tree:copy', path: 'main.py' },
   { t: 'term:run', command: 'ls' },
   { t: 'file:run', path: 'main.py' },
   { t: 'board:open', name: 'lecture.pdf' },

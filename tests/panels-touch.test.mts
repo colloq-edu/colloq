@@ -40,12 +40,18 @@ test('флаг hover-гейта стоит: без него проверять �
   assert.match(code(read(TAILWIND)), /hoverOnlyWhenSupported:\s*true/)
 })
 
+/** Место, где раньше лежала полоса из трёх значков, а теперь стоит «⋯». */
+function laneOf(files: string): string {
+  const at = files.indexOf('absolute inset-y-0 right-0 flex items-center')
+  assert.ok(at > 0, 'полоса действий в строке дерева не нашлась')
+  return files.slice(at)
+}
+
 test('действия строки дерева открываются не только наведением', () => {
   const files = code(read(FILES))
-  // Полоса действий: строка для ячейки, скачать, убрать. Наведение осталось
-  // указателю, выделенная строка — пальцу; тот же ответ, что у тулбара ячейки
-  // (CellView · `selected && opacity-100`).
-  const lane = files.slice(files.indexOf('absolute inset-y-0 right-0 flex items-center gap-0.5'))
+  // Наведение осталось указателю, выделенная строка — пальцу; тот же ответ,
+  // что у тулбара ячейки (CellView · `selected && opacity-100`).
+  const lane = laneOf(files)
   assert.match(lane, /group-hover:opacity-100/, 'указателю — по наведению')
   assert.match(lane, /group-focus-within:opacity-100/, 'клавиатуре — по фокусу')
   assert.match(lane, /picked === entry\.path \? 'opacity-100'/, 'пальцу — по выделенной строке')
@@ -65,14 +71,88 @@ test('действия строки дерева открываются не т�
   )
 })
 
-test('невидимая полоса действий не ловит тап по правому краю строки', () => {
+test('невидимая кнопка меню не ловит тап по правому краю строки', () => {
   const files = code(read(FILES))
-  const lane = files.slice(files.indexOf('absolute inset-y-0 right-0 flex items-center gap-0.5'))
-  // Полоса лежит поверх размера файла: с `opacity-0`, но без этой строки
-  // невидимая «Убрать» принимала нажатие вместо строки под ней.
+  const lane = laneOf(files)
+  // Кнопка лежит поверх размера файла: с `opacity-0`, но без этой строки
+  // невидимая «⋯» принимала нажатие вместо строки под ней.
   assert.match(lane, /pointer-events-none opacity-0/, 'пока не видно — не нажимается')
   assert.match(lane, /group-hover:pointer-events-auto/)
   assert.match(lane, /group-focus-within:pointer-events-auto/)
+})
+
+test('в строке дерева одна кнопка «⋯», а не полоса значков', () => {
+  /*
+   * Полоса из трёх значков (строка для ячейки, скачать, убрать) занимала место
+   * размера файла, умела ровно три вещи и на планшете доставалась только
+   * выделенной строке. Всё, что она умела, ушло в меню; в строке осталась одна
+   * кнопка, и четвёртое действие больше не требует от строки высотой 26
+   * пикселей четвёртого значка.
+   */
+  const files = code(read(FILES))
+  const lane = laneOf(files)
+  const row = lane.slice(0, lane.indexOf('</span>'))
+  assert.equal(
+    [...row.matchAll(/<button/g)].length,
+    1,
+    'в полосе больше одной кнопки — полоса значков вернулась',
+  )
+  assert.match(row, /data-menu-button/, 'кнопка не помечена как открывающая меню')
+  assert.match(row, /aria-haspopup="menu"/)
+  assert.match(row, /name="more"/)
+  // И ни одного прежнего значка: они обязаны жить только пунктами меню.
+  for (const gone of ['name="trash"', 'name="download"', 'name="copy"']) {
+    assert.ok(!row.includes(gone), `${gone} остался в строке вместо меню`)
+  }
+})
+
+test('цель «⋯» под палец — сорок пикселей, а рисунок остаётся мелким', () => {
+  // `after:-inset-2` растит зону нажатия на восемь пикселей с каждой стороны:
+  // 24 + 16 = 40, и ни один пиксель раскладки при этом не двигается.
+  const lane = laneOf(code(read(FILES)))
+  const row = lane.slice(0, lane.indexOf('</span>'))
+  assert.match(row, /h-6 w-6/, 'рисунок перестал быть 24×24')
+  assert.match(row, /after:absolute after:-inset-2/, 'цель под палец не выросла')
+})
+
+test('на телефоне меню строки открывается долгим нажатием', () => {
+  /*
+   * Правой кнопки на телефоне нет вовсе, а «⋯» требует сперва попасть по
+   * строке и только потом по значку. Без таймера на iOS меню не открывалось бы
+   * ничем: `contextmenu` там не приходит.
+   */
+  const files = code(read(FILES))
+  assert.match(files, /onpointerdown=\{\(event\) => onRowPointerDown\(event, entry\)\}/)
+  const hold = files.slice(
+    files.indexOf('function onRowPointerDown'),
+    files.indexOf('function onRowPointerMove'),
+  )
+  assert.match(hold, /event\.pointerType !== 'touch'/, 'долгое нажатие ловится не только пальцем')
+  assert.match(hold, /\}, 500\)/, 'планка долгого нажатия уехала с полусекунды')
+  // Палец поехал — это прокрутка, а не нажатие.
+  assert.match(
+    files.slice(files.indexOf('function onRowPointerMove')),
+    /endHold\(\)/,
+    'движение пальца не отменяет долгое нажатие',
+  )
+  // И `click`, приходящий следом за долгим нажатием, не открывает файл.
+  assert.match(files.slice(files.indexOf('function pick(entry: FileEntry')), /if \(heldOpen\)/)
+})
+
+test('меню строки открывается и с клавиатуры: Shift+F10 и клавиша «меню»', () => {
+  const files = code(read(FILES))
+  const keys = files.slice(
+    files.indexOf('function onRowKeydown'),
+    files.indexOf('function step('),
+  )
+  assert.match(keys, /event\.key === 'ContextMenu'/)
+  assert.match(keys, /event\.key === 'F10' && event\.shiftKey/)
+  assert.match(keys, /event\.key === 'F2'/, 'F2 не переименовывает')
+  assert.match(keys, /'Delete' \|\| event\.key === 'Backspace'/, 'Delete не удаляет')
+  assert.match(keys, /ArrowDown/, 'стрелки не ходят по строкам')
+  // Обработчик висит на самой кнопке имени — том элементе, который получает фокус.
+  assert.match(files, /onkeydown=\{\(event\) => onRowKeydown\(event, entry\)\}/)
+  assert.match(files, /data-row-name/)
 })
 
 /* ------------------------------------------------------------- клавиатура */

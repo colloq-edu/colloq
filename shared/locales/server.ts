@@ -3165,6 +3165,32 @@ export const serverMessages: MessageCatalog = {
     "ru": "Сервер перезапустился во время подготовки сводки. Повторите запрос.",
     "en": "The server restarted while preparing the summary. Try again."
   },
+  /*
+   * Имя копии файла. Отдельными ключами, а не одной строкой с подстановкой
+   * всего имени: по-русски слово идёт в скобках после имени, по-английски —
+   * без них, и собирать это условием в коде значит завести второе место, где
+   * язык решают.
+   */
+  "server.files.copySuffix": {
+    "ru": "(копия)",
+    "en": "copy"
+  },
+  "server.files.copySuffixN": {
+    "ru": "(копия {p0})",
+    "en": "copy {p0}"
+  },
+  "server.files.copyFolder": {
+    "ru": "Папки не дублируются — скопируйте нужные файлы по одному",
+    "en": "Folders are not duplicated — copy the files you need one by one"
+  },
+  "server.files.copyTooBig": {
+    "ru": "«{p0}» больше {p1} МБ — такой файл не дублируется",
+    "en": "“{p0}” is larger than {p1} MB and cannot be duplicated"
+  },
+  "server.files.copyNoRoom": {
+    "ru": "Это занятие вмещает до {p0} МБ файлов, и копия «{p1}» в них уже не помещается. Уберите лишнее или попросите преподавателя.",
+    "en": "This class has room for {p0} MB of files, and a copy of “{p1}” no longer fits. Remove something or ask the teacher."
+  },
   "server.askAgain": {
     "ru": {
       "one": "{spent}. Следующий вопрос можно задать через {count} минуту.",
