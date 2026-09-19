@@ -41,12 +41,28 @@
    * can be argued down to; the name states a floor of its own (below) so the
    * argument reaches the link before it reaches the person.
    */
-  const COL_ROLE = 'w-[168px] min-w-[110px] pr-4'
-  const COL_LINK = 'w-[322px] min-w-[150px] pr-5'
-  const COL_SEEN = 'w-[130px] min-w-[100px]'
-  const COL_MENU = 'w-10 shrink-0'
+  /*
+   * Ниже 640 полос нет — есть карточка.
+   *
+   * Пять полос держат 600px минимума, и на 390px реестр уезжал вбок в
+   * прокрутку страницы: за краем оставались «Ссылка для входа», «Последний
+   * вход» и обе кнопки — копирование ссылки (492…524) и меню строки (652…684)
+   * при экране в 390. Измерено на стенде.
+   *
+   * `order-1` тут — вторая и следующие строки карточки: человек и меню
+   * остаются в первой (`order` по умолчанию), роль, ссылка и последний вход
+   * уходят под них, каждая во всю ширину. Ширина первой строки отмерена под
+   * кнопку меню — 44px, — и оба числа обязаны сходиться.
+   */
+  const PHONE_LANE = 'max-[640px]:order-1 max-[640px]:w-full max-[640px]:min-w-0 max-[640px]:pr-0'
+  const COL_ROLE = `w-[168px] min-w-[110px] pr-4 ${PHONE_LANE}`
+  const COL_LINK = `w-[322px] min-w-[150px] pr-5 ${PHONE_LANE}`
+  const COL_SEEN = `w-[130px] min-w-[100px] ${PHONE_LANE}`
+  const COL_MENU = 'w-10 shrink-0 max-[640px]:w-11'
   /** The person's own floor — an avatar, a name worth reading, and the gap. */
-  const COL_PERSON = 'min-w-[200px] flex-1 pr-5'
+  const COL_PERSON =
+    'min-w-[200px] flex-1 pr-5 max-[640px]:min-w-0 max-[640px]:basis-[calc(100%_-_44px)] ' +
+    'max-[640px]:pr-2'
 
   /** All a row may ever show of a live link: its shape. */
   const MASKED = `${location.host}${SIGN_IN_PATH}${'·'.repeat(12)}`
@@ -455,6 +471,17 @@
   <span class="block text-micro font-bold uppercase tracking-label text-muted">{text}</span>
 {/snippet}
 
+<!--
+  Та же подпись, но внутри карточки и только на телефоне.
+
+  Шапка полос там спрятана, а «никогда» или замаскированная строка точек без
+  подписи не говорят, чего они «никогда» и что это за точки. Слова берутся те
+  же, что у шапки, — полоса и её подпись не должны расходиться.
+-->
+{#snippet lane(text: string)}
+  <span class="mb-1 hidden max-[640px]:block">{@render eyebrow(text)}</span>
+{/snippet}
+
 <AdminPage
   title={tr("admin.who.can.teach")}
   subtitle={tr("admin.manage.teacher.accounts.and.sign.in.links.teachers.can.create.sem")}
@@ -512,8 +539,10 @@
     below the list stay at the window's own width: they are prose, and prose
     should never need scrolling to read.
   -->
-  <div class="min-w-[600px]">
-  <div class="sticky top-0 z-10 flex h-9 items-center border-b border-line bg-canvas">
+  <div class="min-w-[600px] max-[640px]:min-w-0">
+  <!-- Шапка полос уходит вместе с полосами: подписи переезжают в сами
+       карточки, теми же словами (см. `lane` ниже). -->
+  <div class="sticky top-0 z-10 flex h-9 items-center border-b border-line bg-canvas max-[640px]:hidden">
     <div class={COL_PERSON}>{@render eyebrow(tr("admin.person.1127"))}</div>
     <div class={COL_ROLE}>{@render eyebrow(tr("admin.role.1128"))}</div>
     <div class={COL_LINK}>{@render eyebrow(tr("admin.sign.in.link"))}</div>
@@ -531,7 +560,10 @@
   {#each teachers as t (t.id)}
     {@const you = t.id === me?.id}
     {@const locked = stranded(t)}
-    <div class="flex min-h-[66px] items-center border-b border-line-soft">
+    <div
+      class="flex min-h-[66px] items-center border-b border-line-soft max-[640px]:flex-wrap
+             max-[640px]:items-start max-[640px]:gap-y-2.5 max-[640px]:py-3"
+    >
       <div class={cn(COL_PERSON, 'flex items-center gap-3')}>
         <Avatar name={t.name} color={colorForId(t.id)} size="md" />
         <div class="min-w-0 flex-1">
@@ -548,6 +580,7 @@
       </div>
 
       <div class={COL_ROLE}>
+        {@render lane(tr("admin.role.1128"))}
         {#if !isOwner}
           <span class="text-ui capitalize text-muted">{tr(`admin.role.${t.role}`)}</span>
         {:else if locked}
@@ -575,6 +608,7 @@
       </div>
 
       <div class={COL_LINK}>
+        {@render lane(tr("admin.sign.in.link"))}
         {#if t.hasLink}
           <div class="flex items-center gap-2">
             <p
@@ -590,7 +624,7 @@
                 onclick={() => void copyExisting(t)}
                 class="inline-flex h-8 w-8 shrink-0 items-center justify-center border
                        border-line text-faint transition-colors duration-100 hover:border-faint
-                       hover:text-ink disabled:opacity-50"
+                       hover:text-ink disabled:opacity-50 max-[640px]:h-11 max-[640px]:w-11"
                 aria-label={tr('admin.teacher.copyLinkLabel', { name: t.name })}
               >
                 <Icon name={copiedRow === t.id ? 'check' : 'copy'} size={13} />
@@ -613,6 +647,7 @@
       </div>
 
       <div class={COL_SEEN}>
+        {@render lane(tr("admin.last.seen"))}
         {#if t.lastSeenAt}
           <span class="text-ui text-ink">{relativeTime(t.lastSeenAt)}</span>
         {:else}
@@ -630,7 +665,7 @@
               event.stopPropagation()
               menuId = menuId === t.id ? null : t.id
             }}
-            class="flex h-8 w-8 items-center justify-center text-faint transition-colors duration-100 hover:bg-raised hover:text-ink"
+            class="flex h-8 w-8 items-center justify-center text-faint transition-colors duration-100 hover:bg-raised hover:text-ink max-[640px]:h-11 max-[640px]:w-11"
           >
             <Icon name="more" size={15} />
           </button>
@@ -828,8 +863,18 @@
     дверь не говорило ничего.
   -->
   {#if isOwner}
+    <!--
+      `basis-full` ниже 640, и без него абзац был шириной в слово.
+
+      `flex-1` — это `flex-basis: 0`, то есть текст просит НОЛЬ ширины и растёт
+      в остаток. Кнопка рядом стоит `shrink-0` и на 390px забирала 230 из 250:
+      переноса не случалось (нулю хватает любого места), текст получал восемь
+      пикселей и складывался в колонку по слову, а заглавная подпись «Токен
+      настройки», шире этих восьми, печаталась поверх кнопки. Просьба о полной
+      ширине переносит кнопку вниз — там ей и место.
+    -->
     <div class="flex flex-wrap items-start gap-3 border-t border-line-soft py-3.5">
-      <div class="min-w-0 max-w-[600px] flex-1">
+      <div class="min-w-0 max-w-[600px] flex-1 max-[640px]:basis-full">
         {@render eyebrow(tr("admin.setup.token"))}
         <!--
           Печатает токен `make host`, читая его из файла, — не сервер: тот
@@ -862,7 +907,7 @@
       </div>
       <button
         type="button"
-        class="btn-outline shrink-0"
+        class="btn-outline shrink-0 max-[640px]:h-11 max-[640px]:w-full max-[640px]:justify-center"
         disabled={rotatingSetup}
         onclick={() => void rotateSetup()}
       >
@@ -871,14 +916,19 @@
     </div>
   {/if}
 
-  <div class="flex flex-wrap items-start gap-14 border-t border-line-soft pt-5">
-    <div class="min-w-0 max-w-[600px] flex-1">
+  <!-- Тот же разговор, что у токена выше: две колонки с зазором в 56px — это
+       разговор о столе. На телефоне они встают друг под друга. -->
+  <div
+    class="flex flex-wrap items-start gap-14 border-t border-line-soft pt-5
+           max-[640px]:gap-x-0 max-[640px]:gap-y-6"
+  >
+    <div class="min-w-0 max-w-[600px] flex-1 max-[640px]:basis-full">
       {@render eyebrow(tr("admin.masked.sign.in.links"))}
       <p class="mt-1.5 text-2xs text-muted">
         {tr("admin.the.list.masks.sign.in.links.a.newly.created.or.replaced.link.is")}
       </p>
     </div>
-    <div class="w-[392px]">
+    <div class="w-[392px] max-[640px]:w-full">
       {@render eyebrow(isOwner ? tr("admin.lost.your.own.link") : tr("admin.lost.your.link"))}
       {#if isOwner}
         <p class="mt-1.5 text-2xs text-muted">

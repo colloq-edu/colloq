@@ -81,9 +81,18 @@
    * 168px и перенестись по доступной ширине колонки. Так третья дверь не
    * уезжает под обрезанный край, когда подпись Section ещё стоит слева.
    */
+  /*
+   * Потолок в 182px — мерка ряда из трёх дверей, а ряда на телефоне нет.
+   *
+   * На 390px двери уже вставали в столбик, но каждая шириной в свои 182 из
+   * 250 доступных: справа оставалось мёртвое поле, а подписи ломались надвое
+   * («ПУСТАЯ / ТЕТРАДЬ»). Ниже 640 потолок снимается, и дверь просит всю
+   * ширину — столбик становится столбиком нарочно, а не по остатку.
+   */
   const DOOR =
     'flex min-w-[168px] max-w-[182px] flex-1 basis-[168px] flex-col gap-2.5 border p-3.5 text-left ' +
-    'transition-colors duration-[var(--speed-quick)] ease-out'
+    'transition-colors duration-[var(--speed-quick)] ease-out ' +
+    'max-[640px]:max-w-none max-[640px]:basis-full'
   const DOOR_ON = 'border-accent border-l-[3px] bg-surface'
   const DOOR_OFF = 'border-line bg-canvas hover:border-faint'
   const CAP = 'text-2xs font-bold uppercase tracking-label'

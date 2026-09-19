@@ -891,9 +891,19 @@
       the page, which is where the eye already is.
     -->
     {#if seminars.length > 0}
+    <!--
+      Шапка на телефоне — столбик во всю ширину.
+
+      220px поиска и кнопка рядом с ним укладываются в строку, которой на
+      390px-экране нет: рельс забирает 56, поля страницы ещё 56, и на всё про
+      всё остаётся 278. Поиск и «Новое занятие» вставали друг под друга и так,
+      но каждый шириной по содержимому — два коротких огрызка у левого края.
+      Высота там же вырастает до 44px: 34 — это размер для мыши, а сюда тычут
+      пальцем.
+    -->
     <div
       class="flex h-[34px] w-[220px] max-w-full items-center gap-2 border border-line bg-canvas px-3
-             focus-within:border-accent"
+             focus-within:border-accent max-[640px]:h-11 max-[640px]:w-full"
     >
       <Icon name="search" size={13} class="shrink-0 text-faint" />
       <input
@@ -908,7 +918,7 @@
       <label
         class="flex h-[34px] cursor-pointer select-none items-center gap-2 border border-line
                bg-canvas px-3 text-2xs font-bold uppercase tracking-caps text-muted
-               hover:text-ink"
+               hover:text-ink max-[640px]:h-11 max-[640px]:w-full"
         title="{seminars.length - archivedCount} {tr("admin.active")} {archivedCount} {tr("admin.archived")}"
       >
         <input type="checkbox" bind:checked={showArchived} class="accent-accent" />
@@ -919,7 +929,8 @@
     <button
       type="button"
       onclick={startCreate}
-      class="btn-primary h-[34px] gap-2 px-3.5 text-2xs font-bold uppercase tracking-caps"
+      class="btn-primary h-[34px] gap-2 px-3.5 text-2xs font-bold uppercase tracking-caps
+             max-[640px]:h-11 max-[640px]:w-full"
     >
       <Icon name="plus" size={14} />
       {tr("admin.new.seminar")}
@@ -937,11 +948,29 @@
       any width; a fixed 74px height is what turned the overflow into an
       overlap, so it is a floor now rather than a lid.
     -->
+    <!--
+      И столбик на телефоне.
+
+      Ряд из трёх частей умеет переноситься, но не умеет ужиматься: группа
+      кнопок справа стоит `shrink-0`, внутри неё моноширинный адрес во всю
+      длину хоста, и на 390px она уезжала за правый край — «Открыть» было видно
+      наполовину, а нажать его было нечем. Измерено на стенде: группа занимала
+      84…430px при экране в 390. Ниже 640 ряд становится столбиком, каждая
+      часть — во всю ширину, а адрес ужимается до `/s/…`, потому что хост здесь
+      и так известен: панель открыта на нём.
+
+      Отрицательные поля остаются `-mx-7` при любой ширине — ровно потому, что
+      поля страницы (AdminPage · px-7) тоже одни на все ширины. Разъехавшись,
+      эти два числа дают плашку, вылезающую за край на телефоне и не достающую
+      до него на столе.
+    -->
     <section
       class="-mx-7 flex min-h-[74px] flex-wrap items-center gap-x-[22px] gap-y-3 border-b
-             border-b-line border-l-[3px] border-l-accent bg-raised py-3 pl-[25px] pr-7"
+             border-b-line border-l-[3px] border-l-accent bg-raised py-3 pl-[25px] pr-7
+             max-[640px]:min-h-0 max-[640px]:flex-col max-[640px]:flex-nowrap
+             max-[640px]:items-stretch max-[640px]:gap-y-2.5 max-[640px]:py-3.5"
     >
-      <div class="flex min-w-[180px] flex-col gap-[3px]">
+      <div class="flex min-w-[180px] flex-col gap-[3px] max-[640px]:min-w-0">
         <p
           class="flex items-center gap-[7px] whitespace-nowrap text-2xs font-bold uppercase
                  tracking-label text-accent-text"
@@ -949,7 +978,15 @@
           <span class="h-[7px] w-[7px] shrink-0 rounded-full bg-accent"></span>
           {tr("admin.running.now")}
         </p>
-        <h2 class="truncate text-title font-bold tracking-tight text-ink">{seminar.name}</h2>
+        <!-- Две строки с обрезкой, а не одна: на телефоне в одну строку
+             помещается треть названия семинара, и «Машинное обучение и анализ
+             данн…» не отличить от такого же соседнего. -->
+        <h2
+          class="truncate text-title font-bold tracking-tight text-ink
+                 max-[640px]:line-clamp-2 max-[640px]:whitespace-normal"
+        >
+          {seminar.name}
+        </h2>
       </div>
 
       <!--
@@ -974,7 +1011,10 @@
         {runningLine(seminar, now)}
       </p>
 
-      <div class="ml-auto flex shrink-0 items-center gap-2.5">
+      <!-- `ml-0` в столбике обязателен: `margin-left: auto` на элементе
+           колоночного flex'а отменяет растяжение и прижимает ряд к правому
+           краю — ровно то, чего здесь быть не должно. -->
+      <div class="ml-auto flex shrink-0 items-center gap-2.5 max-[640px]:ml-0 max-[640px]:gap-2">
         <button
           type="button"
           onclick={() => copy(seminar)}
@@ -982,18 +1022,21 @@
           class={cn(
             'flex h-8 items-center gap-2 border border-line bg-canvas px-3 font-mono text-code',
             'transition-colors duration-100 hover:border-faint hover:text-ink',
+            // Палец, а не курсор: 44px высоты и вся оставшаяся ширина строки.
+            'max-[640px]:h-11 max-[640px]:min-w-0 max-[640px]:flex-1 max-[640px]:justify-between',
             copiedId === seminar.id ? 'text-positive' : 'text-muted',
           )}
         >
-          {hostPathOf(seminar)}
-          <Icon name={copiedId === seminar.id ? 'check' : 'copy'} size={13} />
+          <span class="max-[640px]:hidden">{hostPathOf(seminar)}</span>
+          <span class="hidden max-[640px]:block max-[640px]:truncate">{pathOf(seminar)}</span>
+          <Icon name={copiedId === seminar.id ? 'check' : 'copy'} size={13} class="shrink-0" />
         </button>
         <a
           href={linkOf(seminar)}
           target="_blank"
           rel="noreferrer"
           class="btn h-8 bg-accent px-3.5 text-2xs font-bold uppercase tracking-caps text-accent-ink
-                 hover:brightness-110"
+                 hover:brightness-110 max-[640px]:h-11 max-[640px]:shrink-0 max-[640px]:px-4"
         >
           {tr("admin.open")}
         </a>
@@ -1019,9 +1062,24 @@
     tighten — every window that works today still gets no scrollbar — and it
     scrolls inside this box, so the page itself still never moves sideways.
   -->
+  <!--
+    Ниже 640 таблицы нет — есть карточки-строки.
+
+    Шесть колонок держат 600px минимума и уезжают вбок в собственной прокрутке:
+    на 390px за краем оставались «Дата», «Входили», «Статус» и — самое дорогое —
+    кнопка действий, до которой надо было догадаться доскроллить вбок коробку,
+    которая ничем не показывает, что она скроллится.
+
+    Карточки сделаны не второй разметкой, а разблокировкой этой же: `table`,
+    `tbody` и `tr` становятся блоками и flex'ом, `thead` уходит, ячейки
+    раскладываются `order`'ом — название и меню в первую строку, окружение,
+    дата, входили и состояние во вторую. Вторая разметка означала бы два списка
+    действий, и однажды один из них отстал бы от другого — а в меню строки
+    лежит «Удалить».
+  -->
   <div class="-mx-1 overflow-x-auto px-1">
-  <table class="w-full min-w-[600px] table-fixed">
-    <colgroup>
+  <table class="w-full min-w-[600px] table-fixed max-[640px]:block max-[640px]:min-w-0">
+    <colgroup class="max-[640px]:hidden">
       <col />
       <col class="w-[132px]" />
       <col class="w-[104px]" />
@@ -1029,7 +1087,7 @@
       <col class="w-[116px]" />
       <col class="w-10" />
     </colgroup>
-    <thead class={shown.length === 0 && !creating ? 'sr-only' : ''}>
+    <thead class={cn('max-[640px]:hidden', shown.length === 0 && !creating && 'sr-only')}>
       <tr class="border-b border-line text-micro font-bold uppercase tracking-label text-muted">
         <th scope="col" class="py-3 text-left">{tr("admin.seminar")}</th>
         <!--
@@ -1051,10 +1109,10 @@
         <th scope="col" class="py-3"><span class="sr-only">{tr("admin.actions")}</span></th>
       </tr>
     </thead>
-    <tbody>
+    <tbody class="max-[640px]:block">
       {#if creating}
-        <tr class="border-b border-line-soft bg-surface">
-          <td colspan="6" class="py-3">
+        <tr class="border-b border-line-soft bg-surface max-[640px]:block">
+          <td colspan="6" class="py-3 max-[640px]:block">
             <!-- Две двери в одну комнату: пустой семинар и семинар из готового
                  материала. Переключатель, а не вторая кнопка в шапке: это одно
                  действие «создать», у которого два источника. -->
@@ -1080,7 +1138,8 @@
                 <div class="flex flex-wrap items-center gap-2">
                   <input
                     bind:value={githubUrl}
-                    class="field min-w-[420px] flex-1 font-mono text-code-lg"
+                    class="field min-w-[420px] flex-1 font-mono text-code-lg
+                           max-[640px]:w-full max-[640px]:min-w-0"
                     placeholder="https://github.com/sleep3r/ml_hse/tree/main/week02"
                     autocomplete="off"
                     spellcheck="false"
@@ -1230,13 +1289,27 @@
 
       {#each shown as seminar (seminar.id)}
         {@const fresh = seminar.id === justCreatedId}
-        <tr class={cn('group border-b border-line-soft', fresh && 'bg-accent/10')}>
-          <td class="py-2 pr-4 align-top">
+        <!--
+          Ниже 640 строка — карточка: `order` собирает её в две строки, а
+          `basis` первой из них раздаёт ровно 100% (название + 44px под меню),
+          чтобы остальные ячейки перенеслись, а не ужались до буквы.
+        -->
+        <tr
+          class={cn(
+            'group border-b border-line-soft',
+            'max-[640px]:flex max-[640px]:flex-wrap max-[640px]:items-center max-[640px]:py-1',
+            fresh && 'bg-accent/10',
+          )}
+        >
+          <td
+            class="py-2 pr-4 align-top max-[640px]:order-1 max-[640px]:min-w-0
+                   max-[640px]:basis-[calc(100%_-_44px)] max-[640px]:pr-2"
+          >
             {#if renamingId === seminar.id}
               <!-- svelte-ignore a11y_autofocus -->
               <input
                 bind:value={renameValue}
-                class="field max-w-[380px]"
+                class="field max-w-[380px] max-[640px]:w-full"
                 maxlength={LIMITS.seminarName}
                 autocomplete="off"
                 autofocus
@@ -1248,11 +1321,16 @@
                 }}
               />
             {:else}
+              <!-- Единственное место, где порог назван с обеих сторон:
+                   `truncate` держит `white-space: nowrap`, и зажим в две строки
+                   под ним молча остаётся одной строкой. Два непохожих правила
+                   проще развести по ширинам, чем спорить внутри одного класса. -->
               <a
                 href={linkOf(seminar)}
                 target="_blank"
                 rel="noreferrer"
-                class="block truncate text-ui font-semibold text-ink hover:underline"
+                class="block text-ui font-semibold text-ink hover:underline
+                       max-[640px]:line-clamp-2 min-[641px]:truncate"
               >
                 {seminar.name}
               </a>
@@ -1272,6 +1350,10 @@
                   // a thing to aim at. The target grows to 24 and the row does not.
                   'flex -my-1 items-center gap-1.5 py-1 font-mono text-2xs transition-colors duration-100',
                   'hover:text-ink focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/30',
+                  // 24 — это цель для мыши. Пальцу нужно 44, и они берутся
+                  // высотой самой цели, а не ростом строки: отрицательное поле
+                  // выше возвращает карточке прежний рост.
+                  'max-[640px]:min-h-[44px]',
                   copiedId === seminar.id ? 'text-positive' : 'text-muted',
                 )}
               >
@@ -1321,8 +1403,10 @@
                    об этом семинаре, а не второй столбец в таблице, где их уже
                    шесть. -->
               {#each seminar.courses as course (course.id)}
+                <!-- `max-w-full truncate`: имя курса — чужая строка любой
+                     длины, и на 360px одна такая распирала карточку за край. -->
                 <a
-                  class="whitespace-nowrap text-2xs text-accent-text"
+                  class="max-w-full truncate whitespace-nowrap text-2xs text-accent-text"
                   href={`/admin/courses/${course.id}`}
                 >
                   · {course.name}
@@ -1347,7 +1431,9 @@
             {/if}
           </td>
 
-          <td class="py-2 pr-3 align-middle">
+          <td
+            class="py-2 pr-3 align-middle max-[640px]:order-3 max-[640px]:pb-2.5 max-[640px]:pt-0"
+          >
             {#if seminar.environment}
               <a
                 href="/admin/environments"
@@ -1366,19 +1452,31 @@
             {/if}
           </td>
 
-          <td class="py-2 align-middle text-ui text-muted">
+          <td
+            class="py-2 align-middle text-ui text-muted max-[640px]:order-4 max-[640px]:pb-2.5
+                   max-[640px]:pr-3 max-[640px]:pt-0"
+          >
             <span title={new Date(seminar.createdAt).toLocaleString(getLocale())}>
               {stamp(seminar.createdAt)}
             </span>
           </td>
 
-          <td class="py-2 text-right align-middle font-mono text-code text-ink">
+          <td
+            class="py-2 text-right align-middle font-mono text-code text-ink max-[640px]:order-5
+                   max-[640px]:pb-2.5 max-[640px]:pr-3 max-[640px]:pt-0"
+          >
             <span title="{people(seminar.totalParticipants)} {tr("admin.joined.in.total")}">
+              <!-- Заголовка колонки на телефоне нет, а голое число рядом с
+                   «base · 19.09» читается как что угодно. Слово то же, что в
+                   шапке таблицы, — колонка и подпись не расходятся. -->
+              <span class="hidden text-2xs font-bold uppercase tracking-caps text-faint max-[640px]:inline">
+                {tr("admin.joined")}
+              </span>
               {seminar.totalParticipants > 0 ? seminar.totalParticipants : '—'}
             </span>
           </td>
 
-          <td class="py-2 align-middle">
+          <td class="py-2 align-middle max-[640px]:order-6 max-[640px]:ml-auto max-[640px]:pb-2.5 max-[640px]:pt-0">
             <div class="flex items-center justify-end gap-2">
               {#if seminar.status === 'finished'}
                 <!--
@@ -1408,6 +1506,17 @@
                 >
                   <span class="h-[5px] w-[5px] rounded-full bg-accent"></span>
                   {tr("admin.live.990")}
+                  <!-- Сколько человек — только на телефоне: там колонки
+                       «Входили» рядом нет, а «идёт» без числа не отличает
+                       комнату с одним заглянувшим от комнаты с потоком. На
+                       столе число стоит в своей колонке, и второй его копии
+                       в значке быть не должно. -->
+                  <span
+                    class="hidden tabular-nums max-[640px]:inline"
+                    title="{people(seminar.liveCount)} {tr("admin.in.the.room.right.now")}"
+                  >
+                    · {seminar.liveCount}
+                  </span>
                 </span>
               {:else if seminar.status === 'draft'}
                 <span
@@ -1424,7 +1533,20 @@
             </div>
           </td>
 
-          <td class="py-2 align-middle">
+          <!--
+            Меню — рядом с названием, в первой строке карточки, и ровно 44px
+            шириной: `basis` названия выше отмерен под эту цифру.
+
+            `px-0` здесь обязателен. У ячейки таблицы есть `padding: 1px` из
+            стилей браузера, и его никто не снимает: `min-width: auto` у
+            элемента flex'а считает по содержимому, выходило 46 вместо 44, а
+            234 + 46 > 278 — и кнопка меню съезжала на третью строку карточки,
+            под дату. Измерено на стенде при экране 390px.
+          -->
+          <td
+            class="py-2 align-middle max-[640px]:order-2 max-[640px]:basis-11 max-[640px]:self-start
+                   max-[640px]:px-0"
+          >
             <div class="relative flex justify-end">
               <button
                 type="button"
@@ -1435,7 +1557,7 @@
                   event.stopPropagation()
                   openMenu(seminar, event.currentTarget as HTMLElement)
                 }}
-                class="flex h-8 w-8 items-center justify-center text-faint transition-colors duration-100 hover:bg-raised hover:text-ink"
+                class="flex h-8 w-8 items-center justify-center text-faint transition-colors duration-100 hover:bg-raised hover:text-ink max-[640px]:h-11 max-[640px]:w-11"
               >
                 <Icon name="more" size={15} />
               </button>
@@ -1549,12 +1671,12 @@
       {/each}
 
       {#if loading && seminars.length === 0}
-        <tr>
-          <td colspan="6" class="px-3 py-4"><ContentSkeleton variant="rows" label={tr('admin.loading.seminars')} /></td>
+        <tr class="max-[640px]:block">
+          <td colspan="6" class="px-3 py-4 max-[640px]:block"><ContentSkeleton variant="rows" label={tr('admin.loading.seminars')} /></td>
         </tr>
       {:else if shown.length === 0 && !creating}
-        <tr>
-          <td colspan="6" class="py-12 text-center">
+        <tr class="max-[640px]:block">
+          <td colspan="6" class="py-12 text-center max-[640px]:block">
             {#if needle}
               <p class="text-ui text-muted">{tr('admin.seminar.noMatch', { query: query.trim() })}</p>
               <button type="button" class="btn-ghost mt-2" onclick={() => (query = '')}>

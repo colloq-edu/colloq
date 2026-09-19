@@ -506,7 +506,37 @@
     'uppercase tracking-label text-ink transition-colors duration-100 hover:bg-raised ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ' +
     'disabled:pointer-events-none disabled:opacity-40'
-  const PILL = 'inline-flex h-7 shrink-0 items-center gap-1.5 px-2.5 text-2xs font-bold uppercase tracking-label'
+  /*
+   * `order-1` ниже 640 — это вторая строка карточки.
+   *
+   * Строка окружения — один нерасходящийся ряд: имя `flex-1`, всё остальное
+   * `shrink-0`. На 390px имя ужималось в ноль (его не было видно вовсе, а
+   * значок GPU при этом печатался поверх соседнего состояния), а неужимаемый
+   * хвост всё равно уезжал за край: «По умолчанию» кончалась на 403px,
+   * «Использовать по умолчанию» — на 539px при экране в 390. Измерено на
+   * стенде.
+   *
+   * Ниже 640 ряд переносится, и порядок делит его надвое: всё с `order-1`
+   * (состояния и действие) уходит под первую строку, где остаются только
+   * квадрат, имя и меню. Номер стоит здесь, у общей константы, а не у каждой
+   * плашки по месту: плашек шесть на пять ветвей, и разъехаться они могут
+   * только все сразу.
+   */
+  const PILL =
+    'inline-flex h-7 shrink-0 items-center gap-1.5 px-2.5 text-2xs font-bold uppercase ' +
+    'tracking-label max-[640px]:order-1'
+  /*
+   * Действие строки — во всю ширину и в две строки текста, если надо.
+   *
+   * «Использовать по умолчанию» в одну строку — это 293px, которых на телефоне
+   * нет ни у кого. Жёсткая высота 32px тут и держала текст в одну строку.
+   */
+  const ROW_ACTION =
+    'inline-flex h-8 shrink-0 items-center bg-primary px-3 text-2xs font-bold uppercase ' +
+    'tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 ' +
+    'disabled:opacity-40 max-[640px]:order-1 max-[640px]:h-auto max-[640px]:min-h-[44px] ' +
+    'max-[640px]:w-full max-[640px]:justify-center max-[640px]:py-2 max-[640px]:text-center ' +
+    'max-[640px]:leading-snug'
   const ITEM =
     'flex w-full items-center px-2.5 py-1.5 text-left text-ui text-ink transition-colors ' +
     'duration-100 hover:bg-raised disabled:pointer-events-none disabled:opacity-40'
@@ -594,16 +624,35 @@
     <div class="flex flex-col gap-2.5">
       {#each envs.environments as env (env.name)}
         <section class="border border-line">
-          <div class="flex items-center gap-3 px-3.5 py-3">
+          <!--
+            Первая строка карточки на телефоне отмерена ровно: квадрат 10 +
+            зазор 8 + имя + зазор 8 + меню 44 — отсюда и `100% - 70px` у имени.
+            Разъехавшись, эти числа переносят кнопку меню под имя.
+          -->
+          <div
+            class="flex items-center gap-3 px-3.5 py-3 max-[640px]:flex-wrap max-[640px]:items-start
+                   max-[640px]:gap-x-2 max-[640px]:gap-y-2.5"
+          >
             <span
-              class="h-2.5 w-2.5 shrink-0"
+              class="h-2.5 w-2.5 shrink-0 max-[640px]:mt-1.5"
               style="background: {swatch(env.name)}"
               aria-hidden="true"
             ></span>
 
-            <div class="flex min-w-0 flex-1 flex-col gap-0.5">
-              <div class="flex items-center gap-2">
-                <span class="truncate font-mono text-ui-lg font-semibold text-ink">{env.name}</span>
+            <div class="flex min-w-0 flex-1 flex-col gap-0.5 max-[640px]:basis-[calc(100%_-_70px)]">
+              <!-- `flex-wrap` и `min-w-0` — это и есть починка налезающего GPU:
+                   значок стоит `shrink-0`, и в ужатой до нуля строке он
+                   печатался поверх соседнего состояния. -->
+              <div class="flex items-center gap-2 max-[640px]:flex-wrap">
+                <!-- Две строки с обрезкой на телефоне, одна с многоточием на
+                     столе: `truncate` держит `white-space: nowrap`, и зажим в
+                     две строки под ним молча остаётся одной. -->
+                <span
+                  class="font-mono text-ui-lg font-semibold text-ink max-[640px]:min-w-0
+                         max-[640px]:line-clamp-2 min-[641px]:truncate"
+                >
+                  {env.name}
+                </span>
                 <!-- У имени, а не среди состояний справа: это про то, чем
                      окружение является, а не про то, что с ним сейчас
                      происходит, — и потому видно и во время сборки. -->
@@ -635,7 +684,9 @@
                 СОБРАННОГО образа, пока она совпадает с просимой в файле; иначе
                 — просимая, и рядом «Needs rebuild», который её объясняет.
               -->
-              <p class="truncate text-2xs text-muted">
+              <!-- На телефоне строка фактов переносится: обрезанная по 178px,
+                   она показывала «Python 3.11 · 2…» и ничего больше. -->
+              <p class="truncate text-2xs text-muted max-[640px]:whitespace-normal">
                 {[
                   pythonLabel(env),
                   env.imageBytes === null ? null : imageSize(env.imageBytes),
@@ -653,7 +704,11 @@
                 <span class="h-1.5 w-1.5 animate-blink rounded-full bg-accent"></span>
                 {tr("admin.building")}
               </span>
-              <button class={BTN} onclick={() => cancel(env)} disabled={!isOwner || busy === env.name}>
+              <button
+                class={cn(BTN, 'max-[640px]:order-1')}
+                onclick={() => cancel(env)}
+                disabled={!isOwner || busy === env.name}
+              >
                 {tr("admin.cancel")}
               </button>
             {:else}
@@ -725,7 +780,7 @@
               -->
               {#if !env.active && env.state === 'ready'}
                 <button
-                  class="inline-flex h-8 shrink-0 items-center bg-primary px-3 text-2xs font-bold uppercase tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 disabled:opacity-40"
+                  class={ROW_ACTION}
                   onclick={() => (switching = env.name)}
                   disabled={!isOwner || !canSetDefault || busy === env.name}
                   title={envs.cannotSetDefaultReason ??
@@ -735,7 +790,7 @@
                 </button>
               {:else if env.state !== 'ready'}
                 <button
-                  class="inline-flex h-8 shrink-0 items-center bg-primary px-3 text-2xs font-bold uppercase tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 disabled:opacity-40"
+                  class={ROW_ACTION}
                   onclick={() => build(env)}
                   disabled={!isOwner || !canBuild || busy === env.name}
                 >
@@ -743,13 +798,13 @@
                 </button>
               {/if}
 
-              <div class="relative">
+              <div class="relative max-[640px]:shrink-0">
                 <button
                   type="button"
                   aria-haspopup="menu"
                   aria-expanded={openMenu === env.name}
                   aria-label="{tr("admin.actions.for")} {env.name}"
-                  class="flex h-8 w-8 items-center justify-center border border-line text-muted transition-colors duration-100 hover:bg-raised hover:text-ink"
+                  class="flex h-8 w-8 items-center justify-center border border-line text-muted transition-colors duration-100 hover:bg-raised hover:text-ink max-[640px]:h-11 max-[640px]:w-11"
                   onclick={(event) => {
                     event.stopPropagation()
                     openMenu = openMenu === env.name ? null : env.name

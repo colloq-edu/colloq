@@ -147,7 +147,21 @@
         {/if}
       </div>
       {#if row.kind === 'choice'}
-        <div class="flex shrink-0 border border-line" role="group" aria-label={row.title}>
+        <!--
+          Ниже 640 переключатель встаёт столбиком во всю ширину.
+
+          Три сегмента с `white-space: nowrap` — это 311px («Все · Только
+          добавлять · Преподаватель»), а на 390px-экране строке остаётся 278:
+          группа стоит `shrink-0`, и правый сегмент срезало краем. Ужать нечем —
+          подписи и есть смысл кнопки, — поэтому они перестают делить строку.
+          Рамку между ними поворачивает media-правило ниже, в том же файле и на
+          том же пороге.
+        -->
+        <div
+          class="flex shrink-0 border border-line max-[640px]:w-full max-[640px]:flex-col"
+          role="group"
+          aria-label={row.title}
+        >
           {#each row.options as option (option.value)}
             <button
               type="button"
@@ -238,6 +252,27 @@
   .rule-seg:focus-visible {
     outline: none;
     box-shadow: inset 0 0 0 2px rgb(var(--accent) / 0.5);
+  }
+
+  /*
+   * Телефон: сегменты стоят столбиком, и делит их нижняя рамка, а не правая.
+   *
+   * Порог тот же, что у `max-[640px]:flex-col` на группе, — и он обязан быть
+   * тем же: колонка с правыми рамками рисует вертикальную черту вдоль правого
+   * края, а строка с нижними — полоску под каждой кнопкой. Рост тоже растёт:
+   * 32px — мерка курсора, а этот переключатель нажимают пальцем и в комнате
+   * с планшета.
+   */
+  @media (max-width: 640px) {
+    .rule-seg {
+      height: 44px;
+      text-align: left;
+      border-right: 0;
+      border-bottom: 1px solid rgb(var(--line));
+    }
+    .rule-seg:last-child {
+      border-bottom: 0;
+    }
   }
 
   /* Поле числа — по мерке переключателя рядом: одна высота, одна рамка, один
