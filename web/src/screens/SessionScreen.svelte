@@ -68,6 +68,7 @@
     type RefusedCell,
   } from '@/lib/refusal'
   import { permitsIn } from '@/lib/may'
+  import { accessPatch } from '@/lib/book-access'
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import TabStrip from '@/components/reader/TabStrip.svelte'
   import FileEditor from '@/components/editor/FileEditor.svelte'
@@ -82,6 +83,7 @@
     actsAfterClass,
     CLASS_IS_OVER,
     readRules,
+    type BookAccess,
     type OracleLimits,
     type RoomRules,
   } from '@shared/rules'
@@ -654,6 +656,35 @@
   /** Тетради комнаты: список живёт в документе и приходит ко всем. */
   const books = watchBooks(session.doc)
 
+  /**
+   * Тетради вместе с их доступом — то, из чего строка вкладок рисует метку и
+   * наполняет меню «Доступ».
+   *
+   * Список тетрадей живёт в ДОКУМЕНТЕ (он общий и переживает перезагрузку), а
+   * доступ — в ПРАВИЛАХ комнаты (он право, и права не носят в CRDT, где их
+   * может переписать любой). Складываются они здесь, по корню: путь файла
+   * переименовывают, корень — нет.
+   */
+  const bookTabs = $derived(
+    books.current.map((book) => ({
+      path: book.path,
+      root: book.root,
+      rule: roomRules.books?.[book.root] ?? null,
+    })),
+  )
+
+  /**
+   * Сменить доступ к одной тетради.
+   *
+   * Тем же путём, каким меняются все прочие правила комнаты (`setRule` выше, то
+   * есть PATCH /api/sessions/:id/rules): доступ к тетради ЖИВЁТ в правилах,
+   * и второй двери у него нет — а значит нет и второго места, где забудут
+   * спросить роль. Сервер всё равно спрашивает её сам.
+   */
+  function setBookAccess(root: string, access: BookAccess): void {
+    void setRule(accessPatch(roomRules, root, access))
+  }
+
   /** Что читалка сообщает наружу: строка вкладок показывает это за неё. */
   let readerPage = $state(1)
   let readerPages = $state(0)
@@ -1218,6 +1249,16 @@
      * тетради говорит «открываю» — это честнее, чем не реагировать на нажатие.
      */
     if (kindOf(path) === 'notebook' && !books.current.some((book) => book.path === path)) {
+      /*
+       * И только если внести её вообще можно: внесение — это ДОБАВЛЕНИЕ
+       * тетради в комнату, у него своё правило (shared/rules.ts · ownBooks), и
+       * сервер на это же ответит отказом. Без проверки вкладка открывалась бы
+       * навсегда с «открываю»: тетради не появится, и закрывать нечего.
+       */
+      if (!may.ownBook) {
+        session.showError(may.ownBookWhy)
+        return
+      }
       session.send({ t: 'book:open', path })
     }
     tabs.open(path)
@@ -1477,6 +1518,16 @@
     const out: PaletteItem[] = []
     const live = session.connected
     const book = activeKind === 'notebook' && activePath ? activePath : (books.current[0]?.path ?? null)
+    /*
+     * Права — по ТОЙ тетради, в которую уедут «Запустить всё», «Очистить
+     * выводы» и «Форматировать»: у неё может быть свой доступ, и комнатный
+     * ответ здесь либо прятал бы действия в собственной тетради студента, либо
+     * предлагал бы их в чужой личной — чтобы сервер отказал.
+     */
+    const here = permitsIn(session.session.rules, session.me.role, session.finished, {
+      root: books.current.find((entry) => entry.path === book)?.root ?? null,
+      participantId: session.me.id,
+    })
 
     /* Действия — первыми: их ищут словом, а ячейки номером. */
     const act = (
@@ -1492,7 +1543,7 @@
     act(
       'run-all',
       tr('room.ui.961'),
-      live && may.run && may.bulk && book !== null,
+      live && here.run && here.bulk && book !== null,
       () => session.send({ t: 'runAll', book: book ?? undefined }),
       undefined,
       "run all выполнить",
@@ -1516,7 +1567,7 @@
     act(
       'format',
       tr('room.ui.969'),
-      live && may.bulk && may.edit && book !== null,
+      live && here.bulk && here.edit && book !== null,
       () => session.send({ t: 'format', book: book ?? undefined }),
       undefined,
       'format black',
@@ -2489,6 +2540,10 @@
           page={readerPage}
           pages={readerPages}
           pinned={roomPinned}
+          books={bookTabs}
+          mayAccess={isHost}
+          meId={session.me.id}
+          onaccess={setBookAccess}
           onshow={(key) => tabs.show(key)}
           onclose={closeTab}
           onreorder={(dragged, onto) => tabs.reorder(dragged, onto)}

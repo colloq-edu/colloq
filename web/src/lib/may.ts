@@ -17,6 +17,7 @@ import {
   allowsAgent,
   allowsRun,
   allowsStructure,
+  bookRefusal,
   CLASS_IS_OVER,
   mayEditCell,
   mayLeadCouncil,
@@ -25,6 +26,8 @@ import {
   mayWriteCouncil,
   readRules,
   rulesAfterClass,
+  rulesForBook,
+  type Asker,
   type RoomRules,
 } from '@shared/rules'
 import type { ParticipantRole } from '@shared/protocol'
@@ -47,6 +50,26 @@ export interface Permits {
    * ещё и от ячейки: см. `mayEditThisCell` в конце файла.
    */
   role: ParticipantRole
+  /**
+   * Чем отказывает САМА ТЕТРАДЬ, — или `null`, когда тетрадь ни при чём.
+   *
+   * Нужно двум местам, где иначе заговорила бы комната вместо тетради: полосе
+   * «Лекция» над тетрадью и строке под запертой ячейкой. Обе написаны про
+   * КОМНАТУ («ячейки редактирует и запускает преподаватель»), и в чужой личной
+   * тетради это неправда: правит её автор, а не преподаватель, и человек,
+   * прочитавший полосу, пойдёт не туда.
+   */
+  bookWhy: string | null
+  /**
+   * У этой тетради свой доступ — какой угодно, кроме «как в комнате».
+   *
+   * Тем, кто рисует полосу «Лекция»: она говорит про КОМНАТУ, и над тетрадью с
+   * собственным доступом её показывать нельзя ни студенту, ни преподавателю —
+   * тетрадь живёт не по этому правилу, и про неё говорит метка на вкладке.
+   * Отдельно от `bookWhy`, потому что тому, кому тетрадь ничего не запрещает
+   * (автору, преподавателю), фразы отказа нет, а полоса всё равно лишняя.
+   */
+  bookRuled: boolean
   /** Печатать в ячейках. */
   edit: boolean
   editWhy: string
@@ -74,6 +97,16 @@ export interface Permits {
   /** Заводить и править файлы семинара. */
   files: boolean
   filesWhy: string
+  /**
+   * Завести в комнате СВОЮ тетрадь — пустую или внеся положенный в папку .ipynb.
+   *
+   * Отдельно от `files`, и это не дублирование: `files` про общую папку
+   * занятия, а своя тетрадь — про собственную работу участника, файл которой
+   * пишет сервер проекцией. Поэтому «файлы преподавательские, свои тетради
+   * разрешены» — обычная пара, и наоборот тоже (shared/rules.ts · ownBooks).
+   */
+  ownBook: boolean
+  ownBookWhy: string
   /** Просить оракула не ответить, а сделать: править файлы самому. */
   agent: boolean
   agentWhy: string
@@ -112,32 +145,77 @@ export interface Permits {
 const HOSTS = "В этом семинаре это делает преподаватель"
 
 /**
+ * Какую тетрадь спрашивают — и кто спрашивает.
+ *
+ * У отдельной тетради бывает свой доступ (shared/rules.ts · RoomRules.books), и
+ * тогда `run`, `edit` и `structure` в ней другие. Кто именно спрашивает, здесь
+ * нужно ровно одному вопросу: его ли эта личная тетрадь.
+ */
+export interface InBook {
+  /** Корень тетради в документе; `null` — вопрос не про тетрадь. */
+  root: string | null
+  /** Свой participantId; `null` — спрашивающий себя не назвал. */
+  participantId: string | null
+}
+
+/**
  * @param finished — закончено ли занятие. Третьим обязательным аргументом, а не
  * полем с умолчанием: забытый аргумент обязан быть ошибкой типов, а не тихо
  * открытой кнопкой в комнате, где пара уже кончилась.
+ *
+ * @param book — тетрадь, про которую спрашивают. Без неё ответ комнатный, и это
+ * правильный ответ для всего, что тетради не касается: терминала, доски, файлов,
+ * ядра. Тетрадь и ячейка передают свою (Notebook.svelte, CellView.svelte), и
+ * тогда `run`, `edit` и `structure` считаются ЕЮ — той же `rulesForBook`,
+ * которой отвечает сервер.
  */
-export function permitsIn(rules: unknown, role: ParticipantRole, finished: boolean): Permits {
+export function permitsIn(
+  rules: unknown,
+  role: ParticipantRole,
+  finished: boolean,
+  book: InBook | null = null,
+): Permits {
   const stored = readRules(rules)
-  const read = finished ? rulesAfterClass(stored) : stored
+  const room = finished ? rulesAfterClass(stored) : stored
+  const who: Asker = { role, participantId: book?.participantId ?? null }
+  /*
+   * Конец занятия — ПЕРВЫМ множителем, и это тот же порядок, что на сервере
+   * (db.ts · getRules): `rulesAfterClass` карту тетрадей не переносит, так что
+   * после звонка `rulesForBook` не находит перекрытий и ничего не открывает.
+   */
+  const read = rulesForBook(room, book?.root ?? null, who)
   const acts = actsAfterClass(finished, role)
+  const refusedByBook = bookRefusal(room, book?.root ?? null, who)
   // Одна фраза вместо всех остальных: правило, которое остановило, человеку
   // сейчас неинтересно — ему важно, что занятие кончилось.
   const why = (own: string): string => (acts ? own : tr(CLASS_IS_OVER))
+  /*
+   * Когда закрыла ТЕТРАДЬ, говорит она, а не комната.
+   *
+   * «В этом семинаре печатает преподаватель», сказанное про чужую личную
+   * тетрадь, отправляет человека искать преподавателя, который ничего не
+   * запрещал: закрылась тетрадь, и закрыл её автор. Те же слова, которыми
+   * отказывает сервер (collab/gate.ts · permits).
+   */
+  const whyHere = (own: string): string =>
+    why(refusedByBook ? tr(refusedByBook.key, { p0: refusedByBook.name }) : own)
   const structure = (verb: 'add' | 'remove' | 'move'): boolean =>
     allowsStructure(read.structure, role, verb)
   return {
     rules: read,
     finished,
     role,
+    bookWhy: acts && refusedByBook ? tr(refusedByBook.key, { p0: refusedByBook.name }) : null,
+    bookRuled: (room.books?.[book?.root ?? '']?.access ?? 'room') !== 'room',
     edit: allows(read.edit, role),
-    editWhy: why(tr('room.ui.1092')),
+    editWhy: whyHere(tr('room.ui.1092')),
     run: allowsRun(read.run, role, 'one'),
     // Одна фраза на три места — кнопка ячейки, «Запустить» над файлом и строка
     // ввода в терминале, — и те же слова, которыми отказывает сервер
     // (control.ts, term:run): правило одно, значит и объяснение одно.
-    runWhy: why(tr('room.ui.1093')),
+    runWhy: whyHere(tr('room.ui.1093')),
     bulk: allowsRun(read.run, role, 'bulk'),
-    bulkWhy: why(
+    bulkWhy: whyHere(
       read.run === 'single' && role !== 'host'
         ? tr('room.ui.1094')
         : tr('room.ui.1095'),
@@ -145,7 +223,7 @@ export function permitsIn(rules: unknown, role: ParticipantRole, finished: boole
     add: structure('add'),
     remove: structure('remove'),
     move: structure('move'),
-    structureWhy: why(
+    structureWhy: whyHere(
       read.structure === 'add' && role !== 'host'
         ? tr('room.ui.1096')
         : tr('room.ui.1097'),
@@ -160,6 +238,14 @@ export function permitsIn(rules: unknown, role: ParticipantRole, finished: boole
     // «добавляет» не годится там, где речь про правку, а «правит» — там, где
     // про перетаскивание.
     filesWhy: why(tr('room.ui.1100')),
+    /*
+     * Правила комнаты, а не тетради: вопрос «можно ли завести ЕЩЁ одну» ни к
+     * какой тетради не относится. Потолок своих тетрадей (MAX_OWN_BOOKS)
+     * считает сервер — по карте, которой у браузера может не быть целиком; его
+     * отказ приезжает строкой и виден там же, где нажали.
+     */
+    ownBook: role === 'host' || (acts && room.ownBooks === 'on'),
+    ownBookWhy: why(tr('room.ui.ownBooksOff')),
     agent: allowsAgent(read.agent, role),
     agentWhy: why(
       read.agent === 'off'

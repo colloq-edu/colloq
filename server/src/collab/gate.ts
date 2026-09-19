@@ -38,8 +38,11 @@ import type { GateRule } from '@shared/protocol'
 import {
   actsAfterClass,
   allowsStructure,
+  bookRefusal,
   CLASS_IS_OVER,
   mayEditCell,
+  rulesForBook,
+  type Asker,
   type RoomRules,
 } from '@shared/rules'
 
@@ -61,6 +64,18 @@ export interface Verdict {
   cellId: string | null
   /** Разрешённый путь, для сообщения и для теста. */
   path: string
+  /**
+   * Корень тетради, в которую метит кадр, — имя её Y.Array в документе.
+   *
+   * По нему и только по нему находится доступ к отдельной тетради
+   * (shared/rules.ts · RoomRules.books): корень выдаётся тетради один раз и
+   * переживает переименование файла, а путь освобождается.
+   *
+   * `null` у приговоров, которые не про ячейки тетради, — сейчас это один
+   * `title`. Ключ карты «null» не совпадает ни с чем, так что такой приговор
+   * судится правилами комнаты, как и судился.
+   */
+  root: string | null
   /**
    * Ячейку открыл преподаватель — и только у правки её ТЕКСТА.
    *
@@ -487,6 +502,10 @@ class Frame {
 
     if (isBookRoot(slot[0])) {
       const cellId = this.cellIdOf(place)
+      // Корень — он же имя тетради в документе: по нему судят её собственный
+      // доступ (shared/rules.ts · rulesForBook). Берётся из того же места, что
+      // и путь, потому что путь с него и начинается.
+      const root = slot[0]
       // Сам состав тетради.
       if (slot.length === 2 && slot[1] === '[]') {
         return {
@@ -494,6 +513,7 @@ class Frame {
           verb: op === 'insert' ? 'add' : 'remove',
           cellId,
           path,
+          root,
         }
       }
       if (slot.length < 3) throw new Refusal(tr("server.writeToAnUnknownNotebookLocation.6e676f"), path)
@@ -503,7 +523,7 @@ class Frame {
 
       // Ячейка, созданная этим же кадром, — часть создания целиком; её значения
       // проверяются отдельно, в checkFresh.
-      if (place.cellIsFresh) return { rule: 'structure', verb: 'add', cellId, path }
+      if (place.cellIsFresh) return { rule: 'structure', verb: 'add', cellId, path, root }
 
       if (SERVER_OWNED.has(key)) {
         /*
@@ -525,20 +545,20 @@ class Frame {
         if (slot.length === 3) throw new Refusal(tr("server.theEntireCellTextIsBeingReplaced.ef575f"), path)
         // Единственное место, где замок что-то разрешает: набор в открытой
         // ячейке идёт при закрытой тетради — см. shared/rules.ts · mayEditCell.
-        return { rule: 'edit', cellId, path, open: this.openOf(place) }
+        return { rule: 'edit', cellId, path, root, open: this.openOf(place) }
       }
       if (key === 'type') {
         if (slot.length !== 3) throw new Refusal(tr("server.writeToAnUnknownNotebookLocation.6e676f"), path)
         // Без `open`: сменить вид — это переписать ячейку целиком вместе с её
         // выводом, то есть состав тетради, а он в лекции преподавательский.
-        return { rule: 'edit', cellId, path }
+        return { rule: 'edit', cellId, path, root }
       }
       throw new Refusal(tr("server.unknownCellField.5417fd"), path)
     }
 
     if (slot[0] === META_KEY) {
       if (slot.length === 2 && slot[1] === '::title') {
-        return { rule: 'title', cellId: null, path }
+        return { rule: 'title', cellId: null, path, root: null }
       }
       throw new Refusal(tr("server.thisSeminarFieldIsWrittenByThe.4b1639"), path)
     }
@@ -882,14 +902,38 @@ export function classify(
  * вызовов, где занятие заведомо идёт; тот, кто судит настоящие кадры, обязан
  * его передавать — иначе открытая ячейка переживёт конец пары.
  */
+/**
+ * @param participantId — кто прислал кадр. Нужен ровно одному вопросу: его ли
+ * это личная тетрадь (shared/rules.ts · BookRule.owner). `null` — «кадр без
+ * имени», и такой заведомо не автор: ошибка здесь падает в сторону отказа, а не
+ * в сторону чужой личной тетради.
+ */
 export function permits(
   verdicts: Verdict[],
   rules: RoomRules,
   role: 'host' | 'participant',
   finished = false,
+  participantId: string | null = null,
 ): { ok: true } | { ok: false; rule: GateRule; message: string } {
   const acts = actsAfterClass(finished, role)
+  const who: Asker = { role, participantId }
   const why = (own: string): string => (acts ? own : tr(CLASS_IS_OVER))
+  /*
+   * Слова отказа выбирает ТЕТРАДЬ, когда отказала она, и комната во всех
+   * остальных случаях.
+   *
+   * Иначе студент, ткнувшийся в чужую личную тетрадь, читал бы «в этом семинаре
+   * печатает преподаватель» — и шёл бы к преподавателю, который ничего не
+   * запрещал: закрыл тетрадь не он, а её автор одним нажатием.
+   *
+   * После звонка всё это молчит: `why` заменяет любую свою фразу на
+   * CLASS_IS_OVER, потому что человеку важно не какое правило его остановило, а
+   * что пара кончилась.
+   */
+  const refusal = (verdict: Verdict, own: string): string => {
+    const book = bookRefusal(rules, verdict.root, who)
+    return why(book ? tr(book.key, { p0: book.name }) : own)
+  }
   for (const verdict of verdicts) {
     if (verdict.rule === 'title') {
       if (role === 'host') continue
@@ -899,22 +943,30 @@ export function permits(
         message: why(tr("server.onlyTheTeacherMayRenameTheSeminar.61046b")),
       }
     }
+    /*
+     * Каждый приговор судится правилами СВОЕЙ тетради, а не комнаты.
+     *
+     * Пересчёт на каждый приговор, а не один раз на кадр: кадр запросто несёт
+     * правки в две тетради сразу — так приходит step2 переподключившейся
+     * вкладки, у которой открыто и то и другое. `rulesForBook` в обычной
+     * комнате возвращает ТОТ ЖЕ объект, так что цена этого — сравнение ссылки.
+     */
+    const here = rulesForBook(rules, verdict.root, who)
     if (verdict.rule === 'edit') {
-      if (mayEditCell(rules, role, verdict.open === true, finished)) continue
+      if (mayEditCell(here, role, verdict.open === true, finished)) continue
       return {
         ok: false,
         rule: 'edit',
-        message: why(
-          tr("server.onlyTheTeacherMayEditThisSeminar.dfef31"),
-        ),
+        message: refusal(verdict, tr("server.onlyTheTeacherMayEditThisSeminar.dfef31")),
       }
     }
     const verb = verdict.verb ?? 'add'
-    if (allowsStructure(rules.structure, role, verb)) continue
+    if (allowsStructure(here.structure, role, verb)) continue
     return {
       ok: false,
       rule: 'structure',
-      message: why(
+      message: refusal(
+        verdict,
         verb === 'add'
           ? tr("server.onlyTheTeacherMayAddCellsIn.9fb3e4")
           : tr("server.onlyTheTeacherMayRemoveCellsIn.9a1ac0"),

@@ -32,7 +32,7 @@ import {
   peekSessionDoc,
 } from '../collab/index.js'
 import { mark } from '../collab/history.js'
-import { cellLock, findCell, findChatEntry, getChat, type CellLock } from '@shared/notebook'
+import { cellLock, findCell, findChatEntry, getChat, rootOfCell, type CellLock } from '@shared/notebook'
 import {
   actsAfterClass,
   allows,
@@ -42,6 +42,7 @@ import {
   mayLeadCouncil,
   oracleLimitsIn,
   oracleModeIn,
+  rulesForBook,
 } from '@shared/rules'
 import { getParticipant, getRules, getSession, isFinished } from '../db.js'
 import { banDoor, sessionAuth } from './sessions.js'
@@ -144,6 +145,17 @@ function cellLockIn(sessionId: string, cellId: string | null): CellLock {
   const doc = peekSessionDoc(sessionId)?.doc
   const found = doc ? findCell(doc, cellId) : null
   return found ? cellLock(found.cell) : 'closed'
+}
+
+/**
+ * Корень тетради, в которой лежит эта ячейка, — для её собственного доступа.
+ *
+ * `null` — ячейки в комнате нет; тогда правила комнаты, как и раньше.
+ */
+function bookRootOf(sessionId: string, cellId: string | null): string | null {
+  if (!cellId) return null
+  const doc = peekSessionDoc(sessionId)?.doc
+  return doc ? rootOfCell(doc, cellId) : null
 }
 
 function askedBy(sessionId: string, entryId: string, participantId: string): boolean {
@@ -436,8 +448,18 @@ export function aiRoutes(): Router {
      */
     if (action === 'edit') {
       const lock = cellLockIn(sessionId, cellId)
+      /*
+       * И по правилам ТОЙ ТЕТРАДИ, где ячейка лежит: «переписать» кончается
+       * правкой, а правку спрашивают у тетради (shared/rules.ts · rulesForBook).
+       * Иначе студент в лекции не мог бы попросить переписать ячейку в
+       * собственной тетради — той самой, где он и сидит.
+       */
+      const here = rulesForBook(getRules(sessionId), bookRootOf(sessionId, cellId), {
+        role: auth.role,
+        participantId: auth.participantId,
+      })
       const mayHere =
-        mayEditCell(getRules(sessionId), auth.role, lock === 'open', isFinished(sessionId)) &&
+        mayEditCell(here, auth.role, lock === 'open', isFinished(sessionId)) &&
         (lock !== 'council' || mayLeadCouncil(auth.role))
       if (!mayHere) {
         return res.status(403).json({ error: tr('server.ai.cellIsTheTeachers') })

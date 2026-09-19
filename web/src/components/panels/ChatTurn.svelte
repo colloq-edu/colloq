@@ -18,7 +18,7 @@
    * differently is a log you have to read rather than scan.
    */
   import type { AgentStep, ChatSnapshot } from '@shared/notebook'
-  import { cellLock, findChatEntry } from '@shared/notebook'
+  import { cellLock, findChatEntry, rootOfCell } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction, ParticipantRole } from '@shared/protocol'
   import { actsAfterClass, CLASS_IS_OVER } from '@shared/rules'
@@ -315,7 +315,18 @@
    * получала патч дважды. У сервера копия одна, и он разбирает сообщения по
    * очереди.
    */
-  const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
+  /*
+   * И по правилам ТЕТРАДИ, в которой лежит ячейка хода: «Применить» — это
+   * правка, а правка спрашивает у тетради (shared/rules.ts · rulesForBook).
+   * Своя личная тетрадь принимает предложение и в лекции; чужая не принимает и
+   * в открытой комнате — ровно то же отвечает сервер (control.ts · ai:decide).
+   */
+  const may = $derived(
+    permitsIn(session.session.rules, session.me.role, session.finished, {
+      root: entry.cellId ? rootOfCell(session.doc, entry.cellId) : null,
+      participantId: session.me.id,
+    }),
+  )
   /**
    * «Применить» спрашивает у ЯЧЕЙКИ, а не только у правила комнаты.
    *

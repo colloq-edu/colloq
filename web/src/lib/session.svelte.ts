@@ -14,6 +14,7 @@ import {
   getChat,
   getMeta,
   getTerminal,
+  rootOfCell,
 } from '@shared/notebook'
 import type {
   AwarenessUser,
@@ -1611,8 +1612,17 @@ export class SessionState {
    * метка обязана уйти вместе с ним, а не дожидаться следующего щелчка.
    */
   #announceAnchor = () => {
-    const may = permitsIn(this.session.rules, this.me.role, this.finished)
-    const next = cellToAnnounce(this.doc, this.selectedCellId, may)
+    /*
+     * Права спрашиваются у ТЕТРАДИ этой ячейки: в собственной тетради студент
+     * печатает и посреди лекции, и метка «правит здесь» у него должна быть — а
+     * в чужой личной её не должно быть даже при открытой комнате.
+     */
+    const id = this.selectedCellId
+    const may = permitsIn(this.session.rules, this.me.role, this.finished, {
+      root: id ? rootOfCell(this.doc, id) : null,
+      participantId: this.me.id,
+    })
+    const next = cellToAnnounce(this.doc, id, may)
     // Кадр не шлётся, если ничего не изменилось: так же делают соседние
     // `setViewing` и `setEditing`, и здесь это ещё важнее — зовут отсюда и
     // наблюдатели, которым до присутствия дела нет.

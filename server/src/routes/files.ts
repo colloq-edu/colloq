@@ -9,7 +9,7 @@ import { config } from '../config.js'
 import { getSession } from '../db.js'
 import { baseOf, joinPath, normalizePath, safeSegment, whySegmentRefused } from '@shared/paths'
 import { forgetFile } from '../collab/files.js'
-import { dropBook, isBookFile } from '../collab/books.js'
+import { dropBook, isBookFile, ownsBookAt } from '../collab/books.js'
 import {
   workspaceFs,
   deleteFile,
@@ -643,11 +643,17 @@ export function fileRoutes(): Router {
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const who = sessionAuth(req)
     if (!who) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
-    if (who.role !== 'host') {
-      return res.status(403).json({ error: tr("server.onlyTheTeacherCanRemoveAFile.289f45") })
-    }
     const wanted = normalizePath(typeof req.query.path === 'string' ? req.query.path : '')
     if (!wanted) return res.status(400).json({ error: tr("server.badPath.95c1aa") })
+    /*
+     * И то же исключение, что у сокетной двери (control.ts · `tree:remove`):
+     * свою личную тетрадь автор убирает сам. Две двери на одно действие —
+     * панель ходит сюда, дерево шлёт кадр, — и правило у них обязано быть
+     * одним, иначе оно есть только на одной из них.
+     */
+    if (who.role !== 'host' && !ownsBookAt(sessionId, wanted, who.participantId)) {
+      return res.status(403).json({ error: tr("server.onlyTheTeacherCanRemoveAFile.289f45") })
+    }
     if (!deleteFile(sessionId, wanted)) {
       return res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
     }

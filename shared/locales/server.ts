@@ -393,10 +393,6 @@ export const serverMessages: MessageCatalog = {
     "ru": "Создавать файлы на этом занятии может только преподаватель.",
     "en": "Only the teacher may create files in this class."
   },
-  "server.onlyTheTeacherMayOpenNotebooksIn.26080d": {
-    "ru": "Открывать тетради на этом занятии может преподаватель.",
-    "en": "Only the teacher may open notebooks in this class."
-  },
   "server.onlyTheTeacherMayRenameFilesIn.e04cee": {
     "ru": "Переименовать файл в комнате может преподаватель.",
     "en": "Only the teacher may rename files in this room."
@@ -2248,6 +2244,30 @@ export const serverMessages: MessageCatalog = {
   "server.classOverPeriod": {
     "ru": "Занятие закончено — здесь теперь только читают.",
     "en": "The class is over. This room is now read-only."
+  },
+  "server.ownBooksAreOff": {
+    "ru": "Свои тетради в этом занятии не разрешены — их включает преподаватель в правилах",
+    "en": "Personal notebooks are not allowed in this class — the teacher turns them on in the rules"
+  },
+  "server.ownBooksLimit": {
+    "ru": "Своих тетрадей можно завести не больше {p0}. Уберите одну из своих, чтобы завести новую",
+    "en": "You may have at most {p0} personal notebooks. Remove one of yours to start another"
+  },
+  "server.bookIsPersonal": {
+    "ru": "Это личная тетрадь: {p0}. Править её могут автор и преподаватель",
+    "en": "This notebook is personal: {p0}. Only its author and the teacher may edit it"
+  },
+  "server.bookIsPersonalMine": {
+    "ru": "Это ваша личная тетрадь: работать в ней можете вы и преподаватель",
+    "en": "This is your personal notebook: you and the teacher work in it"
+  },
+  "server.bookIsTheTeachers": {
+    "ru": "Эта тетрадь преподавательская: печатает и запускает в ней он",
+    "en": "This notebook is the teacher’s: they are the one who types and runs in it"
+  },
+  "server.bookIsOpenToAll": {
+    "ru": "Эта тетрадь открыта всем: печатать и запускать в ней может любой",
+    "en": "This notebook is open to everyone: anyone may type and run in it"
   },
   "server.councilSharedKernel": {
     "ru": "Решения выполняются по очереди в общем ядре, но каждое получает личные копии данных: таблицы, массивы, тензоры и списки после него остаются прежними. Новые переменные, созданные решением, удаляются после запуска, ядро завершить нельзя, а память решения ограничена. Общими остаются файлы и то, что не удалось скопировать, — о последнем решение читает в своём выводе. Не используйте этот режим для задач, требующих изолированного выполнения.",

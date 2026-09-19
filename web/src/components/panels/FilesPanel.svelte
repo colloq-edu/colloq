@@ -91,6 +91,18 @@
   /** Тетради комнаты: `.ipynb`, который уже открыт как тетрадь, — не файл. */
   const books = watchBooks(session.doc)
   const isBook = (path: string): boolean => books.current.some((book) => book.path === path)
+  /**
+   * Это МОЯ личная тетрадь.
+   *
+   * По правилам комнаты, а не по документу: автор и доступ живут в правилах
+   * (shared/rules.ts · BookRule), потому что это право, а права не носят в
+   * CRDT, где их может переписать любой. Тот же ответ даёт сервер.
+   */
+  const myBook = (path: string): boolean => {
+    const root = books.current.find((book) => book.path === path)?.root
+    const rule = root ? may.rules.books?.[root] : null
+    return rule?.access === 'owner' && rule.owner === session.me.id
+  }
 
   /** Folders open only by an explicit click or drag-hover, including on first sync. */
   let expanded = $state<Set<string>>(new Set())
@@ -285,16 +297,21 @@
       return
     }
     /*
-     * Тетрадь, которой в комнате ещё нет, вносит сервер — и по правилу `files`
-     * может отказать. Вкладка на неё открылась бы сразу и осталась бы навсегда
-     * с «Открываю…»: тетради, которую не завели, в комнате не появится, и
-     * закрывать вкладку нечему. Отказ — здесь, до нажатия, теми же словами,
-     * которыми ответил бы сервер.
+     * Тетрадь, которой в комнате ещё нет, вносит сервер — и может отказать.
+     * Вкладка на неё открылась бы сразу и осталась бы навсегда с «Открываю…»:
+     * тетради, которую не завели, в комнате не появится, и закрывать вкладку
+     * нечему. Отказ — здесь, до нажатия, теми же словами, которыми ответил бы
+     * сервер.
+     *
+     * Спрашивается `ownBook`, а не `files`: внести .ipynb в комнату — значит
+     * добавить тетрадь, и правило у этого своё (shared/rules.ts · ownBooks).
+     * Положить файл в папку и внести его в комнату — разные вещи, и стояла
+     * здесь проверка не та.
      */
-    if (kindOf(entry.path) === 'notebook' && !may.files && !isBook(entry.path)) {
+    if (kindOf(entry.path) === 'notebook' && !may.ownBook && !isBook(entry.path)) {
       // Из `may`, как в двух соседних ветках: свои слова здесь после звонка
       // называли правило, которого никто не менял.
-      errorRender = () => (may.filesWhy + '.')
+      errorRender = () => (may.ownBookWhy + '.')
       return
     }
     onopen?.(entry.path)
@@ -880,44 +897,57 @@
   <div class="flex items-center gap-2 px-1 pb-2">
     <h2 class="text-2xs font-bold uppercase tracking-section text-muted">{tr('room.ui.586')}</h2>
     <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
-    {#if may.files}
+    <!--
+      Кнопки появляются, если можно хоть что-нибудь: файлы и СВОЯ ТЕТРАДЬ — это
+      два разных правила, и пара «файлы преподавательские, свои тетради
+      разрешены» — обычная пара. Тетрадь при этом не прячется, а гаснет с
+      причиной: спрятанная кнопка читается как «такого тут не бывает».
+    -->
+    {#if may.files || may.ownBook}
       <div class="-my-1 -mr-1 flex shrink-0 items-center gap-0.5">
+        {#if may.files}
+          <button
+            type="button"
+            class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            title={target ? tr('room.extra.258', { p0: target }) : tr('room.extra.259')}
+            aria-label={tr('room.ui.587')}
+            onclick={() => startDraft('file')}
+          >
+            <Icon name="file-plus" size={13} />
+          </button>
+        {/if}
         <button
           type="button"
-          class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          title={target ? tr('room.extra.258', { p0: target }) : tr('room.extra.259')}
-          aria-label={tr('room.ui.587')}
-          onclick={() => startDraft('file')}
-        >
-          <Icon name="file-plus" size={13} />
-        </button>
-        <button
-          type="button"
-          class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          title={target ? tr('room.extra.260', { p0: target }) : tr('room.extra.261')}
+          class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:pointer-events-none disabled:opacity-40"
+          disabled={!may.ownBook}
+          title={may.ownBook
+            ? target ? tr('room.extra.260', { p0: target }) : tr('room.extra.261')
+            : may.ownBookWhy}
           aria-label={tr('room.ui.588')}
           onclick={() => startDraft('book')}
         >
           <Icon name="notebook" size={13} />
         </button>
-        <button
-          type="button"
-          class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          title={target ? tr('room.extra.262', { p0: target }) : tr('room.extra.263')}
-          aria-label={tr('room.ui.589')}
-          onclick={() => startDraft('dir')}
-        >
-          <Icon name="folder-plus" size={13} />
-        </button>
-        <button
-          type="button"
-          class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          title={tr('room.ui.590')}
-          aria-label={tr('room.ui.590')}
-          onclick={() => picker?.click()}
-        >
-          <Icon name="upload" size={13} />
-        </button>
+        {#if may.files}
+          <button
+            type="button"
+            class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            title={target ? tr('room.extra.262', { p0: target }) : tr('room.extra.263')}
+            aria-label={tr('room.ui.589')}
+            onclick={() => startDraft('dir')}
+          >
+            <Icon name="folder-plus" size={13} />
+          </button>
+          <button
+            type="button"
+            class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            title={tr('room.ui.590')}
+            aria-label={tr('room.ui.590')}
+            onclick={() => picker?.click()}
+          >
+            <Icon name="upload" size={13} />
+          </button>
+        {/if}
       </div>
     {:else if listed}
       <span class="font-mono text-micro tabular-nums text-muted">{fileCount}</span>
@@ -1110,8 +1140,11 @@
               {/if}
               <!-- Убрать файл — преподавательское: папка общая в обе стороны, и
                    раздатка, по которой работает класс, была в одном нажатии от
-                   любого. -->
-              {#if isHost}
+                   любого. Исключение одно — СВОЯ личная тетрадь: её автор завёл
+                   сам, она считается против его потолка своих тетрадей, и не
+                   дать ему её убрать значит запереть его после трёх черновиков.
+                   Сервер разрешает ровно это же (routes/files.ts). -->
+              {#if isHost || myBook(entry.path)}
                 <button
                   type="button"
                   class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"

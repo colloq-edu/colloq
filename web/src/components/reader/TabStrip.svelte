@@ -11,11 +11,17 @@
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
+  import { tick } from 'svelte'
+  import { quintOut } from 'svelte/easing'
+  import { fly } from 'svelte/transition'
   import Icon from '@/components/ui/Icon.svelte'
   import type { Lead } from '@/lib/follow'
   import type { TabKey } from '@/lib/tabs.svelte'
   import { baseOf, kindOf } from '@shared/paths'
   import { iconFor } from '@/lib/file-icons'
+  import { accessOptions, bookMark, type BookTab } from '@/lib/book-access'
+  import { prefersReducedMotion } from '@/lib/utils'
+  import type { BookAccess } from '@shared/rules'
 
   interface Props {
     /** Весь ряд — пути открытых файлов. Тетрадь среди них такой же файл. */
@@ -48,6 +54,20 @@
      * а увидеть это как «встало у всех».
      */
     pinned?: string[]
+    /**
+     * Тетради комнаты вместе с их доступом — по одной записи на открытую.
+     *
+     * Здесь, а не внутри самой тетради, потому что метка нужна ИЗВНЕ: доступ
+     * объясняет, почему у вкладки, на которую человек ещё не переключился,
+     * кнопки будут серыми, а у соседней нет.
+     */
+    books?: BookTab[]
+    /** Меню «Доступ» — преподавательское: раздаёт права тот, чья комната. */
+    mayAccess?: boolean
+    /** Свой participantId: про собственную тетрадь метка говорит «моя». */
+    meId?: string | null
+    /** Сменить доступ тетради. Уезжает тем же маршрутом, что и правила комнаты. */
+    onaccess?: (root: string, access: BookAccess) => void
     onshow: (key: TabKey) => void
     onclose: (path: string) => void
     /** Переставить свою вкладку: `onto === null` — в конец ряда. */
@@ -67,11 +87,124 @@
     page,
     pages,
     pinned = [],
+    books = [],
+    mayAccess = false,
+    meId = null,
+    onaccess,
     onshow,
     onclose,
     onreorder,
     oncatchup,
   }: Props = $props()
+
+  /* ----------------------------------------------------- доступ к тетради */
+
+  /** Что комната помнит про эту вкладку. `null` — вкладка не тетрадь. */
+  const bookOf = (key: string): BookTab | null =>
+    books.find((book) => book.path === key) ?? null
+
+  /** Метка доступа этой вкладки — или `null`, когда доступ комнатный. */
+  const markOf = (key: string) => bookMark(bookOf(key)?.rule ?? null, meId)
+
+  /**
+   * Меню открыто на этой тетради — и вот где оно стоит.
+   *
+   * `position: fixed` и вычисленная точка, а не `absolute` внутри вкладки:
+   * строка вкладок прокручивается по горизонтали (`overflow-x-auto`), а это по
+   * спецификации включает и вертикальное обрезание — выпадающий список внутри
+   * неё срезало бы по нижней кромке в 38 пикселей. Тот же приём, что у меню
+   * бана (panels/BanMenu.svelte), и по той же причине.
+   */
+  let menuAt = $state<{ root: string; x: number; y: number } | null>(null)
+  let opener: HTMLElement | null = null
+  let menuBox = $state<HTMLElement | null>(null)
+
+  const MENU_W = 268
+  /*
+   * Высота меню — измеренная, а не вычисленная: четыре строки с подписями дают
+   * на узком экране около трёхсот пикселей. Число нужно ровно затем, чтобы
+   * прижать меню к нижней кромке окна, а не для раскладки; ошибка в большую
+   * сторону безобидна, в меньшую — режет последнюю строку на телефоне.
+   */
+  const MENU_H = 360
+
+  function openMenu(event: MouseEvent, book: BookTab): void {
+    const button = event.currentTarget as HTMLElement
+    if (menuAt?.root === book.root) {
+      closeMenu()
+      return
+    }
+    opener = button
+    const box = button.getBoundingClientRect()
+    /*
+     * Не вылезать за окно — по обеим осям. Вкладок бывает десяток, и последняя
+     * стоит у правого края; на телефоне в 390 пикселей за край уезжает уже
+     * вторая. Меню, ушедшее под кромку, выглядит как не сработавшее нажатие.
+     */
+    menuAt = {
+      root: book.root,
+      x: Math.max(8, Math.min(box.left, window.innerWidth - MENU_W - 8)),
+      y: Math.max(8, Math.min(box.bottom + 2, window.innerHeight - MENU_H - 8)),
+    }
+    /*
+     * Открытый слой сразу забирает клавиатуру — и первой берёт строку, которую
+     * МОЖНО выбрать: «Личная» у преподавательской тетради стоит погашенной, и
+     * фокус на ней означал бы меню, из которого с клавиатуры не выйти вперёд.
+     */
+    void tick().then(() =>
+      menuBox?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus(),
+    )
+  }
+
+  /** Закрыть и вернуть фокус туда, откуда открыли: меню обходится клавиатурой. */
+  function closeMenu(): void {
+    if (!menuAt) return
+    const back = opener
+    menuAt = null
+    opener = null
+    void tick().then(() => {
+      if (back?.isConnected) back.focus()
+    })
+  }
+
+  function pick(root: string, access: BookAccess): void {
+    closeMenu()
+    onaccess?.(root, access)
+  }
+
+  /*
+   * Меню закрывается снаружи: щелчок мимо, Escape, исчезнувшая тетрадь.
+   *
+   * Слушатели ставятся только пока меню открыто — по образцу замка на ячейке
+   * (notebook/CellView.svelte), чтобы на строке вкладок не висело двух
+   * оконных обработчиков всю пару.
+   */
+  $effect(() => {
+    if (!menuAt) return
+    const away = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target?.closest('[data-access-menu]')) return
+      if (target?.closest('[data-access-button]')) return
+      closeMenu()
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        closeMenu()
+      }
+    }
+    window.addEventListener('pointerdown', away, true)
+    window.addEventListener('keydown', escape, true)
+    return () => {
+      window.removeEventListener('pointerdown', away, true)
+      window.removeEventListener('keydown', escape, true)
+    }
+  })
+
+  /* Тетрадь убрали из комнаты, пока меню было открыто, — закрывать нечего. */
+  $effect(() => {
+    if (menuAt && !books.some((book) => book.root === menuAt?.root)) closeMenu()
+  })
 
   /*
    * Перетаскивание вкладок — и почему оно живёт здесь, а не в общем месте.
@@ -181,8 +314,16 @@
         это честнее, чем прятать вкладки в меню, которого не видно.
       -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!--
+        Вкладка с меткой доступа шире обычной, и это не украшение: «личная ·
+        Аким Студентов» рядом с именем файла не помещалась в 220 пикселей, и
+        первым в ноль ужималось ИМЯ ФАЙЛА — вкладка оставалась подписанной
+        одной меткой. Двести восемьдесят — это имя плюс метка в обычных
+        случаях; дальше и то и другое режется многоточием, а строка вкладок
+        по-прежнему прокручивается.
+      -->
       <div
-        class={`relative flex min-w-0 max-w-[220px] shrink items-stretch ${active === key ? 'bg-canvas' : ''} ${dragging === key ? 'opacity-40' : ''}`}
+        class={`relative flex min-w-0 shrink items-stretch ${markOf(key) ? 'max-w-[280px]' : 'max-w-[220px]'} ${active === key ? 'bg-canvas' : ''} ${dragging === key ? 'opacity-40' : ''}`}
         role="presentation"
         ondragover={(event) => aim(event, key)}
         ondrop={(event) => drop(event, key)}
@@ -210,7 +351,30 @@
           onclick={() => onshow(key)}
         >
           <Icon name={iconFor(key)} size={13} class="shrink-0" />
-          <span class="truncate font-mono text-code">{baseOf(key)}</span>
+          <!-- Имени оставлен пол в три с четвертью строки: метка длинная
+               («личная · Аким Студентов»), и без пола вкладка подписывалась
+               одним многоточием вместо имени файла. -->
+          <span class="min-w-[3.25rem] flex-1 truncate font-mono text-code">{baseOf(key)}</span>
+          <!--
+            Метка доступа — только там, где он НЕ «как в комнате».
+
+            Подпись у каждой тетради была бы шумом: у большинства правила
+            комнатные, и «как в комнате» на каждой вкладке не говорит ничего.
+            Она появляется ровно тогда, когда внутри что-то серое, и объясняет
+            это ДО переключения — иначе про чужую личную тетрадь узнаёшь, только
+            открыв её и потыкав в погасшие кнопки.
+          -->
+          {#if markOf(key)}
+            {@const mark = markOf(key)!}
+            <!-- Метка ужимается раньше имени файла: у вкладки спрашивают «что
+                 это за файл», а метка отвечает на второй вопрос. -->
+            <span
+              class={`min-w-0 max-w-[8.5rem] shrink truncate px-1.5 py-0.5 text-2xs font-semibold ${
+                mark.tone === 'mine' ? 'bg-accent/15 text-accent-text' : 'bg-raised text-muted'
+              }`}
+              title={mark.text}
+            >{mark.text}</span>
+          {/if}
           {#if key === board && active !== key && lead}
             <!-- Где преподаватель — видно и из тетради: иначе о том, что лекция
                  уехала на другую страницу, узнаёшь, только переключившись. -->
@@ -220,6 +384,31 @@
             </span>
           {/if}
         </button>
+        <!--
+          «Доступ» — преподавательское меню и только у тетрадей.
+
+          Рядом с закрытием, а не в панели правил: доступ — свойство ОДНОЙ
+          тетради, и решают про него, глядя на неё. В панели правил живёт
+          соседний вопрос — что получит тетрадь, которую студент заведёт себе
+          сам (`ownBooks`).
+        -->
+        {#if mayAccess && bookOf(key)}
+          {@const book = bookOf(key)!}
+          <button
+            type="button"
+            data-access-button
+            class="flex w-6 shrink-0 items-center justify-center text-faint transition-colors
+                   duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
+                   focus-visible:ring-inset focus-visible:ring-accent/40"
+            aria-haspopup="menu"
+            aria-expanded={menuAt?.root === book.root}
+            aria-label={`${tr('room.book.access.title')}: ${baseOf(key)}`}
+            title={tr('room.book.access.title')}
+            onclick={(event) => openMenu(event, book)}
+          >
+            <Icon name="lock" size={12} />
+          </button>
+        {/if}
         <!--
           Закрыть. У того, кто ставил документ комнате, — убирает у всех; у
           открывшего себе — только у себя; у студента, которому общий документ
@@ -289,3 +478,60 @@
     </div>
   {/if}
 </div>
+
+<!--
+  Меню доступа стоит ВНЕ прокручиваемой строки и позиционируется от окна: см.
+  `menuAt`. Только вход по кривой продукта — уход не анимируется, потому что
+  меню убирают клавишей, а анимировать действие с клавиатуры нельзя (то же
+  решение у BanMenu и у пульта правил).
+-->
+{#if menuAt}
+  {@const open = books.find((book) => book.root === menuAt?.root)}
+  {#if open}
+    <div
+      bind:this={menuBox}
+      role="menu"
+      tabindex="-1"
+      data-access-menu
+      aria-label={`${tr('room.book.access.title')}: ${baseOf(open.path)}`}
+      class="fixed z-[60] border border-line bg-canvas p-1 shadow-pop"
+      style={`left:${menuAt.x}px; top:${menuAt.y}px; width:${MENU_W}px`}
+      in:fly={{ y: prefersReducedMotion() ? 0 : -4, duration: 120, easing: quintOut }}
+    >
+      <!--
+        Шапка с именем тетради — как в меню бана (panels/BanMenu.svelte).
+
+        Меню стоит поверх строки вкладок и открывается от маленькой кнопки на
+        ЛЮБОЙ из них, а горит при этом активная: без имени внутри легко решить,
+        что настраиваешь ту тетрадь, на которую смотришь, — и раздать права не
+        той.
+      -->
+      <p class="truncate px-2.5 pb-1 pt-0.5 text-2xs font-bold uppercase tracking-label text-muted">
+        {baseOf(open.path)}
+      </p>
+      {#each accessOptions(open.rule) as option (option.access)}
+        {@const current = (open.rule?.access ?? 'room') === option.access}
+        <button
+          role="menuitemradio"
+          type="button"
+          aria-checked={current}
+          disabled={option.disabled}
+          class={`flex w-full items-start gap-2 px-2.5 py-1.5 text-left text-ui transition-colors
+                  duration-100 focus-visible:outline-none focus-visible:ring-2
+                  focus-visible:ring-inset focus-visible:ring-accent/40
+                  disabled:pointer-events-none disabled:opacity-45
+                  ${current ? 'bg-raised text-ink' : 'text-ink hover:bg-raised'}`}
+          onclick={() => pick(open.root, option.access)}
+        >
+          <span class="flex min-w-0 flex-1 flex-col">
+            <span class="truncate">{option.label}</span>
+            <span class="text-2xs leading-snug text-muted">{option.hint}</span>
+          </span>
+          {#if current}
+            <Icon name="check" size={12} class="mt-1 shrink-0 text-accent-text" />
+          {/if}
+        </button>
+      {/each}
+    </div>
+  {/if}
+{/if}

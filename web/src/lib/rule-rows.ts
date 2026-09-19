@@ -55,6 +55,7 @@ export interface ChoiceRow {
       | 'restart'
       | 'history'
       | 'opens'
+      | 'ownBooks'
     )
   title: string
   note: string
@@ -146,6 +147,25 @@ export const RULE_ROWS: RuleRow[] = [
     get title() { return tr('room.ui.1142') },
     get note() { return tr('room.ui.1143') },
     options: [EVERYONE, TEACHER],
+  },
+  {
+    kind: 'choice',
+    key: 'ownBooks',
+    /*
+     * Сразу ПОСЛЕ файлов, и это место выбрано: два правила стоят рядом именно
+     * затем, чтобы разница между ними читалась с одного взгляда. Строка выше —
+     * про общую папку занятия; эта — про собственную тетрадь участника, файл
+     * которой пишет сервер проекцией. Их и путают: «я же разрешил файлы».
+     */
+    get title() { return tr('room.rules.ownBooks.title') },
+    // Подсказка называет и умолчание: «по умолчанию выключено» — это половина
+    // ответа на вопрос, с которым сюда приходят («а почему у него нельзя?»), и
+    // без неё переключатель читается как испорченный.
+    get note() { return tr('room.rules.ownBooks.note') },
+    options: [
+      { value: 'off', get label() { return tr('room.rules.ownBooks.off') } },
+      { value: 'on', get label() { return tr('room.rules.ownBooks.on') } },
+    ],
   },
   {
     kind: 'choice',

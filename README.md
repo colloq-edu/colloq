@@ -119,7 +119,16 @@ how the room takes part. In any preset, a cell can be:
 <details>
 <summary><strong>Room rules and teacher access</strong></summary>
 
-Whatever the card sets, the room can change what opening a cell does; who edits a cell's text; who runs code; who changes the structure; who can put a document on the room's screen; who may create and edit files; whether the Oracle may act on the room's files; actions per request; questions per hour; seconds between questions; who may read the history; who may restart the kernel; and who may wipe shared work. The source of these settings is [rule-rows.ts](web/src/lib/rule-rows.ts).
+Whatever the card sets, the room can change what opening a cell does; who edits a cell's text; who runs code; who changes the structure; who can put a document on the room's screen; who may create and edit files; whether a student may start their own notebook; whether the Oracle may act on the room's files; actions per request; questions per hour; seconds between questions; who may read the history; who may restart the kernel; and who may wipe shared work. The source of these settings is [rule-rows.ts](web/src/lib/rule-rows.ts).
+
+A room holds several notebooks, and each one also has an access of its own —
+**as in the room**, **personal** (its author and the teacher work in it),
+**open to everyone**, or **teacher only** — set from the **Access** menu on the
+notebook's tab. It overrides editing, running and structure for that notebook
+alone; files, the terminal and the shared screen stay shared by the room.
+Whether a student may start their own notebook at all is a separate rule, off by
+default — the teacher grants the rights, not the student — and an own notebook
+is personal from the moment it is created.
 
 Whether the oracle answers in this room is chosen on the creation form: **As set for the instance**, **Off**, **Hints only** or **Full answers**. It is not one of those rows and cannot be changed later in the room settings. Room limits can tighten the instance settings, never loosen them.
 

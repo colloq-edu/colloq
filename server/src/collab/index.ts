@@ -1294,6 +1294,13 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
             getRules(entry.sessionId),
             state?.role ?? 'participant',
             isFinished(entry.sessionId),
+            /*
+             * Кто прислал кадр — ради личных тетрадей: только по этому имени
+             * видно, своя перед человеком тетрадь или чужая (shared/rules.ts ·
+             * BookRule.owner). Сокет без имени — заведомо не автор, и отказ
+             * получает он, а не соседняя личная тетрадь.
+             */
+            state?.participantId ?? null,
           )
           if (!verdict.ok) return refuse(entry, conn, verdict)
           /*

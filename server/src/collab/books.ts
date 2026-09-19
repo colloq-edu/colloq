@@ -27,6 +27,7 @@ import {
   allCellArrays,
   bookAt,
   bookCells,
+  bookList,
   BOOKS_KEY,
   CELLS_KEY,
   createCell,
@@ -39,7 +40,9 @@ import {
 } from '@shared/notebook'
 import { parseIpynb, writeIpynb, type FlatCell } from '@shared/ipynb'
 import { baseOf, isInside, kindOf } from '@shared/paths'
+import { MAX_BOOK_OWNER_NAME, MAX_OWN_BOOKS, type BookRule } from '@shared/rules'
 import { shelveCellImages, withInlinedImages } from '../notebook-images.js'
+import { getRules, isFinished, setRules, storedRules } from '../db.js'
 import { getSessionDoc, peekSessionDoc } from './index.js'
 import { makeFile, readText, statPath, writeText } from '../workspace.js'
 
@@ -226,6 +229,137 @@ function touchesBooks(doc: Y.Doc, transaction: Y.Transaction): boolean {
   return hit
 }
 
+/* ------------------------------------------------- кто завёл эту тетрадь */
+
+/**
+ * Кто заводит тетрадь — на случай, если это не преподаватель.
+ *
+ * Не `TokenPayload` и не участник из базы: сюда доезжает ровно столько, сколько
+ * нужно записи об авторе, и ни строкой больше. Имя берётся НА ЭТОТ МОМЕНТ —
+ * см. `BookRule.ownerName`, там объяснено, почему его не ищут потом.
+ */
+export interface BookAuthor {
+  participantId: string
+  name: string
+  role: 'host' | 'participant'
+}
+
+let rulesChanged: ((sessionId: string) => void) | null = null
+
+/**
+ * Кому сказать, что правила комнаты поменялись сами.
+ *
+ * Регистрирует control.ts — тем же способом, что и `onBooksWritten` выше, и по
+ * той же причине: рассылка живёт в control.ts, а control.ts импортирует этот
+ * модуль. Прямой вызов замкнул бы круг импортов.
+ */
+export function onBookRulesChanged(listener: (sessionId: string) => void): void {
+  rulesChanged = listener
+}
+
+/**
+ * Одна дверь на все способы завести в комнате тетрадь.
+ *
+ * Способов четыре — пустая тетрадь из дерева, внесение положенного в папку
+ * .ipynb, то же самое руками оракула и импорт, — и правило у них одно: свои
+ * тетради студентам либо разрешены, либо нет (shared/rules.ts · ownBooks).
+ * Проверка живёт здесь, а не у каждой двери, ровно поэтому: четыре копии
+ * одного вопроса — это три места, где однажды забудут спросить.
+ *
+ * Возвращает ПРИЧИНУ отказа или `null`, если можно. Причина человеческая:
+ * кнопка, молча ничего не делающая, читается как поломка.
+ *
+ * Преподаватель проходит насквозь: правила про то, что можно КЛАССУ.
+ */
+function whyNotAddBook(sessionId: string, doc: Y.Doc, by: BookAuthor): string | null {
+  if (by.role === 'host') return null
+  /*
+   * Действующие правила, а не хранимые: после звонка `ownBooks` приезжает
+   * выключенным (shared/rules.ts · rulesAfterClass), и отдельной проверки на
+   * конец занятия здесь нет намеренно — она была бы второй копией той же
+   * границы. Слова при этом свои: человеку важно, что пара кончилась.
+   */
+  if (isFinished(sessionId)) return tr('server.classOverPeriod')
+  if (getRules(sessionId).ownBooks !== 'on') return tr('server.ownBooksAreOff')
+  const mine = ownBooksOf(sessionId, doc, by.participantId)
+  if (mine >= MAX_OWN_BOOKS) {
+    return tr('server.ownBooksLimit', { p0: MAX_OWN_BOOKS })
+  }
+  return null
+}
+
+/**
+ * Сколько СВОИХ тетрадей у этого человека сейчас в комнате.
+ *
+ * По живым записям: тетрадь, которую убрали, потолка не занимает — иначе три
+ * черновика за семестр запирали бы студента навсегда. Считается по карте
+ * правил, а не по файлам: автор живёт там (`BookRule.owner`), и только там.
+ */
+export function ownBooksOf(sessionId: string, doc: Y.Doc, participantId: string): number {
+  const books = liveBookRules(doc, storedRules(sessionId).books)
+  return Object.values(books).filter((rule) => rule.owner === participantId).length
+}
+
+/**
+ * Записать автора только что заведённой тетради.
+ *
+ * Пишет СЕРВЕР и только для не-преподавателя: тетрадь, заведённую
+ * преподавателем, автором не подписывают — он и так может в ней всё, а строка
+ * «личная тетрадь: Иван Петрович» в меню была бы предложением отнять тетрадь у
+ * самого себя. Такая тетрадь остаётся «как в комнате», и это же достаётся
+ * тетрадям, заведённым студентами до появления этой записи.
+ *
+ * Доступ у своей тетради студента — сразу `owner`, и другого значения у неё
+ * нет: «своя тетрадь» и «личная» — это одно и то же право, разрешает его
+ * `ownBooks`, а сюда мы доходим уже разрешёнными (`whyNotAddBook`).
+ * Преподаватель потом меняет доступ любой тетради из меню.
+ *
+ * Заодно карта чистится от корней, которых в документе больше нет: тетрадь
+ * убирают из комнаты щелчком по файлу, а правила лежат в базе и сами об этом не
+ * узнают. Чистка ровно здесь и в `dropBook` — то есть в обоих местах, где карта
+ * и список тетрадей расходятся.
+ */
+function rememberAuthor(sessionId: string, doc: Y.Doc, root: string, by: BookAuthor): void {
+  if (by.role === 'host') return
+  const stored = storedRules(sessionId)
+  const rule: BookRule = {
+    access: 'owner',
+    owner: by.participantId,
+    ownerName: by.name.trim().slice(0, MAX_BOOK_OWNER_NAME) || null,
+  }
+  setRules(sessionId, { ...stored, books: { ...liveBookRules(doc, stored.books), [root]: rule } })
+  rulesChanged?.(sessionId)
+}
+
+/**
+ * Своя ли это личная тетрадь — и вправе ли этот человек её убрать.
+ *
+ * Убирать тетради из комнаты — право преподавателя, и оно остаётся; здесь одно
+ * исключение, без которого «своя тетрадь» была бы полуправдой: черновик,
+ * который завёл ты сам и который считается против твоего же потолка, обязан
+ * убираться тобой. Чужую личную — нет, тетрадь комнаты — нет.
+ */
+export function ownsBookAt(sessionId: string, path: string, participantId: string): boolean {
+  const doc = peekSessionDoc(sessionId)?.doc
+  if (!doc) return false
+  const book = bookAt(doc, path)
+  if (!book) return false
+  const rule = storedRules(sessionId).books?.[book.root]
+  return rule?.access === 'owner' && rule.owner === participantId
+}
+
+/** Записи карты, у которых в документе ещё есть тетрадь. */
+function liveBookRules(
+  doc: Y.Doc,
+  books: Record<string, BookRule> | undefined,
+): Record<string, BookRule> {
+  if (!books) return {}
+  const alive = new Set(bookList(doc).map((book) => book.root))
+  const out: Record<string, BookRule> = {}
+  for (const [root, rule] of Object.entries(books)) if (alive.has(root)) out[root] = rule
+  return out
+}
+
 /* ------------------------------------------------------- внести в комнату */
 
 export type OpenBookResult =
@@ -240,10 +374,16 @@ export type OpenBookResult =
  * проекцией. Это односторонняя дверь, и в интерфейсе она названа открытием — то
  * есть тем, чем и является для человека.
  */
-export function openBook(sessionId: string, path: string): OpenBookResult {
+export function openBook(sessionId: string, path: string, by?: BookAuthor): OpenBookResult {
   const { doc } = getSessionDoc(sessionId)
   const known = bookAt(doc, path)
+  // Уже внесённая — просто открывается: право спрашивают у того, кто ДОБАВЛЯЕТ
+  // тетрадь в комнату, а не у того, кто смотрит уже добавленную.
   if (known) return { ok: true, book: known, imported: false }
+  if (by) {
+    const why = whyNotAddBook(sessionId, doc, by)
+    if (why) return { ok: false, why }
+  }
   if (kindOf(path) !== 'notebook') return { ok: false, why: tr("server.isNotANotebook.084f7a", { p0: baseOf(path) }) }
 
   const source = readBookText(sessionId, path)
@@ -265,6 +405,13 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
   }
 
   let made: Book | null = null
+  /*
+   * Корень — отдельной переменной, а не через `made`: проверка типов не верит,
+   * что обратный вызов транзакции уже отработал, и сужает `made` до `never`
+   * сразу после `if (!made) return`. Это видно и на строке ниже, где `made`
+   * уезжает в ответ как есть.
+   */
+  let root = ''
   doc.transact(() => {
     /*
      * Корень у новой тетради свой, и из пути он больше не выводится: путь
@@ -277,6 +424,7 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
      */
     const book = addBook(doc, path, rootForNewBook(doc))
     made = book
+    root = book.root
     const cells = bookCells(doc, book.root)
     if (cells.length === 0) {
       /*
@@ -295,6 +443,13 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
     }
   }, ORIGIN)
   if (!made) return { ok: false, why: tr("server.couldNotOpenTheNotebook.be7a27") }
+  /*
+   * Автор записывается ЗДЕСЬ, а не в дереве файлов, потому что здесь известен
+   * корень: доступ к тетради живёт по корню, и другого места, где он рождается,
+   * в продукте нет. Уже внесённая тетрадь сюда не доходит (возврат выше), так
+   * что второй человек, открывший тот же файл, автора не переписывает.
+   */
+  if (by) rememberAuthor(sessionId, doc, root, by)
   schedule(sessionId)
   return { ok: true, book: made, imported: true }
 }
@@ -328,11 +483,20 @@ function readBookText(sessionId: string, path: string): { text: string } | { why
 }
 
 /** Завести пустую тетрадь по этому пути: файл и запись в комнате. */
-export function createBook(sessionId: string, path: string): OpenBookResult {
+export function createBook(sessionId: string, path: string, by?: BookAuthor): OpenBookResult {
+  /*
+   * Право — ДО файла, а не после. `openBook` ниже спросит то же самое, но к
+   * тому времени пустой .ipynb уже лежал бы на диске: отказ, оставляющий за
+   * собой файл, хуже отказа.
+   */
+  if (by) {
+    const why = whyNotAddBook(sessionId, getSessionDoc(sessionId).doc, by)
+    if (why) return { ok: false, why }
+  }
   if (statPath(sessionId, path)) return { ok: false, why: tr("server.alreadyExists.e348cc", { p0: baseOf(path) }) }
   const made = makeFile(sessionId, path, writeIpynb([]))
   if (made !== 'ok') return { ok: false, why: tr("server.couldNotCreate.0cfbaa", { p0: baseOf(path) }) }
-  return openBook(sessionId, path)
+  return openBook(sessionId, path, by)
 }
 
 /**
@@ -370,6 +534,7 @@ export function dropBook(sessionId: string, path: string): void {
   doc.transact(() => {
     for (const known of gone) removeBook(doc, known)
   }, ORIGIN)
+  forgetBookRules(sessionId, doc)
 }
 
 /**
@@ -422,9 +587,30 @@ export function forgetMissingBooks(sessionId: string): string[] {
     doc.transact(() => {
       for (const path of gone) removeBook(doc, path)
     }, ORIGIN)
+    forgetBookRules(sessionId, doc)
   }
   if (gone.length < missing.length) schedule(sessionId)
   return gone
+}
+
+/**
+ * Снять записи о доступе с тетрадей, которых в комнате больше нет.
+ *
+ * Тетрадь убрали — вместе с ней уходит и «личная тетрадь Акима»: корень `nb:`
+ * второй раз не выдаётся (shared/notebook.ts · rootForNewBook), так что
+ * оставленная запись не досталась бы никому, а просто лежала бы в базе и ехала
+ * бы в каждый сокет комнаты до конца семестра.
+ *
+ * Молча, когда снимать нечего: `setRules` — это запись в SQLite и сброс кэша
+ * правил, а `dropBook` зовут и с обычного файла, и с папки.
+ */
+function forgetBookRules(sessionId: string, doc: Y.Doc): void {
+  const stored = storedRules(sessionId)
+  if (!stored.books) return
+  const live = liveBookRules(doc, stored.books)
+  if (Object.keys(live).length === Object.keys(stored.books).length) return
+  setRules(sessionId, { ...stored, books: live })
+  rulesChanged?.(sessionId)
 }
 
 /** Текст ячеек тетради — для оракула и для всего, что читает её как текст. */

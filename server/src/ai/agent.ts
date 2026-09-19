@@ -88,9 +88,12 @@ import {
   allows,
   allowsRun,
   allowsStructure,
+  bookRefusal,
   mayEditCell,
+  rulesForBook,
   runQueueCap,
   CLASS_IS_OVER,
+  type Asker,
   type RoomRules,
 } from '@shared/rules'
 import { applyOnBehalf, getSessionDoc, peekSessionDoc } from '../collab/index.js'
@@ -676,7 +679,7 @@ function readNotebookTool(): ToolSpec {
  */
 export function toolsFor(hands: Hands): ToolSpec[] {
   const doc = peekSessionDoc(hands.sessionId)?.doc
-  const rights = doc ? rightsFor(hands, doc) : { edit: false, add: false, remove: false }
+  const rights = doc ? anyCellRights(hands, doc) : { edit: false, add: false, remove: false }
   const cells = cellTools().filter((tool) =>
     tool.name === 'edit_cell' ? rights.edit : tool.name === 'add_cell' ? rights.add : rights.remove,
   )
@@ -690,7 +693,11 @@ export function toolsFor(hands: Hands): ToolSpec[] {
    */
   const rules: RoomRules = getRules(hands.sessionId)
   const mayWrite = allows(rules.files, hands.role)
+  // Запуск ячейки — «хоть где-нибудь»: своя тетрадь считает и в лекции.
+  // Запуск ФАЙЛА остаётся комнатным: скрипт из дерева — это ядро комнаты, а
+  // не чья-то тетрадь, и личная тетрадь его не открывает.
   const mayRun = allowsRun(rules.run, hands.role, 'one')
+  const mayRunCells = mayRunAnyBook(hands, doc)
   const files = fileTools().filter((tool) =>
     tool.name === 'write_file' || tool.name === 'edit_file'
       ? mayWrite
@@ -704,7 +711,7 @@ export function toolsFor(hands: Hands): ToolSpec[] {
     // тетрадь осталась бы пустой навсегда.
     ...(mayWrite && rights.add ? [createNotebookTool()] : []),
     readNotebookTool(),
-    ...(mayRun ? [runCellTool()] : []),
+    ...(mayRunCells ? [runCellTool()] : []),
     ...cells,
   ]
 }
@@ -942,7 +949,7 @@ async function runTool(
      */
     if (kindOf(wanted) === 'notebook') {
       const doc = peekSessionDoc(hands.sessionId)?.doc
-      const rights = doc ? rightsFor(hands, doc) : null
+      const rights = doc ? anyCellRights(hands, doc) : null
       const mine = isBookFile(hands.sessionId, wanted)
       const mayEditCells = Boolean(rights && (rights.edit || rights.add || rights.remove))
       return {
@@ -1281,7 +1288,16 @@ function createNotebook(hands: Hands, wanted: string): Ran {
     }
   }
   const path = kindOf(wanted) === 'notebook' ? wanted : `${wanted}.ipynb`
-  const made = createBook(hands.sessionId, path)
+  /*
+   * Автор — тот, кто попросил ход, а не оракул: тетрадь, заведённая по просьбе
+   * студента, принадлежит студенту ровно так же, как если бы он нажал «новый
+   * файл» сам. Преподавателя `createBook` отсеет по роли.
+   */
+  const made = createBook(hands.sessionId, path, {
+    participantId: hands.by.participantId,
+    name: hands.by.name,
+    role: hands.role,
+  })
   if (!made.ok) {
     return {
       step: note(made.why, path),
@@ -1353,7 +1369,13 @@ async function runCell(
       said: tr('server.agent.onlyCodeCellsRun', { p0: label }),
     }
   }
-  const rules = getRules(hands.sessionId)
+  /*
+   * Правила ТОЙ тетради, где ячейка лежит: в собственной тетради студент
+   * считает и посреди лекции, а в чужой личной — не считает и в открытой
+   * комнате. Ядро при этом одно на всех, и очередь к нему общая: потолок
+   * очереди (`runQueueCap`) остаётся комнатным.
+   */
+  const rules = rulesForBook(getRules(hands.sessionId), home.root, askerOf(hands))
   /*
    * Мерка — одна ячейка (`'one'`), та же, что у `run_file`: запуск ячейки по
    * просьбе человека стоит ровно столько же, сколько его собственное нажатие.
@@ -1362,7 +1384,7 @@ async function runCell(
     return {
       step: note(tr("server.onlyTheTeacherMayRunCode.59bbe2"), id),
       failed: true,
-      said: refuseCells(hands, tr("server.onlyTheTeacherRunsCellsInThis.21ec54")),
+      said: refuseCells(hands, tr("server.onlyTheTeacherRunsCellsInThis.21ec54"), home.root),
     }
   }
   /*
@@ -1607,14 +1629,62 @@ interface CellRights {
  * На вопрос «эту ли ячейку» отвечает `mayEditCell` у самой ячейки, перед
  * записью.
  */
-function rightsFor(hands: Hands, doc: Y.Doc): CellRights {
-  const rules: RoomRules = getRules(hands.sessionId)
+function rightsFor(hands: Hands, doc: Y.Doc, root: string | null = null): CellRights {
+  /*
+   * Правила ТОЙ тетради, о которой речь, — той же функцией, что и везде
+   * (shared/rules.ts · rulesForBook). Оракул здесь руки просящего, и руки у
+   * него в личной тетради те же, что и у него самого: свою он правит и в
+   * лекции, чужую не правит и в открытой комнате.
+   *
+   * `root` по умолчанию `null` — «тетрадь не названа», правила комнаты. Такой
+   * ответ нужен ровно одному месту: списку инструментов, и тот спрашивает не
+   * этим, а `anyCellRights` ниже.
+   */
+  const rules: RoomRules = rulesForBook(getRules(hands.sessionId), root, askerOf(hands))
   const finished = isFinished(hands.sessionId)
   return {
     edit: mayEditCell(rules, hands.role, hasOpenCell(doc), finished),
     add: allowsStructure(rules.structure, hands.role, 'add'),
     remove: allowsStructure(rules.structure, hands.role, 'remove'),
   }
+}
+
+/** Кто просит — в той форме, в какой это читают правила тетради. */
+function askerOf(hands: Hands): Asker {
+  return { role: hands.role, participantId: hands.by.participantId }
+}
+
+/**
+ * Есть ли этому человеку что править ХОТЬ В ОДНОЙ тетради комнаты.
+ *
+ * Вопрос списка инструментов, а не проверки: инструмент, который откажет
+ * всегда, не стоит шага хода на то, чтобы узнать заранее известное правило, —
+ * но спрятать `edit_cell` у студента, которому открыли собственную тетрадь,
+ * значит оставить его без оракула ровно там, где он работает. Поэтому «или»
+ * по всем тетрадям, а «эту ли» решает `rightsFor` у самой ячейки, перед
+ * записью.
+ */
+function anyCellRights(hands: Hands, doc: Y.Doc): CellRights {
+  const out = rightsFor(hands, doc)
+  for (const book of bookList(doc)) {
+    if (out.edit && out.add && out.remove) break
+    const here = rightsFor(hands, doc, book.root)
+    out.edit ||= here.edit
+    out.add ||= here.add
+    out.remove ||= here.remove
+  }
+  return out
+}
+
+/** То же про запуск: есть ли хоть одна тетрадь, где этот человек считает. */
+function mayRunAnyBook(hands: Hands, doc: Y.Doc | undefined): boolean {
+  const rules = getRules(hands.sessionId)
+  if (allowsRun(rules.run, hands.role, 'one')) return true
+  if (!doc) return false
+  const who = askerOf(hands)
+  return bookList(doc).some((book) =>
+    allowsRun(rulesForBook(rules, book.root, who).run, hands.role, 'one'),
+  )
 }
 
 function hasOpenCell(doc: Y.Doc): boolean {
@@ -1631,8 +1701,16 @@ function hasOpenCell(doc: Y.Doc): boolean {
  * «занятие кончилось» неотличимы, а человеку надо сказать второе — иначе он
  * пойдёт искать преподавателя, который ничего не менял.
  */
-function refuseCells(hands: Hands, own: string): string {
-  return actsAfterClass(isFinished(hands.sessionId), hands.role) ? own : tr(CLASS_IS_OVER)
+function refuseCells(hands: Hands, own: string, root: string | null = null): string {
+  if (!actsAfterClass(isFinished(hands.sessionId), hands.role)) return tr(CLASS_IS_OVER)
+  /*
+   * И слова САМОЙ ТЕТРАДИ, когда закрыла она, а не комната: «в этом семинаре
+   * печатает преподаватель» про чужую личную тетрадь отправляет модель
+   * объяснять человеку не то — и человека к преподавателю, который ничего не
+   * запрещал.
+   */
+  const book = bookRefusal(getRules(hands.sessionId), root, askerOf(hands))
+  return book ? tr(book.key, { p0: book.name }) : own
 }
 
 /** Тетрадь комнаты — та, что сидит на корне `cells` и умеет в историю версий. */
@@ -1848,9 +1926,16 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
   const home = bookOfCells(doc, found.cells)
   if (!home) return missingCell(id)
 
+  /*
+   * По правилам ТОЙ тетради, в которой ячейка лежит, и по замку ЭТОЙ ячейки.
+   *
+   * Не через `rightsFor`: тот отвечает на вопрос списка инструментов — «есть ли
+   * вообще что править», и замок у него общий по документу. Здесь вопрос про
+   * одну ячейку, и замок у неё свой.
+   */
   if (
     !mayEditCell(
-      getRules(hands.sessionId),
+      rulesForBook(getRules(hands.sessionId), home.root, askerOf(hands)),
       hands.role,
       isCellOpen(found.cell),
       isFinished(hands.sessionId),
@@ -1862,6 +1947,7 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
         hands,
         tr("server.onlyTheTeacherMayEditThisSeminar.91645c") +
           tr("server.explainWhatShouldBeChangedInYour.c7378b"),
+        home.root,
       ),
     }
   }
@@ -1940,12 +2026,13 @@ function addCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
     at = cells.length
   }
 
-  if (!rightsFor(hands, doc).add) {
+  if (!rightsFor(hands, doc, home.root).add) {
     return {
       step: note(tr("server.onlyTheTeacherMayAddCells.264967"), home.path),
       said: refuseCells(
         hands,
         tr("server.onlyTheTeacherMayAddCellsIn.423ddc"),
+        home.root,
       ),
     }
   }
@@ -1978,12 +2065,13 @@ function removeCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ra
   const home = bookOfCells(doc, found.cells)
   if (!home) return missingCell(id)
 
-  if (!rightsFor(hands, doc).remove) {
+  if (!rightsFor(hands, doc, home.root).remove) {
     return {
       step: note(tr("server.onlyTheTeacherMayRemoveCells.d98982"), id),
       said: refuseCells(
         hands,
         tr("server.onlyTheTeacherMayRemoveCellsIn.6cf98f"),
+        home.root,
       ),
     }
   }

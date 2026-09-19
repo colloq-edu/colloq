@@ -31,6 +31,7 @@ import { WebSocket, type RawData } from 'ws'
 import {
   acceptPatch,
   allCellArrays,
+  bookAt,
   bookList,
   cellId,
   cellLock,
@@ -46,10 +47,12 @@ import {
   getCells,
   getMeta,
   isCellOpen,
+  mainRoot,
   MAX_ATTEMPT_CHARS,
   openValueFor,
   readCouncilSettings,
   rejectPatch,
+  rootOfCell,
   type CellLock,
   type CouncilSettings,
   type KernelStatus,
@@ -83,13 +86,17 @@ import {
   allowsAgent,
   allowsRun,
   allowsStructure,
+  bookRefusal,
   CLASS_IS_OVER,
   mayEditCell,
   mayLeadCouncil,
   mayRunCell,
   mayRunCouncil,
   mayWriteCouncil,
+  rulesForBook,
   runQueueCap,
+  type Asker,
+  type RoomRules,
   type Who,
 } from '@shared/rules'
 import {
@@ -215,8 +222,11 @@ import {
   dropBook,
   forgetMissingBooks,
   moveBook,
+  onBookRulesChanged,
   onBooksWritten,
   openBook,
+  ownsBookAt,
+  type BookAuthor,
 } from './collab/books.js'
 import { stopAll, undoTurn } from './ai/agent.js'
 import { onCouncilOracle } from './ai/council.js'
@@ -1052,6 +1062,18 @@ onFileSaved((sessionId, _path, origin) => {
  * загрузки: проекция пишется сама, а сказать об этом некому.
  */
 onBooksWritten((sessionId) => scheduleFiles(sessionId))
+
+/*
+ * Сервер поменял правила сам — комната узнаёт об этом сейчас же.
+ *
+ * Это случается ровно дважды: студент завёл себе тетрадь (сервер записал её
+ * автора) и тетрадь убрали из комнаты (запись о ней снялась). Без рассылки
+ * меню «Доступ» у преподавателя не увидело бы имени автора до перезагрузки
+ * вкладки — то есть ровно в ту минуту, когда он собирается сделать тетрадь
+ * личной. Едут ВЫБРАННЫЕ правила, как и во всех остальных рассылках: конец
+ * занятия браузер накладывает сам (web/src/lib/may.ts).
+ */
+onBookRulesChanged((sessionId) => broadcast(sessionId, { t: 'rules', rules: storedRules(sessionId) }))
 
 // Registered once, at import: the kernel runtime has no idea who is listening.
 onWorkspaceChanged((sessionId) => {
@@ -1959,6 +1981,87 @@ function refuse(ws: WebSocket, sessionId: string, payload: TokenPayload, message
  */
 const RUN_IS_THE_TEACHERS = () => tr("server.onlyTheTeacherRunsCellsInThis.21ec54")
 
+/* ------------------------------------------- правила ОТДЕЛЬНОЙ тетради */
+
+/**
+ * Кто спрашивает — в той форме, в какой это читают правила тетради.
+ *
+ * Имя нужно ровно одному вопросу: его ли это личная тетрадь (shared/rules.ts ·
+ * BookRule.owner). Всё остальное решается ролью, как и решалось.
+ */
+function asker(payload: TokenPayload): Asker {
+  return { role: payload.role, participantId: payload.participantId }
+}
+
+/**
+ * Кто заводит тетрадь — для записи об авторе.
+ *
+ * Имя берётся здесь, в момент заведения, а не ищется потом: тетрадь переживает
+ * семестр, участника из базы могли и убрать, и «личная тетрадь: —» не объясняет
+ * ничего (shared/rules.ts · BookRule.ownerName). Преподавателя запись не
+ * касается — `rememberAuthor` отсеивает его сам, и роль едет сюда ровно затем.
+ */
+function authorOf(sessionId: string, payload: TokenPayload): BookAuthor {
+  return {
+    participantId: payload.participantId,
+    name: displayName(sessionId, payload.participantId),
+    role: payload.role,
+  }
+}
+
+/**
+ * Корень тетради, в которой лежит эта ячейка.
+ *
+ * `null` — такой ячейки в комнате нет. Тогда права решают правила комнаты, и
+ * отказ говорит про них: рассуждать о доступе к тетради, которой у ячейки нет,
+ * не о чем.
+ */
+function rootOf(sessionId: string, cellId: string): string | null {
+  return rootOfCell(getSessionDoc(sessionId).doc, cellId)
+}
+
+/**
+ * Корень НАЗВАННОЙ тетради — или тетради комнаты, если её не назвали.
+ *
+ * Без имени подразумевается первая тетрадь: так читаются сообщения вкладок,
+ * открытых до того, как тетрадей стало несколько (см. `bookOf`). `null` —
+ * названа тетрадь, которой в комнате нет; зовущий отвечает на это своим
+ * NO_SUCH_BOOK, а не молча правилами комнаты.
+ */
+function rootOfBook(sessionId: string, book: string | undefined): string | null {
+  const doc = getSessionDoc(sessionId).doc
+  return book ? (bookAt(doc, book)?.root ?? null) : mainRoot(doc)
+}
+
+/**
+ * Действующие правила ОДНОЙ тетради для ЭТОГО человека.
+ *
+ * Та же функция, которой считает серые кнопки браузер и судит кадры гейт
+ * (shared/rules.ts · rulesForBook). Второй копии развилки «чья это тетрадь» в
+ * продукте нет намеренно — расходятся такие копии молча и в сторону кнопки,
+ * которая нажимается и приносит отказ.
+ */
+function rulesIn(sessionId: string, payload: TokenPayload, root: string | null): RoomRules {
+  return rulesForBook(getRules(sessionId), root, asker(payload))
+}
+
+/**
+ * Слова отказа: тетради, когда отказала она, и комнаты во всех прочих случаях.
+ *
+ * «В этом семинаре запускает преподаватель», сказанное про чужую личную
+ * тетрадь, отправляет человека к преподавателю, который ничего не запрещал.
+ * Конец занятия поверх этого накладывает `refuse` — одной фразой на всё.
+ */
+function whyIn(
+  sessionId: string,
+  payload: TokenPayload,
+  root: string | null,
+  own: string,
+): string {
+  const book = bookRefusal(getRules(sessionId), root, asker(payload))
+  return book ? tr(book.key, { p0: book.name }) : own
+}
+
 /**
  * May this person start the kernel on something?
  *
@@ -1976,6 +2079,12 @@ const RUN_IS_THE_TEACHERS = () => tr("server.onlyTheTeacherRunsCellsInThis.21ec5
  * важнее, чем кажется: тем же helper'ом спрашивают Run All, запуск файла и
  * команду оболочки, а открытая ячейка ни листа, ни терминала не открывает —
  * она открыта одна и ровно одна.
+ *
+ * `root` — тетрадь, в которую метит нажатие: у неё может быть свой доступ, и
+ * тогда правило комнаты подменяется им (`rulesIn`). Умолчание `null` — «речь не
+ * про тетрадь», и его берут `file:run` и `term:run`: скрипт из дерева и команда
+ * в общей оболочке — это ядро комнаты, а не чья-то тетрадь, и открывать их
+ * личной тетрадью было бы дырой ровно в том правиле, ради которого она заведена.
  */
 function mayRun(
   sessionId: string,
@@ -1983,9 +2092,12 @@ function mayRun(
   ws: WebSocket,
   message = RUN_IS_THE_TEACHERS(),
   cellOpen = false,
+  root: string | null = null,
 ): boolean {
-  if (mayRunCell(getRules(sessionId), payload.role, cellOpen, isFinished(sessionId))) return true
-  refuse(ws, sessionId, payload, message)
+  if (mayRunCell(rulesIn(sessionId, payload, root), payload.role, cellOpen, isFinished(sessionId))) {
+    return true
+  }
+  refuse(ws, sessionId, payload, whyIn(sessionId, payload, root, message))
   return false
 }
 
@@ -2018,8 +2130,18 @@ function mayEditThis(
   cellId: string,
 ): boolean {
   const open = cellIsOpen(sessionId, cellId)
-  if (mayEditCell(getRules(sessionId), payload.role, open, isFinished(sessionId))) return true
-  refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayEditTheNotebook.d8abb3"))
+  // И по правилам ТОЙ ТЕТРАДИ, в которой ячейка лежит: у личной тетради свой
+  // ответ на «кто здесь печатает», и он сильнее комнатного в обе стороны.
+  const root = rootOf(sessionId, cellId)
+  if (mayEditCell(rulesIn(sessionId, payload, root), payload.role, open, isFinished(sessionId))) {
+    return true
+  }
+  refuse(
+    ws,
+    sessionId,
+    payload,
+    whyIn(sessionId, payload, root, tr("server.onlyTheTeacherMayEditTheNotebook.d8abb3")),
+  )
   return false
 }
 
@@ -2030,13 +2152,21 @@ function mayEditThis(
  * забили очередь на восемьсот ячеек» ровно здесь. «По одной» разрешает нажать
  * на ячейке и запрещает Run All.
  */
-function mayBulkRun(sessionId: string, payload: TokenPayload, ws: WebSocket): boolean {
-  if (allowsRun(getRules(sessionId).run, payload.role, 'bulk')) return true
+function mayBulkRun(
+  sessionId: string,
+  payload: TokenPayload,
+  ws: WebSocket,
+  root: string | null = null,
+): boolean {
+  // Весь лист — это лист ОДНОЙ тетради, и спрашивать надо у неё: Run All в
+  // своей личной тетради не должен упираться в лекционное правило комнаты,
+  // а в чужой личной — не должен проходить при открытой.
+  if (allowsRun(rulesIn(sessionId, payload, root).run, payload.role, 'bulk')) return true
   refuse(
     ws,
     sessionId,
     payload,
-    tr("server.onlyTheTeacherMayRunTheWhole.8359b5"),
+    whyIn(sessionId, payload, root, tr("server.onlyTheTeacherMayRunTheWhole.8359b5")),
   )
   return false
 }
@@ -2385,7 +2515,13 @@ function mayComplete(sessionId: string, payload: TokenPayload, cellId?: unknown)
   if (id && councilCellOf(sessionId, id).lock === 'council') {
     return mayWriteCouncil(payload.role, isFinished(sessionId), false)
   }
-  return mayRunCell(getRules(sessionId), payload.role, false, isFinished(sessionId))
+  /*
+   * «Право = запуск» — и запуск в ТОЙ ТЕТРАДИ, где набирают. Иначе подсказки
+   * молчали бы в собственной тетради студента посреди лекции: он там пишет и
+   * считает, а дополнение отвечало бы пустотой, потому что комната закрыта.
+   */
+  const root = id ? rootOf(sessionId, id) : null
+  return mayRunCell(rulesIn(sessionId, payload, root), payload.role, false, isFinished(sessionId))
 }
 
 /**
@@ -2591,7 +2727,19 @@ export function dispatch(
        * документе. Проверка стояла до всякого знания о ячейке и потому не
        * могла его учесть. Отказ при этом остался одной фразой — той же самой.
        */
-      if (!mayRun(sessionId, payload, ws, RUN_IS_THE_TEACHERS(), cellIsOpen(sessionId, id))) return
+      if (
+        !mayRun(
+          sessionId,
+          payload,
+          ws,
+          RUN_IS_THE_TEACHERS(),
+          cellIsOpen(sessionId, id),
+          // И тетрадь этой ячейки: у личной свой ответ на «кто здесь запускает».
+          rootOf(sessionId, id),
+        )
+      ) {
+        return
+      }
       queue(ws, sessionId, payload, [id])
       return
     }
@@ -2625,9 +2773,21 @@ export function dispatch(
     }
 
     case 'runAll': {
-      if (!mayRun(sessionId, payload, ws)) return
-      if (!mayBulkRun(sessionId, payload, ws)) return
-      const ids = codeCellIds(sessionId, bookOf(message))
+      /*
+       * Тетрадь — раньше права, и это тот же порядок, что у `run` выше: право
+       * запускать здесь решает не только комната, но и доступ к НАЗВАННОЙ
+       * тетради, а узнать его можно, только разыскав её корень. Названная и
+       * несуществующая отвечает своей фразой, а не правилами комнаты.
+       */
+      const book = bookOf(message)
+      const root = rootOfBook(sessionId, book)
+      if (book && root === null) {
+        send(ws, { t: 'error', message: NO_SUCH_BOOK() })
+        return
+      }
+      if (!mayRun(sessionId, payload, ws, RUN_IS_THE_TEACHERS(), false, root)) return
+      if (!mayBulkRun(sessionId, payload, ws, root)) return
+      const ids = codeCellIds(sessionId, book)
       if (ids === null) {
         send(ws, { t: 'error', message: NO_SUCH_BOOK() })
         return
@@ -2639,9 +2799,16 @@ export function dispatch(
     case 'runAbove': {
       const id = optionalId(message.cellId)
       if (!id) return
-      if (!mayRun(sessionId, payload, ws)) return
-      if (!mayBulkRun(sessionId, payload, ws)) return
-      const ids = codeCellIds(sessionId, bookOf(message), id)
+      // По тетради, в которой нажали, — тот же довод, что у Run All.
+      const book = bookOf(message)
+      const root = rootOfBook(sessionId, book)
+      if (book && root === null) {
+        send(ws, { t: 'error', message: NO_SUCH_BOOK() })
+        return
+      }
+      if (!mayRun(sessionId, payload, ws, RUN_IS_THE_TEACHERS(), false, root)) return
+      if (!mayBulkRun(sessionId, payload, ws, root)) return
+      const ids = codeCellIds(sessionId, book, id)
       if (ids === null) {
         send(ws, { t: 'error', message: NO_SUCH_BOOK() })
         return
@@ -3270,17 +3437,6 @@ export function dispatch(
      */
     case 'tree:mkdir':
     case 'tree:new': {
-      if (
-        !may(
-          sessionId,
-          getRules(sessionId).files,
-          payload,
-          ws,
-          tr("server.onlyTheTeacherMayCreateFilesIn.a33c2f"),
-        )
-      ) {
-        return
-      }
       const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
       if (!wanted) {
         send(ws, { t: 'error', message: refusedPath(message.path) })
@@ -3291,14 +3447,32 @@ export function dispatch(
        * Заводится он сразу тетрадью: иначе человек получил бы файл, который
        * открывается редактором как строка JSON, и должен был бы догадаться,
        * что с ним делать.
+       *
+       * И правило у него СВОЁ — `ownBooks`, а не `files`, — поэтому ветка стоит
+       * выше проверки папки. Это не обход: `files` про общую папку занятия,
+       * куда кладут раздатку и решения, а своя тетрадь студента — про его
+       * собственную работу, и её файл пишет сервер проекцией. Лекция, где файлы
+       * преподавательские, а свои тетради разрешены, — обычная пара, и
+       * проверка в прежнем порядке делала такую пару невозможной.
        */
       if (message.t === 'tree:new' && kindOf(wanted) === 'notebook') {
-        const made = createBook(sessionId, wanted)
+        const made = createBook(sessionId, wanted, authorOf(sessionId, payload))
         if (!made.ok) {
           send(ws, { t: 'error', message: made.why })
           return
         }
         broadcastFiles(sessionId)
+        return
+      }
+      if (
+        !may(
+          sessionId,
+          getRules(sessionId).files,
+          payload,
+          ws,
+          tr("server.onlyTheTeacherMayCreateFilesIn.a33c2f"),
+        )
+      ) {
         return
       }
       const outcome =
@@ -3314,29 +3488,26 @@ export function dispatch(
     /*
      * Внести .ipynb в комнату.
      *
-     * Право то же, что и у заведения файла: тетрадь, внесённая в комнату,
-     * становится её частью — она попадает в снимок, в историю и на экран ко
-     * всем. Читать её глазами при этом может кто угодно и без этого: файл
+     * Это ДОБАВЛЕНИЕ тетради, а не чтение файла: внесённая тетрадь становится
+     * частью комнаты — попадает в снимок, в историю и на экран ко всем. Право
+     * у неё то же, что у «новой тетради», и спрашивает его одна дверь
+     * (collab/books.ts · whyNotAddBook), поэтому здесь проверки нет вовсе.
+     *
+     * Правило `files` сюда не годится, и раньше стояло именно оно: файл в
+     * папке и тетрадь в комнате — разные вещи. При `files: 'room'` и
+     * выключенных своих тетрадях положить .ipynb в папку можно, а внести его в
+     * комнату — нет; при `files: 'host'` и разрешённых — наоборот.
+     *
+     * Читать её глазами при этом может кто угодно и без этого: файл
      * скачивается, как любой другой.
      */
     case 'book:open': {
-      if (
-        !may(
-          sessionId,
-          getRules(sessionId).files,
-          payload,
-          ws,
-          tr("server.onlyTheTeacherMayOpenNotebooksIn.26080d"),
-        )
-      ) {
-        return
-      }
       const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
       if (!wanted) {
         send(ws, { t: 'error', message: refusedPath(message.path) })
         return
       }
-      const opened = openBook(sessionId, wanted)
+      const opened = openBook(sessionId, wanted, authorOf(sessionId, payload))
       if (!opened.ok) {
         send(ws, { t: 'error', message: opened.why })
         return
@@ -3439,13 +3610,22 @@ export function dispatch(
     }
 
     case 'tree:remove': {
-      if (payload.role !== 'host') {
-        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayRemoveAFile.77a4ef"))
-        return
-      }
       const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
       if (!wanted) {
         send(ws, { t: 'error', message: refusedPath(message.path) })
+        return
+      }
+      /*
+       * Убирают файлы из комнаты преподаватель — и автор СВОЕЙ личной тетради.
+       *
+       * Исключение ровно одно и без него «своя тетрадь» была бы полуправдой:
+       * черновик, который студент завёл сам и который считается против его же
+       * потолка (`MAX_OWN_BOOKS`), обязан убираться им же, иначе три неудачных
+       * попытки запирают его до конца занятия. Чужую личную — нет, тетрадь
+       * комнаты — нет, любой другой файл — нет.
+       */
+      if (payload.role !== 'host' && !ownsBookAt(sessionId, wanted, payload.participantId)) {
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayRemoveAFile.77a4ef"))
         return
       }
       // Панель обещает «убрать папку со всем, что в ней», и обещание держится
@@ -3557,15 +3737,26 @@ export function dispatch(
     }
 
     case 'cells:move': {
-      const rules = getRules(sessionId)
-      if (!allowsStructure(rules.structure, payload.role, 'move')) {
-        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayReorderCellsIn.601caf"))
-        return
-      }
       const id = typeof message.cellId === 'string' ? message.cellId : ''
       const direction =
         message.direction === -1 || message.direction === 1 ? message.direction : null
       if (!id || direction === null) return
+      /*
+       * Состав — по правилам ТОЙ тетради, в которой переставляют: перестановка
+       * не выходит за её пределы (`moveInCells` двигает внутри одного листа), и
+       * спрашивать про неё комнату значило бы запрещать студенту перекладывать
+       * ячейки в собственной тетради.
+       */
+      const root = rootOf(sessionId, id)
+      if (!allowsStructure(rulesIn(sessionId, payload, root).structure, payload.role, 'move')) {
+        refuse(
+          ws,
+          sessionId,
+          payload,
+          whyIn(sessionId, payload, root, tr("server.onlyTheTeacherMayReorderCellsIn.601caf")),
+        )
+        return
+      }
       // От имени нажавшего: у версии в истории должен быть автор.
       const { doc } = getSessionDoc(sessionId)
       applyOnBehalf(sessionId, payload.participantId, () => {
@@ -4248,9 +4439,23 @@ export function dispatch(
       const target = entry.get('cellId')
       const targetLock = typeof target === 'string' ? councilCellOf(sessionId, target).lock : 'closed'
       const targetOpen = targetLock === 'open'
+      /*
+       * И у тетради этой ячейки — тем же слагаемым, что и замок.
+       *
+       * «Принять» переписывает ячейку, то есть это правка, и она обязана
+       * спрашивать там же, где спрашивает набор: в своей личной тетради студент
+       * принимает предложение оракула и при закрытой комнате, в чужой личной —
+       * не принимает и при открытой.
+       */
+      const targetRoot = typeof target === 'string' ? rootOf(sessionId, target) : null
       if (
         message.accept &&
-        (!mayEditCell(getRules(sessionId), payload.role, targetOpen, isFinished(sessionId)) ||
+        (!mayEditCell(
+          rulesIn(sessionId, payload, targetRoot),
+          payload.role,
+          targetOpen,
+          isFinished(sessionId),
+        ) ||
           (targetLock === 'council' && !mayLeadCouncil(payload.role)))
       ) {
         // Отклонить может кто угодно: снятая плашка ничего не разрушает — пока
@@ -4259,7 +4464,12 @@ export function dispatch(
           ws,
           sessionId,
           payload,
-          tr("server.onlyTheTeacherMayApplyAnOracle.231855"),
+          whyIn(
+            sessionId,
+            payload,
+            targetRoot,
+            tr("server.onlyTheTeacherMayApplyAnOracle.231855"),
+          ),
         )
         return
       }
@@ -4338,34 +4548,39 @@ export function dispatch(
 
     case 'format': {
       /*
-       * Строже обоих соседей: black и переписывает каждую ячейку с кодом, и
-       * выполняется на общем ядре. Хватило бы одного из двух, чтобы спросить.
-       */
-      if (
-        !may(
-          sessionId,
-          getRules(sessionId).edit,
-          payload,
-          ws,
-          tr("server.onlyTheTeacherMayEditTheNotebook.d8abb3"),
-        )
-      ) {
-        return
-      }
-      if (!mayBulkRun(sessionId, payload, ws)) return
-      /*
        * Названная тетрадь обязана существовать — тот же довод, что у
        * clearOutputs и Run All: ниже по дороге неизвестный путь означает
        * «тетрадь не названа» (kernel/format.ts · `cellsAt(...) ?? getCells`), а
        * это black, переписавший КАЖДУЮ кодовую ячейку тетради КОМНАТЫ по
        * нажатию во вкладке убранной тетради — у всех и без имени в строке
        * терминала.
+       *
+       * И раньше права: форматирует black РОВНО эту тетрадь, значит и правило
+       * спрашивается у неё (`rulesIn`), а узнать её доступ можно только зная
+       * корень.
        */
       const book = bookOf(message)
-      if (book && !cellsAt(getSessionDoc(sessionId).doc, book)) {
+      const root = rootOfBook(sessionId, book)
+      if (book && root === null) {
         send(ws, { t: 'error', message: NO_SUCH_BOOK() })
         return
       }
+      /*
+       * Строже обоих соседей: black и переписывает каждую ячейку с кодом, и
+       * выполняется на общем ядре. Хватило бы одного из двух, чтобы спросить.
+       */
+      if (
+        !may(
+          sessionId,
+          rulesIn(sessionId, payload, root).edit,
+          payload,
+          ws,
+          whyIn(sessionId, payload, root, tr("server.onlyTheTeacherMayEditTheNotebook.d8abb3")),
+        )
+      ) {
+        return
+      }
+      if (!mayBulkRun(sessionId, payload, ws, root)) return
       /*
        * The result goes to the terminal transcript rather than back down this
        * socket: everybody's notebook just changed under them, so everybody
