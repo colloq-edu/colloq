@@ -467,6 +467,7 @@ test('память живёт минуту и умирает от запуска
 /* ------------------------------------------------------- окно и его слой */
 
 const EDITOR = read('web/src/components/notebook/CodeEditor.svelte')
+const CELL = read('web/src/components/notebook/CellView.svelte')
 const THEME = read('web/src/components/notebook/cm-theme.ts')
 const SESSION = read('web/src/lib/session.svelte.ts')
 
@@ -498,7 +499,9 @@ test('Shift+Tab открывает справку только там, где н
   assert.match(EDITOR, /key: 'Shift-Tab'/)
   // Выделение и readOnly отдают нажатие дальше — отступу.
   assert.match(EDITOR, /if \(!range\.empty\) return false/)
-  assert.match(EDITOR, /const spot = signatureSpot\(/)
+  // Цель ищется по дереву разбора, а не по соседним знакам: правило и его
+  // таблица случаев — в lib/hover-target.ts (tests/hover-target.test.mts).
+  assert.match(EDITOR, /const spot = caretSpot\(cm, view, range\.head\)/)
   assert.match(EDITOR, /if \(!spot\) return false/)
   // Снятие отступа осталось на месте и осталось ниже по старшинству.
   assert.match(EDITOR, /indentLess: cm\.commands\.indentLess/)
@@ -506,6 +509,32 @@ test('Shift+Tab открывает справку только там, где н
     EDITOR.indexOf("key: 'Shift-Tab'") < EDITOR.indexOf('tabKey({'),
     'справка оказалась ниже отступа и не сработает никогда',
   )
+})
+
+test('наведение спрашивает дерево разбора, а не соседние знаки', () => {
+  /*
+   * «При любом наведении на код или при написании кода будет что-то
+   * всплывать» — жалоба 21.09. Регулярка по строке брала под указателем ЛЮБОЕ
+   * слово: имя колонки в кавычках, `x=` в списке аргументов, слово в
+   * комментарии. И каждое такое наведение стоило кадра в сокете.
+   */
+  assert.match(EDITOR, /const spot = hoverSpot\(cm, view, pos\)/)
+  assert.match(EDITOR, /if \(!spot\) return null/)
+  assert.match(EDITOR, /cm\.language\.syntaxTree\(view\.state\)/)
+  assert.doesNotMatch(EDITOR, /function nameAround\(/, 'вернулась регулярка по строке')
+  /*
+   * Отказ ничего не стоит: `return null` стоит между проверкой цели и
+   * вопросом к ядру, то есть на запрещённом месте не уходит ни одного кадра.
+   */
+  assert.match(
+    EDITOR,
+    /const spot = hoverSpot\(cm, view, pos\)\s*\n\s*if \(!spot\) return null\s*\n\s*const dom = await askSignature\(/,
+  )
+  // Псевдонимы читаются по тетради и помнятся до правки текста.
+  assert.match(EDITOR, /function aliasesNow\(\)/)
+  assert.match(EDITOR, /if \(aliasMemo\?\.stamp === stamp\) return aliasMemo\.names/)
+  assert.match(CELL, /sources=\{codeSources\}/)
+  assert.match(CELL, /function codeSources\(\)/)
 })
 
 test('на экране одна справка, а не две', () => {

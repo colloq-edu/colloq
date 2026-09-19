@@ -53,11 +53,14 @@
           localCompletionSource,
           python,
         })),
-        import('@codemirror/language').then(({ bracketMatching, indentOnInput, indentUnit }) => ({
-          bracketMatching,
-          indentOnInput,
-          indentUnit,
-        })),
+        import('@codemirror/language').then(
+          ({ bracketMatching, indentOnInput, indentUnit, syntaxTree }) => ({
+            bracketMatching,
+            indentOnInput,
+            indentUnit,
+            syntaxTree,
+          }),
+        ),
         import('@codemirror/state').then(
           ({ Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField }) => ({
             Compartment,
@@ -123,6 +126,7 @@
   import type { InspectMiss } from '@shared/protocol'
   import { questionAt, type Question } from '@shared/python-defs'
   import { INDENT, tabKey } from '@/lib/indent'
+  import { caretTarget, hoverTarget, moduleAliases } from '@/lib/hover-target'
   import {
     helpIsEmpty,
     helpKey,
@@ -230,6 +234,21 @@
     /** Справка о том, что стоит под кареткой, — для подсказки над скобкой. */
     inspect?: ((code: string, cursor: number) => Promise<KernelSignature | null>) | null
     /**
+     * Тексты ячеек кода ЭТОЙ тетради — чтобы знать, что здесь импортировали.
+     *
+     * По ним справка решает, спрашивать ли про `px` в `px.scatter(` (да: это
+     * псевдоним импорта) и про `df` в `df.groupby(` (нет: что такое `df`,
+     * знает только ядро, а наводятся на него чаще всего мимоходом) — см.
+     * lib/hover-target.ts. Вызовом, а не списком: читать восемьдесят ячеек на
+     * каждую перерисовку незачем, спрашивают их только на наведении, то есть
+     * не чаще раза в треть секунды и только там, где справка вообще возможна.
+     *
+     * Не передали — правило работает без третьего пункта: импорты и вызовы
+     * спрашиваются по-прежнему, а обращения через точку молчат. Так и нужно
+     * листу консилиума и редактору файлов, у которых тетради нет.
+     */
+    sources?: (() => readonly string[]) | null
+    /**
      * Уйти туда, где это имя определено, — ⌘/Ctrl-клик по нему. Или ничего.
      *
      * Прокинуто вызовом по тому же доводу, что `complete` и `inspect`: искать
@@ -286,6 +305,7 @@
     onoverflow,
     complete = null,
     inspect = null,
+    sources = null,
     jump = null,
     mark = null,
     placeholder = '',
@@ -332,6 +352,7 @@
     | 'onoverflow'
     | 'complete'
     | 'inspect'
+    | 'sources'
     | 'jump'
   > = {}
 
@@ -347,6 +368,7 @@
     handlers.onoverflow = onoverflow
     handlers.complete = complete
     handlers.inspect = inspect
+    handlers.sources = sources
     handlers.jump = jump
   })
 
@@ -447,6 +469,9 @@
    * два знака — это ширина окна (640 px моноширинным тринадцатым) с запасом;
    * всё длиннее переносится внутри себя, как обычный текст.
    */
+  /** Тетради нет — третье правило просто не срабатывает; см. `sources`. */
+  const EMPTY_ALIASES: ReadonlySet<string> = new Set<string>()
+
   const PARAM_NOWRAP = 72
 
   /**
@@ -736,53 +761,92 @@
   }
 
   /**
-   * Имя под указателем — целиком, вместе с тем, чьё оно.
+   * Имена, связанные импортом в этой тетради, — с памятью до следующей правки.
    *
-   * Наведя на `head` в `df.head()`, человек спрашивает не про абстрактный
-   * `head`, а про метод ЭТОГО DataFrame — и ядро ответит правильно только
-   * если спросить его о `df.head`. Поэтому слово под указателем сначала
-   * находится целиком, а потом влево дотягивается вся цепочка через точки.
+   * Считается по тексту ячеек (lib/hover-target.ts · `moduleAliases`), а не по
+   * ядру: правило должно работать и до первого запуска — там, где справка
+   * нужнее всего. Ячейки без слова `import` не читаются вовсе, так что обычная
+   * тетрадь — это три-четыре коротких строки на разбор.
    *
-   * Скобки в середине цепочки (`df.groupby('a').sum`) намеренно не
-   * разбираются: до них тут нет ни дерева разбора, ни нужды — вызов внутри
-   * цепочки ядро всё равно выполнять не станет, и ответом был бы «не найдено».
+   * Память — по отпечатку: сколько ячеек и сколько в них знаков. Правка текста
+   * его меняет, и список пересобирается; замена знака на знак в той же длине
+   * (переименовали `np` в `nq`) отпечаток не двигает, и до следующей правки
+   * список останется вчерашним. Цена этой неточности — одно лишнее или одно
+   * недостающее имя в списке разрешённых, то есть окно, которое на секунду
+   * появилось или не появилось там, где могло бы.
    */
-  function nameAround(line: string, at: number): { from: number; to: number } | null {
-    const word = /[A-Za-z0-9_]/
-    if (at > line.length) return null
-    let to = at
-    while (to < line.length && word.test(line[to])) to++
-    let from = at
-    while (from > 0 && word.test(line[from - 1])) from--
-    // Указатель стоит не на слове, а на пробеле или скобке — спрашивать не о чем.
-    if (from === to) return null
-    const chain = /[A-Za-z_][A-Za-z0-9_.]*$/.exec(line.slice(0, to))
-    if (!chain) return null
-    return { from: chain.index, to }
+  let aliasMemo: { stamp: string; names: Set<string> } | null = null
+
+  function aliasesNow(): ReadonlySet<string> {
+    const read = handlers.sources
+    if (!read) return EMPTY_ALIASES
+    let sources: readonly string[]
+    try {
+      sources = read()
+    } catch {
+      // Тетрадь могли закрыть между наведением и ответом — молчим.
+      return EMPTY_ALIASES
+    }
+    let chars = 0
+    for (const one of sources) chars += one.length
+    const stamp = `${sources.length}:${chars}`
+    if (aliasMemo?.stamp === stamp) return aliasMemo.names
+    const names = moduleAliases(sources)
+    aliasMemo = { stamp, names }
+    return names
+  }
+
+  /**
+   * О чём справка, а о чём нет, — решает ДЕРЕВО РАЗБОРА, а не соседние знаки.
+   *
+   * Правило и его доводы целиком в lib/hover-target.ts; здесь только дорога к
+   * нему. Раньше на этом месте стояла регулярка по строке — «любое слово под
+   * указателем», — и на занятии 21.09 это оказалось невыносимо: окно
+   * выскакивало над именем колонки в кавычках, над `x=` в списке аргументов,
+   * над собственной переменной и над словом в комментарии. Причём каждое такое
+   * наведение стоило кадра в сокете и вопроса к общему ядру комнаты.
+   *
+   * `syntaxTree` отдаёт то, что редактор уже разобрал для подсветки: своего
+   * разбора здесь нет и не заводится.
+   */
+  function hoverSpot(
+    cm: CodeMirror,
+    view: EditorView,
+    at: number,
+  ): { from: number; to: number; ask: string } | null {
+    const answer = cm.language.syntaxTree(view.state)
+    return hoverTarget({
+      tree: answer,
+      doc: view.state.doc.toString(),
+      at,
+      aliases: aliasesNow(),
+    }).target
   }
 
   /**
    * О чём спрашивает Shift+Tab у каретки — или `null`, и тогда он отступ.
    *
-   * Два места, и оба взяты у Jupyter, потому что оттуда и привычка:
-   *   · каретка НА имени (или сразу после него) — справка об этом имени;
-   *   · каретка сразу за `(` — справка о том, что вызывают: `sns.lmplot(|` —
-   *     ровно то положение, в котором человек и вспоминает про параметры.
+   * Шире наведения, и намеренно: клавишу нажимают осознанно и один раз.
+   * Кроме разрешённых наведению имён сюда добавлен главный случай Jupyter —
+   * каретка ВНУТРИ скобок вызова (`px.scatter(apartments, x=|`) показывает
+   * сигнатуру того, что вызывают (lib/hover-target.ts · `caretTarget`).
    *
-   * Всё остальное — `null`, и нажатие достаётся тому, кто занял Shift+Tab
-   * раньше (lib/indent.ts · снятие отступа). Это и есть цена привычки: клавишу
-   * пришлось делить, и делится она по тому, есть ли под кареткой имя. В пустой
-   * строке, в середине отступа и на выделении Shift+Tab работает как работал.
+   * `null` — нажатие достаётся тому, кто занял Shift+Tab раньше (lib/indent.ts
+   * · снятие отступа). Это и есть цена привычки: клавишу пришлось делить, и
+   * делится она по тому, есть ли под кареткой о чём спросить. В пустой строке,
+   * в середине отступа и на выделении Shift+Tab работает как работал.
    */
-  function signatureSpot(line: string, at: number): { from: number; to: number } | null {
-    const direct = nameAround(line, at)
-    if (direct) return direct
-    // Позади скобка (и, может быть, пробелы после неё) — спрашиваем о том, что
-    // перед скобкой стоит.
-    let back = at
-    while (back > 0 && (line[back - 1] === ' ' || line[back - 1] === '\t')) back--
-    if (back === 0 || line[back - 1] !== '(') return null
-    return nameAround(line, back - 1)
+  function caretSpot(
+    cm: CodeMirror,
+    view: EditorView,
+    at: number,
+  ): { from: number; to: number; ask: string } | null {
+    return caretTarget({
+      tree: cm.language.syntaxTree(view.state),
+      doc: view.state.doc.toString(),
+      at,
+      aliases: aliasesNow(),
+    }).target
   }
 
   /**
@@ -1200,8 +1264,9 @@
      * приходят в тетрадь с уже готовой привычкой. Но Shift+Tab в этом
      * редакторе занят — он снимает отступ, — поэтому справка отвечает на него
      * ТОЛЬКО там, где отступ снимать не о чем: каретка стоит на имени или
-     * сразу за открывающей скобкой, выделения нет (см. `signatureSpot`). Во
-     * всех прочих случаях нажатие идёт дальше и снимает отступ, как снимало.
+     * где угодно внутри скобок вызова, выделения нет (см. `caretSpot` и
+     * lib/hover-target.ts). Во всех прочих случаях нажатие идёт дальше и
+     * снимает отступ, как снимало.
      *
      * Своё поле, а не `hoverTooltip`: у наведения окно живёт, пока над ним
      * мышь, а у клавиши мыши нет вовсе. Закрепление снимают три вещи — Escape,
@@ -1219,9 +1284,12 @@
       provide: (field) => cm.view.showTooltip.from(field),
     })
 
-    async function openPinned(view: EditorView, spot: { from: number; to: number }): Promise<void> {
+    async function openPinned(
+      view: EditorView,
+      spot: { from: number; to: number; ask: string },
+    ): Promise<void> {
       const head = view.state.selection.main.head
-      const dom = await askSignature(view, spot.to, view.state.sliceDoc(spot.from, spot.to))
+      const dom = await askSignature(view, spot.to, spot.ask)
       // Пока ходили к ядру, каретка могла уехать — тогда закреплять нечего:
       // окно встало бы у имени, на которое человек уже не смотрит.
       if (!dom || view.state.selection.main.head !== head) return
@@ -1264,13 +1332,16 @@
          * наведение тут же работает снова.
          */
         if (view.state.field(pinnedField, false)) return null
-        const line = view.state.doc.lineAt(pos)
-        const found = nameAround(line.text, pos - line.from)
-        if (!found) return null
-        const from = line.from + found.from
-        const to = line.from + found.to
-        const dom = await askSignature(view, to, line.text.slice(found.from, found.to))
-        return dom ? signatureTooltip(from, to, dom) : null
+        /*
+         * И ничего, если под указателем не то, о чём спрашивают: строка,
+         * комментарий, аргумент, собственная переменная. Отказ здесь стоит
+         * ровно ноль — ни кадра в сокете, ни вопроса к ядру комнаты (правило и
+         * его доводы: lib/hover-target.ts).
+         */
+        const spot = hoverSpot(cm, view, pos)
+        if (!spot) return null
+        const dom = await askSignature(view, spot.to, spot.ask)
+        return dom ? signatureTooltip(spot.from, spot.to, dom) : null
       },
       { hoverTime: HOVER_MS },
     )
@@ -1403,7 +1474,7 @@
            * Отказ здесь (`false`) — не отказ от жеста, а пропуск нажатия
            * дальше: ниже по старшинству стоит снятие отступа (lib/indent.ts), и
            * ровно оно и должно срабатывать в строке, где под кареткой не имя.
-           * Правило и его цена — у `signatureSpot`.
+           * Правило и его цена — у `caretSpot`.
            */
           key: 'Shift-Tab',
           run: (view) => {
@@ -1412,10 +1483,9 @@
             // Выделение — это про строки целиком: там Shift+Tab сдвигает их, и
             // отнимать у него этот случай нельзя.
             if (!range.empty) return false
-            const line = view.state.doc.lineAt(range.head)
-            const spot = signatureSpot(line.text, range.head - line.from)
+            const spot = caretSpot(cm, view, range.head)
             if (!spot) return false
-            void openPinned(view, { from: line.from + spot.from, to: line.from + spot.to })
+            void openPinned(view, spot)
             return true
           },
         },

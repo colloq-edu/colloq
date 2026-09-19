@@ -48,7 +48,9 @@
   import * as Y from 'yjs'
   import { Awareness } from 'y-protocols/awareness'
   import {
+    bookCells,
     cellSource,
+    cellType,
     COUNCIL_SHARED_KERNEL_NOTE,
     DEFAULT_COUNCIL,
     MAX_ATTEMPT_CHARS,
@@ -164,6 +166,26 @@
     near = true,
     onselect,
   }: Props = $props()
+
+  /**
+   * Тексты ячеек кода этой тетради — справке, чтобы знать её импорты.
+   *
+   * Вызовом, а не значением: читать восемьдесят `Y.Text` на каждую перерисовку
+   * ячейки незачем, а справка спрашивает их только на наведении — не чаще
+   * раза в треть секунды и только там, где окно вообще может появиться
+   * (lib/hover-target.ts). Ячейки чужих тетрадей сюда не попадают: `np` в
+   * лекции и `np` в семинаре — разные ядра и разные импорты.
+   */
+  function codeSources(): string[] {
+    const out: string[] = []
+    const cells = bookCells(session.doc, bookRoot)
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells.get(i)
+      if (cellType(cell) !== 'code') continue
+      out.push(cellSource(cell).toString())
+    }
+    return out
+  }
 
   const session = getSessionState()
   const cell = watchCell(session.doc, () => id)
@@ -3258,6 +3280,7 @@
                 placeholder={isCode ? '' : tr('room.extra.141')}
                 complete={(code, cursor) => session.complete(code, cursor, id)}
                 inspect={(code, cursor) => session.inspect(code, cursor, id)}
+                sources={codeSources}
                 jump={(code, cursor) => void jumpToDefinition(session, code, cursor, { cellId: id })}
                 mark={landing}
                 onfocus={() => onselect()}
