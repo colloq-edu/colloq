@@ -819,7 +819,13 @@ test('перемены едут дельтой, а не всей стопкой;
 
 test('оракул, «читавший» в момент перезапуска, после него не читает вечно', () => {
   const at = room()
-  const reading: CouncilOracle = {
+  /*
+   * Строка записана БЕЗ `answers` и `pending` — ровно так, как её пишет версия
+   * до ленты вопросов о классе. Семинар, начатый вчера, читается сегодняшним
+   * сервером, и падать на отсутствующем поле ему нельзя
+   * (ai/council.ts · normalizeOracle).
+   */
+  const reading = {
     state: 'reading',
     askedAt: 5,
     basedOn: 3,
@@ -827,12 +833,14 @@ test('оракул, «читавший» в момент перезапуска,
     groupLabels: {},
     drafts: {},
     error: null,
-  }
+  } as unknown as CouncilOracle
   setOracle(at.id, at.cell, reading)
   resetCouncilCache(at.id)
   const fresh = oracleOf(at.id, at.cell)
   assert.equal(fresh?.state, 'idle', 'спиннер до конца пары, «Стоп» ничего не останавливает')
   assert.match(fresh?.error ?? '', /перезапустился/)
+  assert.deepEqual(fresh?.answers, [])
+  assert.equal(fresh?.pending, null)
 
   // Была сводка — она возвращается готовой, с причиной рядом.
   setOracle(at.id, at.cell, { ...reading, summary: ['а', 'б', 'в'] })
@@ -1106,4 +1114,84 @@ test('class finish and request revocation commit together when storage fails',()
   assert.equal(attemptsOf(at.id,at.cell)[0].runRequest?.id,request.id,'cache must match rolled-back data')
   assert.equal(at.petya.sock.heard.length,before,'no premature state broadcast')
  }finally{db.exec('DROP TRIGGER refuse_request_clear')}
+})
+
+/**
+ * Лента оракула о классе — самая частная вещь в комнате.
+ *
+ * В ответе модели люди названы метками `S1…SN`, а рядом едет словарь «метка →
+ * participantId»: это разметка чужих работ, собранная по всему классу, и место
+ * ей ровно в одном кадре — том, что уходит пульту преподавателя. Кадр стопки
+ * (`council:board`) и кадр оракула (`council:oracle`) оба идут `toTeachers`, но
+ * одно неверное `broadcast` здесь превратило бы «кто застрял» в объявление на
+ * весь зал, и ни один тип этого не заметил бы.
+ */
+test('лента оракула с метками людей едет только пультам — в классе её нет', async () => {
+  const { askCouncilOracle } = await import('../server/src/ai/council.js')
+  const at = room()
+  council(at)
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
+  say(at, at.petya, { t: 'council:submit', cellId: at.cell })
+
+  const secret = 'S1 застрял на цикле, к нему стоит подойти.'
+  const mark = at.petya.payload.participantId
+  setOracle(at.id, at.cell, {
+    state: 'ready',
+    askedAt: 1,
+    basedOn: 1,
+    summary: ['а', 'б', 'в'],
+    groupLabels: {},
+    drafts: {},
+    error: null,
+    pending: null,
+    answers: [
+      {
+        id: 'a1',
+        question: 'Кто застрял?',
+        text: secret,
+        askedAt: 2,
+        basedOn: { submitted: 1, drafts: 0 },
+        people: { S1: mark },
+      },
+    ],
+  })
+
+  /*
+   * Настоящий путь: «читаю» объявляется сразу и несёт прежнюю ленту с собой.
+   * Шлюза в тестах нет, поэтому следом приезжает отказ — и он же показывает,
+   * что лента переживает ошибку (ai/council.ts · giveBack).
+   */
+  askCouncilOracle({
+    sessionId: at.id,
+    cellId: at.cell,
+    task: { source: '# задание', before: null, reference: null },
+    attempts: attemptsOf(at.id, at.cell).map((a) => ({
+      participantId: a.participantId,
+      text: a.text,
+      submittedAt: a.submittedAt,
+      updatedAt: a.updatedAt,
+      run: a.run,
+      correct: a.correct,
+    })),
+    store: { oracleOf, setOracle },
+    question: 'Кто застрял?',
+  })
+  await new Promise((done) => setTimeout(done, 200))
+
+  const toHost = at.teacher.sock.heard.filter((m) => m.t === 'council:oracle')
+  assert.ok(toHost.length >= 1, 'пульт не узнал, что оракул читает')
+  assert.ok(JSON.stringify(toHost).includes(secret), 'лента до пульта не доехала')
+  assert.deepEqual(oracleOf(at.id, at.cell)?.answers.length, 1, 'отказ стёр разговор')
+
+  // Опоздавший пульт получает ленту приветственной пачкой, класс — никогда.
+  const late = join(at.id, at.teacher.payload.participantId, 'Ада', 'host')
+  assert.equal(lastBoard(late, at.cell)?.oracle?.answers[0]?.text, secret)
+  const student = join(at.id, `${at.id}_late`, 'Гриша', 'participant')
+  for (const who of [at.petya, at.masha, student]) {
+    const heard = JSON.stringify(who.sock.heard)
+    assert.ok(!heard.includes(secret), 'ответ оракула уехал в класс')
+    assert.ok(!heard.includes('"S1"'), 'словарь меток уехал в класс')
+    assert.ok(!heard.includes('Кто застрял?'), 'вопрос преподавателя уехал в класс')
+  }
+  closeControlRoom(at.id)
 })

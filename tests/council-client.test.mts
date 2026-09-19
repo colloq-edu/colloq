@@ -487,3 +487,41 @@ test('все три режима запуска уходят в настройк
     t: 'cell:lock', cellId: 'c1', state: 'council', settings: { studentRun },
   })))
 })
+
+/* ------------------------------------------------ метки людей в ответе */
+
+/**
+ * Оракул о классе называет людей метками `S1…SN` — других имён он не знает
+ * (server/src/ai/council.ts). Пульт рисует на месте метки чип с именем, и
+ * ломается это молча: наивная замена подстроки съела бы `S7` внутри `CSS7` и
+ * подменила бы начало `S70` чужим человеком. Класс из семидесяти — обычное
+ * дело, и преподаватель открыл бы не ту работу, ничего не заметив.
+ */
+test('метки в ответе становятся людьми только по словарю и только целым словом', async () => {
+  const { splitAnswer } = await import('../web/src/lib/council-oracle-answer.js')
+  const people = { S7: 'p_seven', S2: 'p_two' }
+
+  assert.deepEqual(splitAnswer('Застрял S7, помогите.', people), [
+    { kind: 'text', text: 'Застрял ' },
+    { kind: 'person', label: 'S7', participantId: 'p_seven' },
+    { kind: 'text', text: ', помогите.' },
+  ])
+  assert.deepEqual(splitAnswer('(S7) и S2', people), [
+    { kind: 'text', text: '(' },
+    { kind: 'person', label: 'S7', participantId: 'p_seven' },
+    { kind: 'text', text: ') и ' },
+    { kind: 'person', label: 'S2', participantId: 'p_two' },
+  ])
+
+  // Ни `CSS7`, ни `S70` метками не являются: первое — не отдельное слово,
+  // второго нет в словаре этого ответа.
+  for (const text of ['правило CSS7 сломано', 'у S70 всё хорошо', 'смотрите S7x']) {
+    assert.deepEqual(splitAnswer(text, people), [{ kind: 'text', text }], text)
+  }
+  // Метки прошлого ответа остаются текстом: нумерация живёт один вопрос.
+  assert.deepEqual(splitAnswer('а S9 кто?', people), [{ kind: 'text', text: 'а S9 кто?' }])
+  assert.deepEqual(splitAnswer('', people), [])
+  assert.deepEqual(splitAnswer('S7', people), [
+    { kind: 'person', label: 'S7', participantId: 'p_seven' },
+  ])
+})

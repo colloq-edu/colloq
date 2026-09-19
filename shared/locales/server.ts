@@ -2521,6 +2521,26 @@ export const serverMessages: MessageCatalog = {
     "ru": "Оракул",
     "en": "Oracle"
   },
+  "server.council.noSheetsYet": {
+    "ru": "В этой ячейке ещё никто ничего не написал — оракулу нечего читать.",
+    "en": "Nobody has written anything in this cell yet — the oracle has nothing to read."
+  },
+  "server.council.statusQuestion": {
+    "ru": "Как идут дела у класса: кто пишет, у кого падает запуск, кто застрял?",
+    "en": "How is the class doing: who is writing, whose run is failing, who is stuck?"
+  },
+  "server.ai.linesWord": {
+    "ru": {
+      "one": "строка",
+      "few": "строки",
+      "many": "строк",
+      "other": "строки"
+    },
+    "en": {
+      "one": "line",
+      "other": "lines"
+    }
+  },
   "server.ai.cellIsTheTeachers": {
     "ru": "В этой ячейке оракул только отвечает: менять её может преподаватель",
     "en": "In this cell the oracle only answers: the teacher changes it"

@@ -15,8 +15,24 @@ import { tr } from '@shared/i18n'
  *          словами: 403 выключен / 503 нет ключа / 429 лимит / 409 уже читает
  *   DELETE /api/sessions/:id/council/:cellId/oracle  — «Стоп»
  *
+ * У POST два вида, и различает их тело `{ question?: string }`:
+ *
+ *   вопрос есть        — свободный вопрос о КЛАССЕ: модель видит весь класс,
+ *                        включая черновики и запуски, и отвечает прозой;
+ *   вопроса нет,
+ *   кто-то сдал        — прежняя сводка по решениям (строгий JSON, три абзаца);
+ *   вопроса нет,
+ *   не сдал никто      — заготовка «как идут дела у класса»: пока все пишут,
+ *                        читать сводку не из чего, а спросить уже есть о чём.
+ *
+ * 400 остался ровно на один случай: в ячейке нет ни одного листа. Раньше им
+ * отвечали и на «никто не сдал», и это была главная жалоба с живого семинара
+ * 19.09: половина класса пишет, двое застряли, а оракул молчит, потому что
+ * ждёт сдач.
+ *
  * Модель видит тексты по группам с числами, задание (текст общей ячейки) и
- * эталон, если есть; имён не видит — их подставляет пульт по ключам групп.
+ * эталон, если есть; имён не видит — к людям её метки привязывает сервер
+ * (`CouncilOracleAnswer.people`), к группам — пульт по ключам групп.
  * Сборка кадра, разбор ответа и состояние — ai/council.ts; здесь только
  * право, лимит и ячейка.
  *
@@ -24,10 +40,10 @@ import { tr } from '@shared/i18n'
  * списком в памяти, и маршрут проверяется без таблицы попыток — она живёт у
  * другого модуля и меняется отдельно от этого.
  */
-import { Router, type Request, type Response } from 'express'
+import { json, Router, type Request, type Response } from 'express'
 import { cellSource, findCell } from '@shared/notebook'
 import { mayLeadCouncil, oracleLimitsIn, oracleModeIn } from '@shared/rules'
-import { SESSION_MISSING, type CouncilOracle } from '@shared/protocol'
+import { MAX_ORACLE_QUESTION, SESSION_MISSING, type CouncilOracle } from '@shared/protocol'
 import { getOracleSettings } from '../admin/settings.js'
 import { countRoomQuestions, recordQuestion } from '../admin/usage.js'
 import {
@@ -95,7 +111,16 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     return { sessionId, cellId: req.params.cellId, participantId: auth.participantId }
   }
 
-  router.post('/api/sessions/:id/council/:cellId/oracle', (req, res) => {
+  /*
+   * Разбор тела — свой, а не только общий из app.ts.
+   *
+   * Общий `express.json` стоит на приложении и до этого маршрута доходит; но
+   * роутер собирается и в тестах, где приложения нет вовсе, и вопрос о классе
+   * там молча превращался бы в сводку — то есть проверялся бы не тот путь.
+   * Повторный разбор ничего не стоит: body-parser пропускает тело, которое уже
+   * прочитано (`req._body`).
+   */
+  router.post('/api/sessions/:id/council/:cellId/oracle', json({ limit: '8kb' }), (req, res) => {
     const who = lead(req, res)
     if (!who) return
     const { sessionId, cellId } = who
@@ -178,10 +203,27 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
       })
     }
 
+    /*
+     * Вид запроса. Пустая строка — это «вопроса нет», а не «вопрос из пробелов»:
+     * поле ввода пульта отправляет то, что в нём лежит, и Enter на пробеле не
+     * должен уезжать к модели отдельным видом.
+     */
+    const body = (req.body ?? {}) as { question?: unknown }
+    const asked =
+      typeof body.question === 'string' ? body.question.trim().slice(0, MAX_ORACLE_QUESTION) : ''
+
     const attempts = deps.attemptsOf(sessionId, cellId)
-    if (!attempts.some((a) => a.submittedAt !== null)) {
-      return res.status(400).json({ error: tr("server.thereAreNoSubmittedAttemptsToSummarize.64f4fd") })
+    if (attempts.length === 0) {
+      return res.status(400).json({ error: tr('server.council.noSheetsYet') })
     }
+    const anySubmitted = attempts.some((a) => a.submittedAt !== null)
+    /*
+     * Сводка по решениям — только когда есть что сводить; во всех остальных
+     * случаях вопрос о классе, своими словами или заготовкой. Заготовку ставит
+     * СЕРВЕР, а не пульт: она едет модели в промпте и должна быть одна для
+     * любого клиента, включая тот, что откроют через полгода.
+     */
+    const question = asked !== '' ? asked : anySubmitted ? null : tr('server.council.statusQuestion')
 
     /*
      * Строка расхода — при приёме, как у /ai/ask: запрос к провайдеру уйдёт,
@@ -201,6 +243,7 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
       attempts,
       store: deps,
       usageId,
+      question,
     })
     // 202: вопрос ушёл, ответ приедет сокетом (`council:oracle`) — как у /ai/ask.
     res.status(202).json(oracle satisfies CouncilOracle)

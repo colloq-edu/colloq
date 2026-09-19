@@ -48,7 +48,7 @@ import type {
 } from '@shared/protocol'
 import { attemptStatus, groupAttempts } from '@shared/protocol'
 import { normalizeAttempt } from '@shared/notebook'
-import { stopRoomOracles } from './ai/council.js'
+import { normalizeOracle, stopRoomOracles } from './ai/council.js'
 import { db, getParticipant, getSession } from './db.js'
 
 export { normalizeAttempt }
@@ -279,9 +279,15 @@ const ORACLE_RESTARTED = () => tr("server.private.oracleRestart")
 
 function settleGhostOracle(oracle: CouncilOracle): CouncilOracle {
   if (oracle.state !== 'reading') return oracle
+  /*
+   * `pending` снимается вместе со спиннером: это вопрос, НА КОТОРЫЙ ЧИТАЮТ, и
+   * пережив перезапуск, он рисовал бы в ленте вечный скелет ответа под давно
+   * заданным вопросом. Сама лента (`answers`) остаётся — она про разговор, а
+   * не про запрос, и её перезапуск сервера не касается.
+   */
   return oracle.summary.length > 0
-    ? { ...oracle, state: 'ready', error: ORACLE_RESTARTED() }
-    : { ...oracle, state: 'idle', askedAt: null, basedOn: 0, error: ORACLE_RESTARTED() }
+    ? { ...oracle, state: 'ready', pending: null, error: ORACLE_RESTARTED() }
+    : { ...oracle, state: 'idle', askedAt: null, basedOn: 0, pending: null, error: ORACLE_RESTARTED() }
 }
 
 /**
@@ -377,7 +383,10 @@ function roomOf(sessionId: string): RoomCache {
   }
   for (const row of selectOracles.all(sessionId) as { cell_id: string; oracle_json: string }[]) {
     const oracle = parseJson<CouncilOracle>(row.oracle_json)
-    if (oracle) room.oracles.set(row.cell_id, settleGhostOracle(oracle))
+    // `normalizeOracle` — до всего остального: строка могла быть записана
+    // версией без ленты вопросов, и `settleGhostOracle` читал бы поля, которых
+    // в ней нет (ai/council.ts · normalizeOracle).
+    if (oracle) room.oracles.set(row.cell_id, settleGhostOracle(normalizeOracle(oracle)))
   }
   for (const row of selectSeeds.all(sessionId) as { cell_id: string; seed: string }[]) {
     room.seeds.set(row.cell_id, row.seed)

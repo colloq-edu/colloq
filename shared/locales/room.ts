@@ -126,6 +126,41 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.oracle.refresh": {"ru": "Обновить сводку", "en": "Refresh summary"},
   "room.pult.v2.oracle.ask": {"ru": "Подготовить сводку", "en": "Prepare summary"},
   "room.pult.v2.oracle.retry": {"ru": "Попробовать снова", "en": "Try again"},
+
+  /*
+   * Вопрос о классе — вторая половина вкладки: лента «вопрос → ответ» и панель
+   * ввода под ней. Ключи стоят отдельным блоком, потому что это отдельный
+   * разговор: всё, что выше, — про сводку по сданным решениям.
+   *
+   * `q*` — тексты, которые УЕЗЖАЮТ МОДЕЛИ, а не рисуются на кнопке: чип
+   * «Кто застрял» отправляет целое предложение, иначе модель отвечает на два
+   * слова двумя словами.
+   */
+  "room.pult.v2.oracle.ask.title": {"ru": "Вопрос о классе", "en": "Ask about the class"},
+  "room.pult.v2.oracle.ask.summaryTitle": {"ru": "Сводка по решениям", "en": "Summary of solutions"},
+  "room.pult.v2.oracle.ask.placeholder": {"ru": "Спросить оракула о классе…", "en": "Ask the Oracle about the class…"},
+  "room.pult.v2.oracle.ask.send": {"ru": "Спросить", "en": "Ask"},
+  "room.pult.v2.oracle.ask.keys": {"ru": "Enter — отправить, Shift+Enter — перенос строки", "en": "Enter sends, Shift+Enter adds a line"},
+  "room.pult.v2.oracle.ask.status": {"ru": "Статус класса", "en": "Class status"},
+  "room.pult.v2.oracle.ask.stuck": {"ru": "Кто застрял", "en": "Who is stuck"},
+  "room.pult.v2.oracle.ask.mistakes": {"ru": "Типичные ошибки", "en": "Common mistakes"},
+  "room.pult.v2.oracle.ask.summary": {"ru": "Сводка по решениям", "en": "Summary of solutions"},
+  "room.pult.v2.oracle.ask.summaryWhy": {"ru": "Сводка по решениям появится, когда кто-нибудь сдаст работу", "en": "The summary of solutions appears once somebody submits"},
+  "room.pult.v2.oracle.ask.qStatus": {"ru": "Как идут дела у класса: кто уже сдал, кто ещё пишет, у кого падает запуск?", "en": "How is the class doing: who has submitted, who is still writing, whose run is failing?"},
+  "room.pult.v2.oracle.ask.qStuck": {"ru": "Кто застрял и к кому стоит подойти в первую очередь?", "en": "Who is stuck, and who should I go to first?"},
+  "room.pult.v2.oracle.ask.qMistakes": {"ru": "Какие ошибки повторяются чаще всего и что сказать о них классу?", "en": "Which mistakes repeat most often, and what should I tell the class about them?"},
+  "room.pult.v2.oracle.ask.thinking": {"ru": "Оракул читает класс…", "en": "The Oracle is reading the class…"},
+  "room.pult.v2.oracle.ask.question": {"ru": "Ваш вопрос", "en": "Your question"},
+  "room.pult.v2.oracle.ask.answer": {"ru": "Ответ оракула", "en": "The Oracle's answer"},
+  "room.pult.v2.oracle.ask.answerMeta": {"ru": "по состоянию на {time} · сдали {submitted} · пишут {drafts}", "en": "as of {time} · {submitted} submitted · {drafts} writing"},
+  "room.pult.v2.oracle.ask.openWork": {"ru": "Открыть работу: {who}", "en": "Open this work: {who}"},
+  "room.pult.v2.oracle.ask.empty": {"ru": "Спросите оракула о классе", "en": "Ask the Oracle about the class"},
+  "room.pult.v2.oracle.ask.emptyHint": {"ru": "Он видит все листы: и сданные работы, и черновики с запусками. Спрашивать можно, не дожидаясь сдач.", "en": "It sees every sheet: submitted work as well as drafts and their runs. You need not wait for submissions."},
+  "room.pult.v2.oracle.ask.noSheets": {"ru": "В этой ячейке ещё нет ни одного листа", "en": "No sheets in this cell yet"},
+  "room.pult.v2.oracle.ask.noSheetsHint": {"ru": "Как только кто-нибудь начнёт писать, оракула можно будет спросить о классе.", "en": "Once somebody starts writing, you can ask the Oracle about the class."},
+  "room.pult.v2.oracle.ask.history": {"ru": "Вопросы о классе", "en": "Questions about the class"},
+  "room.pult.v2.oracle.ask.privacy": {"ru": "Видите только вы · модель не видит имён", "en": "Only you see this · the model never sees names"},
+
   "room.pult.v2.projection.title": {"ru": "На экране класса", "en": "On the class screen"},
   "room.pult.v2.projection.since": {"ru": "с {time} · {duration}", "en": "since {time} · {duration}"},
   "room.pult.v2.projection.neighbour": {"ru": "Показать похожую работу", "en": "Show similar work"},

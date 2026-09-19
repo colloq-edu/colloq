@@ -23,10 +23,14 @@ import { recordQuestion } from '../server/src/admin/usage.js'
 import { signToken } from '../server/src/auth.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { createSession, upsertParticipant } from '../server/src/db.js'
+import type { CouncilRun } from '../shared/protocol.js'
 import {
   groupsOf,
+  MAX_ORACLE_ANSWERS,
+  normalizeOracle,
   onCouncilOracle,
   parseOracleAnswer,
+  statusPrompt,
   type OracleAttempt,
 } from '../server/src/ai/council.js'
 import { councilRoutes, type CouncilOracleDeps } from '../server/src/routes/council.js'
@@ -167,13 +171,44 @@ async function room(attempts?: OracleAttempt[]): Promise<Room> {
   }
 }
 
-function ask(r: Room, who: string, method = 'POST'): Promise<Response> {
+function ask(r: Room, who: string, method = 'POST', question?: string): Promise<Response> {
   const token = signToken({ sessionId: r.id, participantId: who, role: 'participant' })
   return fetch(`${r.base}/api/sessions/${r.id}/council/${r.cellId}/oracle`, {
     method,
-    headers: { authorization: `Bearer ${token}` },
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
+    },
+    body: method === 'POST' ? JSON.stringify(question === undefined ? {} : { question }) : undefined,
   })
 }
+
+/* ------------------------------------------------------- кадр о классе */
+
+/** Упавший запуск с заданным именем исключения — им же меряются «топ ошибок». */
+const crash = (ename: string, evalue = ''): CouncilRun => ({
+  state: 'error',
+  outputs: [{ kind: 'error', ename, evalue, traceback: [] }],
+  execCount: 1,
+  ranMs: 12,
+  startedAt: 0,
+  by: 'host',
+})
+
+/** Лист с временем правки: кадру о классе нужно и оно — по нему считается тишина. */
+const sheet = (
+  participantId: string,
+  text: string,
+  extra: Partial<OracleAttempt> = {},
+): OracleAttempt => ({
+  participantId,
+  text,
+  submittedAt: null,
+  updatedAt: 0,
+  run: null,
+  correct: null,
+  ...extra,
+})
 
 /* --------------------------------------------------------- чистый разбор */
 
@@ -243,6 +278,113 @@ test('разбор: проза вместо JSON — сводка абзацам
   assert.match(parsed.summary[1], /len/)
   assert.deepEqual(parsed.groupLabels, {})
   assert.deepEqual(parsed.drafts, {})
+})
+
+test('кадр статуса: числа по классу, порядок «сначала проблемные», ни одного id', () => {
+  const now = 1_000_000_000_000
+  const min = 60_000
+  const frame = statusPrompt(
+    { source: 'def total(xs):\n    ...', before: 'Напишите сумму списка.', reference: null },
+    [
+      sheet('p_a', 'def total(xs):\n    return sum(xs)', {
+        submittedAt: now - 6 * min,
+        updatedAt: now - 3 * min,
+        run: crash('KeyError', "'x'"),
+      }),
+      sheet('p_b', 'def total(xs):\n    s = 0', { updatedAt: now - 9 * min }),
+      sheet('p_c', 'def total(xs):\n    return', { updatedAt: now - 20_000 }),
+      sheet('p_d', 'def total(xs):\n    return sum(xs)', {
+        submittedAt: now - 4 * min,
+        updatedAt: now - 4 * min,
+        run: { ...crash('KeyError'), state: 'ok', outputs: [] },
+        correct: true,
+      }),
+    ],
+    'Кто застрял?',
+    now,
+    20_000,
+  )
+  const user = frame.turns[1].content
+
+  assert.deepEqual(frame.basedOn, { submitted: 2, drafts: 2 })
+  assert.deepEqual(frame.people, { S1: 'p_a', S2: 'p_b', S3: 'p_c', S4: 'p_d' })
+  assert.match(user, /КЛАСС: 4 человека с листом — сдали 2, ещё пишут 2/)
+  assert.match(user, /с ошибкой 1 \(KeyError — 1\)/)
+  assert.match(user, /ОТМЕТКИ преподавателя: верно 1, неверно 0, без отметки 3/)
+  assert.match(user, /ТИШИНА: черновиков без правки дольше 5 минут — 1\./)
+  // Номер группы стоит в строке человека: без него «в какой группе ошибка»
+  // и «кому о ней сказать» — два ответа, которые модель не может связать.
+  assert.match(
+    user,
+    /S1 · сдал \d\d:\d\d, G1 · запуск упал: KeyError — 'x' · 2 строки · правка 3 мин назад/,
+  )
+  // Сначала те, кому вероятнее нужна помощь: упавший, потом молчащий, потом
+  // те, у кого всё идёт. Порядок — это и есть половина ответа на «кто застрял».
+  assert.ok(user.indexOf('\nS1 · ') < user.indexOf('\nS2 · '), 'упавший выше молчащего')
+  assert.ok(user.indexOf('\nS2 · ') < user.indexOf('\nS3 · '), 'молчащий выше остальных')
+  // Код едет обоими способами: группы сданных и листы тех, у кого что-то было.
+  // Дважды — никогда: сданная попытка уже уехала своей группой, и второй её
+  // блок стоил бы места, на котором иначе поместился бы чей-то черновик.
+  assert.match(user, /### G1 — 2 человека/)
+  assert.ok(!user.includes('### S1 —'), 'код S1 уехал дважды: группой и листом')
+  assert.match(user, /### S2 — пишет/, 'черновик молчащего в кадр не поехал')
+  assert.match(user, /ВОПРОС ПРЕПОДАВАТЕЛЯ:\nКто застрял\?$/)
+
+  // Обещание шапки ai/council.ts: в промпт чужого провайдера не уезжает ничего,
+  // по чему человека можно назвать. Имени у попытки нет вовсе, id — есть.
+  const whole = JSON.stringify(frame.turns)
+  for (const id of ['p_a', 'p_b', 'p_c', 'p_d']) assert.ok(!whole.includes(id), id)
+})
+
+test('кадр статуса: хвост списка сворачивается в счёт, когда бюджет кончился', () => {
+  const now = 1_000_000_000_000
+  const many = Array.from({ length: 20 }, (_, i) =>
+    sheet(`p_${String(i).padStart(2, '0')}`, 'x = 1', { updatedAt: now - 1_000 }),
+  )
+  const task = { source: 'x = ?', before: null, reference: null }
+
+  const roomy = statusPrompt(task, many, 'Как класс?', now, 20_000).turns[1].content
+  assert.match(roomy, /\nS20 · пишет/, 'при большом бюджете едут все двадцать')
+  assert.ok(!/Ещё \d+ без происшествий/.test(roomy))
+
+  // Бюджет меньше одной только шапки: строк по людям не остаётся ни одной, но
+  // модель обязана знать, что класс за кадром есть, — иначе «у всех остальных
+  // всё хорошо» она скажет, не имея на это права.
+  const tight = statusPrompt(task, many, 'Как класс?', now, 400).turns[1].content
+  assert.match(tight, /Ещё 20 без происшествий\./)
+  assert.ok(!tight.includes('\nS1 · '))
+  assert.match(tight, /КЛАСС: 20 человек с листом/, 'числа едут всегда — на них кадр и держится')
+})
+
+test('оракул, записанный до ленты вопросов, читается пустой лентой', () => {
+  const stored = {
+    state: 'ready',
+    askedAt: 5,
+    basedOn: 3,
+    summary: ['а'],
+    groupLabels: {},
+    drafts: {},
+    error: null,
+  } as unknown as CouncilOracle
+  const fresh = normalizeOracle(stored)
+  assert.deepEqual(fresh.answers, [], 'строка вчерашнего семинара не должна ронять пульт')
+  assert.equal(fresh.pending, null)
+  assert.deepEqual(fresh.summary, ['а'], 'всё остальное на месте')
+
+  // Потолок держится и у строки, записанной версией, считавшей иначе.
+  const long = normalizeOracle({
+    ...fresh,
+    answers: Array.from({ length: 9 }, (_, i) => ({
+      id: `a${i}`,
+      question: `в${i}`,
+      text: 'ответ',
+      askedAt: i,
+      basedOn: { submitted: 0, drafts: 0 },
+      people: {},
+    })),
+  })
+  assert.equal(long.answers.length, MAX_ORACLE_ANSWERS)
+  assert.equal(long.answers[0].id, 'a3', 'вытесняются самые старые')
 })
 
 /* ------------------------------------------------------------- маршрут */
@@ -363,13 +505,111 @@ test('оракул выключен на инстансе — отказ сло�
   }
 })
 
-test('сдавших нет — оракулу нечего читать, и вопрос из лимита не тратится', async () => {
+test('сдавших нет — не отказ, а вопрос о статусе заготовкой сервера', async () => {
   const r = await room([attempt('p_e', 'x =', null)])
+  try {
+    await withEndpoint('S1 только начал.', async () => {
+      const res = await ask(r, r.teacher)
+      assert.equal(res.status, 202, 'ждать сдач, чтобы спросить «кто застрял», — и была жалоба')
+      const started = (await res.json()) as CouncilOracle
+      assert.equal(started.state, 'reading')
+      // Заготовку ставит сервер: она уезжает модели в промпте и обязана быть
+      // одной для любого клиента.
+      assert.match(started.pending?.question ?? '', /Как идут дела у класса/)
+      const ready = await settled(r.id, r.cellId)
+      assert.equal(ready.state, 'ready')
+      assert.equal(ready.answers.length, 1)
+      assert.equal(ready.answers[0].text, 'S1 только начал.')
+      assert.deepEqual(ready.answers[0].basedOn, { submitted: 0, drafts: 1 })
+    })
+  } finally {
+    r.close()
+  }
+})
+
+test('ни одного листа — вот теперь 400, и вопрос из лимита не тратится', async () => {
+  const r = await room([])
   try {
     await withEndpoint('{}', async () => {
       const res = await ask(r, r.teacher)
       assert.equal(res.status, 400)
-      assert.match(((await res.json()) as { error: string }).error, /Нет сданных попыток/)
+      assert.match(((await res.json()) as { error: string }).error, /никто ничего не написал/)
+    })
+  } finally {
+    r.close()
+  }
+})
+
+test('свободный вопрос о классе: 202, ответ в ленте и словарь меток к людям', async () => {
+  const r = await room()
+  try {
+    await withEndpoint('Застрял S3: цикл без возврата. Группа G1 в порядке.', async () => {
+      const res = await ask(r, r.teacher, 'POST', '  Кто застрял?  ')
+      assert.equal(res.status, 202)
+      const started = (await res.json()) as CouncilOracle
+      assert.equal(started.state, 'reading')
+      assert.equal(started.pending?.question, 'Кто застрял?', 'пробелы по краям срезаны')
+      /*
+       * Вопрос о классе не трогает сводку: «отстала на N» считается разницей с
+       * `basedOn`, и сбрасывать этот счёт вопросом про тишину нельзя.
+       */
+      assert.equal(started.basedOn, 0)
+
+      const ready = await settled(r.id, r.cellId)
+      assert.equal(ready.state, 'ready', ready.error ?? '')
+      assert.equal(ready.pending, null)
+      assert.deepEqual(ready.summary, [], 'сводка по решениям осталась нетронутой')
+      assert.equal(ready.answers.length, 1)
+      const answer = ready.answers[0]
+      assert.ok(answer.id.length > 0)
+      assert.equal(answer.question, 'Кто застрял?')
+      assert.match(answer.text, /S3/)
+      assert.deepEqual(answer.basedOn, { submitted: 4, drafts: 1 })
+      // Метки к людям привязывает сервер: по этому словарю пульт делает из
+      // «S3» чип с именем и кнопку «открыть работу».
+      assert.equal(Object.keys(answer.people).length, 5)
+      assert.equal(answer.people.S3, 'p_c')
+    })
+  } finally {
+    r.close()
+  }
+})
+
+test('вопрос длиннее 500 знаков режется на приёме, а не в браузере', async () => {
+  const r = await room()
+  try {
+    await withEndpoint('коротко', async () => {
+      const res = await ask(r, r.teacher, 'POST', 'я'.repeat(900))
+      assert.equal(res.status, 202)
+      const started = (await res.json()) as CouncilOracle
+      assert.equal(started.pending?.question.length, 500, 'maxlength держит клавиатуру, не вставку')
+      await settled(r.id, r.cellId)
+    })
+  } finally {
+    r.close()
+  }
+})
+
+test('лента копит не больше шести ходов и переживает обновление сводки', async () => {
+  const r = await room()
+  try {
+    await withEndpoint('ответ', async () => {
+      for (let i = 1; i <= MAX_ORACLE_ANSWERS + 1; i++) {
+        assert.equal((await ask(r, r.teacher, 'POST', `вопрос ${i}`)).status, 202)
+        await settled(r.id, r.cellId)
+      }
+      const full = r.deps.oracleOf(r.id, r.cellId)
+      assert.equal(full?.answers.length, MAX_ORACLE_ANSWERS)
+      assert.equal(full?.answers[0].question, 'вопрос 2', 'самый старый ход вытеснен')
+      assert.equal(full?.answers.at(-1)?.question, `вопрос ${MAX_ORACLE_ANSWERS + 1}`)
+    })
+    const summary = JSON.stringify({ summary: ['а', 'б', 'в'], groupLabels: {}, drafts: {} })
+    await withEndpoint(summary, async () => {
+      assert.equal((await ask(r, r.teacher)).status, 202)
+      const ready = await settled(r.id, r.cellId)
+      assert.deepEqual(ready.summary, ['а', 'б', 'в'])
+      assert.equal(ready.basedOn, 4)
+      assert.equal(ready.answers.length, MAX_ORACLE_ANSWERS, 'сводка не стирает разговор')
     })
   } finally {
     r.close()

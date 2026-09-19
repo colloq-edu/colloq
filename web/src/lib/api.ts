@@ -374,10 +374,16 @@ export const api = {
    * сообщением сокета, потому что у отказа есть цена и срок: 429 со словами и
    * `retryAfter`, которые сокет не умеет сказать так же (см. `ApiError`).
    */
-  councilAsk: (id: string, token: string, cellId: string) =>
+  councilAsk: (id: string, token: string, cellId: string, question?: string) =>
     request<CouncilOracle>(`/api/sessions/${id}/council/${encodeURIComponent(cellId)}/oracle`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      /*
+       * Вопрос о классе — им же и отличается вид запроса: без него сервер
+       * готовит сводку по решениям, с ним отвечает прозой о том, как идут дела
+       * (routes/council.ts). Пустой строки здесь не бывает: пульт не шлёт
+       * вопроса, которого нет.
+       */
+      body: JSON.stringify(question ? { question } : {}),
       headers: { authorization: `Bearer ${token}` },
     }),
 

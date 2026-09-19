@@ -520,12 +520,17 @@
     askToBan(banTargetOf(attempt, event))
   }
 
-  /** Оракул о классе — через тот же маршрут, что и в тетради. */
-  async function askOracle(stop: boolean): Promise<void> {
+  /**
+   * Оракул о классе — через тот же маршрут, что и в тетради.
+   *
+   * `question` — свободный вопрос о состоянии класса; без него сервер готовит
+   * прежнюю сводку по решениям (server/src/routes/council.ts).
+   */
+  async function askOracle(stop: boolean, question?: string): Promise<void> {
     oracleError = ''
     try {
       if (stop) await api.councilStopOracle(session.session.id, session.token, cellId)
-      else await api.councilAsk(session.session.id, session.token, cellId)
+      else await api.councilAsk(session.session.id, session.token, cellId, question)
     } catch (error) {
       oracleError = error instanceof Error ? error.message : tr('room.pult.oracleError')
     }
@@ -816,8 +821,9 @@
         ontoggle={() => {}} oninterrupt={interrupt} onapprove={letThrough}
         ondecline={declineRun} onapproveall={approveAll} onopen={open} onremove={remove} />
     {:else if tab === 'oracle'}
-      <PultOracleTab oracle={board.oracle} {attempts} submitted={counts.submitted} {names}
-        askWhy={offline ? tr(OFFLINE_REASON) : null} onask={() => void askOracle(false)} onstop={() => void askOracle(true)} />
+      <PultOracleTab oracle={board.oracle} {attempts} submitted={counts.submitted} {names} {variants}
+        askWhy={offline ? tr(OFFLINE_REASON) : null} onask={(question) => void askOracle(false, question)}
+        onstop={() => void askOracle(true)} onopen={open} />
     {/if}
 
     <PultStatusLine
