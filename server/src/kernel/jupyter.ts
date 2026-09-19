@@ -76,6 +76,14 @@ interface Pending {
   /** Filled by the iopub `status: idle` that closes this request. */
   idle: boolean
   graceTimer: NodeJS.Timeout | null
+  /**
+   * Служебный запуск, о котором комнате знать незачем, — см. `execute`.
+   *
+   * Здесь он значит ровно одно: `busy`/`idle` вокруг него не двигают фазу
+   * ядра, то есть индикатор у комнаты не моргает. Разбор запроса это не
+   * меняет ничем — закрывающий `idle` по-прежнему закрывает ожидание.
+   */
+  quiet: boolean
 }
 
 /** Ожидание одного `*_reply` по shell: ни вывода, ни рукопожатия с iopub. */
@@ -457,11 +465,23 @@ export class JupyterKernel {
    * `In[-5:]` or `%history` — the one thing the council promises never happens.
    * @param opts.userExpressions выражения, которые ядро посчитает после кода и
    * вернёт в `execute_reply` — см. `ExecuteHandlers.onUserExpressions`.
+   * @param opts.quiet прячет ЭТОТ запуск от индикатора ядра: `busy` и `idle`
+   * вокруг него фазу не меняют. Ровно то же правило, что у `complete_request`
+   * и `inspect_request` ниже (см. handleFrame), и заведено оно тем же случаем:
+   * справка, которую спрашивает наведённая мышь, не событие комнаты, и
+   * моргающий на неё индикатор у тридцати человек — поломка, а не подсказка.
+   * Ставится только служебным запускам вида `silent: true`; обычная ячейка
+   * обязана быть видна.
    */
   async execute(
     code: string,
     handlers: ExecuteHandlers,
-    opts?: { silent?: boolean; storeHistory?: boolean; userExpressions?: Record<string, string> },
+    opts?: {
+      silent?: boolean
+      storeHistory?: boolean
+      userExpressions?: Record<string, string>
+      quiet?: boolean
+    },
   ): Promise<ExecuteStatus> {
     // A kernel that has been quiet since before the break may not be there any
     // more, and the socket will not say so. Between two cells run back to back
@@ -500,6 +520,7 @@ export class JupyterKernel {
         status: null,
         idle: false,
         graceTimer: null,
+        quiet: opts?.quiet === true,
       })
     })
 
@@ -1126,11 +1147,32 @@ export class JupyterKernel {
        * что ядро отвечает.
        */
       const parentType = msg.parent_header?.msg_type
-      if (parentType === 'complete_request' || parentType === 'inspect_request') {
+      /*
+       * И запуск бывает служебным — тогда он тоже не занятость комнаты.
+       *
+       * Статический разбор справки (inspect-static.ts) — это настоящий
+       * `execute_request`: jedi живёт в ядре, и спросить его иначе нечем. Но
+       * поводом он остаётся тем же — наведённая мышь, — и моргать от него
+       * индикатору так же нельзя, как от `inspect_request` выше. Узнаём такие
+       * по ЗАПРОСУ, а не по типу сообщения: пометку ставит тот, кто запуск
+       * заводил (`execute`, opts.quiet), и подделать её кадром снаружи нечем.
+       */
+      const quiet =
+        parentType === 'complete_request' ||
+        parentType === 'inspect_request' ||
+        pending?.quiet === true
+      if (quiet) {
+        // Единственное, что берём и у служебного, — первый `idle` только что
+        // поднятого ядра: он честно говорит, что ядро отвечает.
         if (state === 'idle' && this._phase === 'starting') this.setPhase('idle')
-        return
+      } else if (state === 'busy' || state === 'idle' || state === 'starting') {
+        this.setPhase(state)
       }
-      if (state === 'busy' || state === 'idle' || state === 'starting') this.setPhase(state)
+      /*
+       * А ЗАКРЫТЬ ожидание обязан и служебный: `idle` — вторая половина
+       * рукопожатия, без которой `execute` не разрешится вовсе (maybeSettle).
+       * Тихий он для комнаты, а не для того, кто его ждёт.
+       */
       if (pending && state === 'idle') {
         pending.idle = true
         this.maybeSettle(parentId as string, pending)

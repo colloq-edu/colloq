@@ -63,19 +63,21 @@ let held: Array<{ socket: WebSocket; parent: unknown; asked?: boolean; code?: st
  * это как «личные копии данных готовы». Без ответа он обязан НЕ запускать
  * попытку — значит подделка без этой ветки проверяла бы только отказ.
  */
-function councilExpressions(asked: boolean): Record<string, unknown> {
+function councilExpressions(asked: boolean, code = ''): Record<string, unknown> {
   if (!asked) return {}
+  /*
+   * Ключ `colloq` один на два служебных запуска — вход консилиума и
+   * статический разбор справки (kernel/inspect-static.ts), — и отвечать им
+   * надо РАЗНЫМ. Различаем по коду: справка приходит со своим скрытым
+   * модулем в первой же строке. Иначе разбор справки читал бы отчёт
+   * консилиума и всегда отвечал «не нашлось».
+   */
+  const text = code.includes('_colloq_inspect')
+    ? JSON.stringify({ found: true, text: 'Signature:\nsns.lmplot(data)\nType: function' })
+    : JSON.stringify({ ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1 })
   return {
     user_expressions: {
-      colloq: {
-        status: 'ok',
-        data: {
-          'text/plain': JSON.stringify({
-            ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1,
-          }),
-        },
-        metadata: {},
-      },
+      colloq: { status: 'ok', data: { 'text/plain': text }, metadata: {} },
     },
   }
 }
@@ -225,7 +227,13 @@ before(async () => {
           reply(ws, msg.header, 'status', { execution_state: 'busy' })
           reply(ws, msg.header, 'inspect_reply', {
             status: 'ok',
-            found: true,
+            /*
+             * `NOTFOUND` в коде — имя, которого в пространстве имён нет.
+             * Настоящее ядро отвечает так всякий раз, когда ячейку с импортом
+             * ещё не запускали, и ровно отсюда начинается второй путь справки
+             * — статический разбор jedi.
+             */
+            found: !msg.content.code.includes('NOTFOUND'),
             // С раскраской: IPython красит справку, о которой никто не просил.
             data: { 'text/plain': '\u001b[0;31mSignature:\u001b[0m df.head(n=5)' },
           })
@@ -339,7 +347,7 @@ before(async () => {
         reply(ws, msg.header, 'execute_reply', {
           status: 'ok',
           execution_count: 1,
-          ...councilExpressions(asked),
+          ...councilExpressions(asked, msg.content.code),
         })
         reply(ws, msg.header, 'status', { execution_state: 'idle' })
       })
@@ -2027,6 +2035,144 @@ test('занятое ядро не отвечает на дополнение �
   } finally {
     swallowShell = false
     await kernel.dispose()
+  }
+})
+
+/*
+ * Справка о том, что стоит под кареткой, — и второй её путь.
+ *
+ * Живое ядро знает только то, что в нём ВЫПОЛНИЛИ: пока ячейку `import seaborn
+ * as sns` не запускали, `inspect_request` честно отвечает «не нашлось». На
+ * занятии это читалось как «справка появляется через раз», и половина жалоб
+ * была именно про это. Второй путь спрашивает jedi по исходникам — настоящим
+ * `execute_request`, молча и с будильником внутри Python.
+ *
+ * Здесь проверяется то, что ломается тихо: причина отказа вместо молчания,
+ * порядок двух путей и — главное — что служебный запуск не виден комнате.
+ */
+test('справка про невыполненное имя достаётся статическим разбором', async () => {
+  const { ensureKernel, inspectIn } = await import('../server/src/kernel/index.js')
+  const { CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  await ensureKernel(room.id)
+  assert.ok(await until(() => room.status() === 'idle'), 'ядро не поднялось')
+
+  // Имя, которое ядро знает: отвечает оно само, и второй путь не нужен вовсе.
+  const known = await inspectIn(room.id, 'df.head', 7)
+  assert.equal(known.found, true)
+  assert.equal(known.text, 'Signature: df.head(n=5)')
+  assert.equal(known.reason, null)
+
+  const before = requests.length
+  // А это имя ядро не знает (подделка отвечает found: false), и тогда
+  // спрашивается jedi — вместе с шапкой импортов той же тетради.
+  const missing = await inspectIn(room.id, 'NOTFOUND.lmplot', 15, CELLS_KEY, {
+    header: 'import seaborn as sns',
+  })
+  assert.equal(missing.found, true, `второй путь не ответил: ${missing.reason}`)
+  assert.match(missing.text ?? '', /^Signature:\nsns\.lmplot\(data\)/)
+
+  const service = requests.slice(before)
+  assert.equal(service.length, 1, 'статический разбор ушёл не одним запросом')
+  // Молча и без следа: ни вывода в комнату, ни строки в `In`/`Out`.
+  assert.equal(service[0].silent, true)
+  assert.equal(service[0].store_history, false)
+  assert.match(service[0].code, /_colloq_inspect/)
+  assert.match(service[0].code, /import seaborn as sns/, 'шапка импортов не доехала')
+})
+
+test('служебный запрос справки не двигает фазу ядра: индикатор не моргает', async () => {
+  const { ensureKernel, inspectIn } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  await ensureKernel(room.id)
+  assert.ok(await until(() => room.status() === 'idle'))
+
+  /*
+   * Статусы `busy`/`idle` ipykernel публикует вокруг ЛЮБОГО запроса, в том
+   * числе вокруг нашего служебного `execute_request`. Пока их принимали за
+   * фазу, индикатор ядра моргал бы у всей комнаты на каждое наведение мышью —
+   * та же беда, что коммит 37fce13 закрыл для `complete_request`.
+   */
+  const { getMeta } = await import('../shared/notebook.js')
+  const meta = getMeta(room.doc)
+  const seen: string[] = []
+  // Наблюдатель, а не опрос: моргание длится миллисекунды, и опрос его не
+  // поймал бы — то есть тест был бы зелёным при сломанном индикаторе.
+  const watch = () => seen.push(String(meta.get('kernelStatus')))
+  meta.observe(watch)
+  try {
+    const answer = await inspectIn(room.id, 'NOTFOUND.lmplot', 15)
+    assert.equal(answer.found, true)
+    await wait(80)
+    assert.deepEqual(seen, [], `индикатор моргнул на справке: ${seen.join(' → ')}`)
+    assert.equal(room.status(), 'idle')
+  } finally {
+    meta.unobserve(watch)
+  }
+})
+
+test('занятому ядру справка не задаётся вовсе — отказ приходит сразу', async () => {
+  const { ensureKernel, inspectIn, requestRun } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  await ensureKernel(room.id)
+  assert.ok(await until(() => room.status() === 'idle'))
+  room.type('print(1)')
+  swallowExecutes = true
+  requestRun(room.id, [room.cellId], 'Student', 'p_student')
+  try {
+    assert.ok(await until(() => room.state() === 'running'), 'ячейка не начала считаться')
+    const started = Date.now()
+    const answer = await inspectIn(room.id, 'df.head', 7)
+    const spent = Date.now() - started
+    assert.equal(answer.found, false)
+    assert.equal(answer.reason, 'busy')
+    /*
+     * Сразу — это меньше секунды. Своих двух с половиной (SHELL_REQUEST_MS)
+     * ждать нечего: сервер и так знает, что в этой тетради считается ячейка, и
+     * тишина на наведение мышью читается как поломка.
+     */
+    assert.ok(spent < 1000, `отказ «занято» ждал ${spent} мс`)
+  } finally {
+    swallowExecutes = false
+    shellFinish()
+  }
+})
+
+test('справка второй тетради идёт к ЕЁ ядру и не ждёт занятой первой', async () => {
+  const { ensureKernel, inspectIn, requestRun } = await import('../server/src/kernel/index.js')
+  const { CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const other = await secondBook(room, 'Справка.ipynb')
+  await ensureKernel(room.id, CELLS_KEY)
+  await ensureKernel(room.id, other.root)
+  assert.ok(await until(() => room.status() === 'idle'), 'ядро лекции не поднялось')
+
+  // Лекция считает и не кончается, пока её не отпустят поимённо.
+  room.type('HOLD lecture')
+  requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
+  assert.ok(await until(() => room.state() === 'running'), 'лекция не пошла в работу')
+  try {
+    /*
+     * Главное утверждение: занятость СОСЕДНЕЙ тетради справке не мешает.
+     *
+     * Ядра у тетрадей разные, очереди тоже, и «занято» обязано считаться по
+     * области той тетради, в которой навели мышь. Пока занятость спрашивалась у
+     * занятия, справка в личной тетради студента молчала всю лекцию — и
+     * выглядело это ровно как «она не всегда появляется», от чего вся эта
+     * правка и заведена.
+     */
+    const here = await inspectIn(room.id, 'df.head', 7, other.root)
+    assert.equal(here.found, true, `вторая тетрадь получила отказ: ${here.reason}`)
+    assert.equal(here.reason, null)
+    assert.equal(here.text, 'Signature: df.head(n=5)')
+
+    // А в той тетради, которая считает, — честное «занято».
+    const busy = await inspectIn(room.id, 'df.head', 7, CELLS_KEY)
+    assert.equal(busy.found, false)
+    assert.equal(busy.reason, 'busy')
+  } finally {
+    assert.equal(finishHeld(/HOLD/), 1)
+    assert.ok(await until(() => room.state() === 'ok'))
   }
 })
 

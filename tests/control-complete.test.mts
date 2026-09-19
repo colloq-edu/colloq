@@ -99,8 +99,14 @@ test('в комнате, где запускает преподаватель, �
     'отказ в подсказке сказал что-то вслух',
   )
 
+  /*
+   * У справки отказ теперь ГОВОРИТ, но говорит не всё. `refused` — та
+   * единственная причина, которую клиент проживает молча: жест человек сделал
+   * правильный, а объяснять «здесь запускает преподаватель» на каждое
+   * наведение мышью значит ругать за наведение.
+   */
   const help = await ask(ws, said, id, 'participant', { t: 'inspect', id: 2, code: 'df.head', cursor: 7 })
-  assert.deepEqual(help, { t: 'inspect:reply', id: 2, found: false })
+  assert.deepEqual(help, { t: 'inspect:reply', id: 2, found: false, reason: 'refused' })
 })
 
 test('преподавателю той же комнаты ядро отвечает именами и их видом', async () => {
@@ -306,4 +312,73 @@ test('справка по наведению в листе консилиума 
   })) as Extract<ControlServerMessage, { t: 'inspect:reply' }>
   assert.equal(help.found, true, 'сигнатуры в своём листе нет')
   assert.match(help.text ?? '', /Signature: df\.head/)
+})
+
+/* ------------------------------------------------- почему справки нет */
+
+/**
+ * Молчание вместо ответа — то, из-за чего справка казалась сломанной.
+ *
+ * «Она не всегда появляется»: ядро не поднято, имя не выполняли, ядро считает
+ * чужую ячейку — три РАЗНЫХ случая, и все три выглядели одинаково, то есть
+ * никак. Теперь отказ везёт причину одним словом (protocol.ts · InspectMiss),
+ * а слова к ней подбирает клиент на языке комнаты.
+ */
+test('на имя, о котором сказать нечего, отвечают причиной, а не молчанием', async () => {
+  const id = room()
+  const { ws, said } = socket()
+  // Под указателем пробел: имени нет, и ядро честно отвечает «не нашлось».
+  const help = (await ask(ws, said, id, 'host', {
+    t: 'inspect',
+    id: 31,
+    code: 'x = ',
+    cursor: 4,
+  })) as Extract<ControlServerMessage, { t: 'inspect:reply' }>
+  assert.equal(help.found, false)
+  assert.equal(help.reason, 'unknown')
+  assert.equal(help.text, undefined)
+})
+
+test('дополнение по-прежнему отказывает молча: причин у него нет', async () => {
+  const id = room(LECTURE_ROOM)
+  const { ws, said } = socket()
+  const reply = (await ask(ws, said, id, 'participant', {
+    t: 'complete',
+    id: 32,
+    code: 'df.',
+    cursor: 3,
+  })) as Extract<ControlServerMessage, { t: 'complete:reply' }>
+  assert.equal('reason' in reply, false, 'у дополнения завелась причина отказа')
+})
+
+test('в своём листе консилиума справка есть, а поднимать комнате ядро — нельзя', async () => {
+  /*
+   * Два разных права, и разводит их ровно этот случай. Дополнять и наводиться
+   * в своём листе студенту можно и в лекционной комнате (`mayComplete`) —
+   * иначе задание пишется на память. А ПУСК ядра — это полторы минуты, которые
+   * видит вся комната, и нажимает их тот, у кого есть Run (`mayWake`).
+   *
+   * Ядра в сюите нет вовсе, поэтому ответ здесь — `no-kernel`: «запускать его
+   * в этой комнате может только преподаватель». Если бы право будить
+   * протекало, ответом было бы `starting`, а на машине поднялся бы контейнер.
+   */
+  const previous = process.env.KERNEL_BACKEND
+  process.env.KERNEL_BACKEND = 'docker'
+  try {
+    const id = room(LECTURE_ROOM)
+    const council = cell(id, 'council')
+    const { ws, said } = socket()
+    const help = (await ask(ws, said, id, 'participant', {
+      t: 'inspect',
+      id: 33,
+      code: 'df.head',
+      cursor: 7,
+      cellId: council,
+    })) as Extract<ControlServerMessage, { t: 'inspect:reply' }>
+    assert.equal(help.found, false)
+    assert.equal(help.reason, 'no-kernel', 'студент разбудил ядро комнаты справкой')
+  } finally {
+    if (previous === undefined) delete process.env.KERNEL_BACKEND
+    else process.env.KERNEL_BACKEND = previous
+  }
 })

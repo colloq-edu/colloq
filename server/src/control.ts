@@ -33,6 +33,7 @@ import {
   acceptPatch,
   allCellArrays,
   bookAt,
+  bookCells,
   bookKernel,
   bookList,
   CELLS_KEY,
@@ -84,6 +85,7 @@ import {
 import { moveInCells } from './collab/ops.js'
 import { defineIn } from './definitions.js'
 import { LINE_LENGTH } from './kernel/format.js'
+import { importHeader } from './kernel/inspect-static.js'
 import { kernelBackend } from './kernel/runtime-client.js'
 import {
   actsAfterClass,
@@ -2609,13 +2611,61 @@ function mayComplete(sessionId: string, payload: TokenPayload, cellId?: unknown)
   if (id && councilCellOf(sessionId, id).lock === 'council') {
     return mayWriteCouncil(payload.role, isFinished(sessionId), false)
   }
-  /*
-   * «Право = запуск» — и запуск в ТОЙ ТЕТРАДИ, где набирают. Иначе подсказки
-   * молчали бы в собственной тетради студента посреди лекции: он там пишет и
-   * считает, а дополнение отвечало бы пустотой, потому что комната закрыта.
-   */
+  return mayWake(sessionId, payload, cellId)
+}
+
+/**
+ * Может ли этот вопрос ПОДНЯТЬ ядро комнаты — то есть право нажать «Запустить».
+ *
+ * «Право = запуск» — и запуск в ТОЙ ТЕТРАДИ, где набирают. Иначе подсказки
+ * молчали бы в собственной тетради студента посреди лекции: он там пишет и
+ * считает, а дополнение отвечало бы пустотой, потому что комната закрыта.
+ *
+ * Отдельно от `mayComplete` ровно из-за одной развилки: тот пускает к подсказке
+ * ещё и своего листа консилиума, где студент пишет код в лекционной комнате.
+ * Читать состояние ядра оттуда можно, а ЗАВОДИТЬ комнате Python — нет: пуск
+ * видит вся комната («запускается окружение») и греет машину на полторы
+ * минуты. Кто нажимает Run, тот и будит.
+ *
+ * Законченное занятие сюда не попадает: `mayRunCell` спрашивают вместе с
+ * `isFinished`, и в закрытой комнате ядро не поднимает уже никто.
+ */
+function mayWake(sessionId: string, payload: TokenPayload, cellId?: unknown): boolean {
+  const id = optionalId(cellId)
   const root = id ? rootOf(sessionId, id) : null
   return mayRunCell(rulesIn(sessionId, payload, root), payload.role, false, isFinished(sessionId))
+}
+
+/**
+ * Шапка импортов тетради — строки `import …` из ячеек кода ВЫШЕ этой.
+ *
+ * Нужна статическому разбору справки: jedi отвечает про `sns.lmplot`, только
+ * если знает, что `sns` — это seaborn, а знать это в тетради неоткуда, кроме
+ * ячейки с импортами. Область видимости в тетради — не ячейка, а ядро: шапка
+ * ровно это и повторяет (kernel/inspect-static.ts · `importHeader`).
+ *
+ * Выше — и только выше: тетрадь читают и запускают сверху вниз, и импорт,
+ * написанный ниже места, где набирают, в этот момент ещё ничего не значит.
+ *
+ * И только СВОЕЙ тетради. Ядер теперь столько, сколько тетрадей, и шапка,
+ * собранная по соседней, рассказала бы jedi про импорты, которых в этом Python
+ * нет вовсе: корень приезжает сюда тот же, которым выбрано ядро.
+ */
+function importsAbove(sessionId: string, root: string, cell: string | undefined): string {
+  if (!cell) return ''
+  const doc = peekSessionDoc(sessionId)?.doc ?? getSessionDoc(sessionId).doc
+  const cells = bookCells(doc, root)
+  for (let i = 0; i < cells.length; i++) {
+    if (cellId(cells.get(i)) !== cell) continue
+    const above: string[] = []
+    for (let k = 0; k < i; k++) {
+      const one = cells.get(k)
+      if (cellType(one) !== 'code') continue
+      above.push(cellSource(one).toString())
+    }
+    return importHeader(above)
+  }
+  return ''
 }
 
 /**
@@ -2623,8 +2673,16 @@ function mayComplete(sessionId: string, payload: TokenPayload, cellId?: unknown)
  *
  * Пустой ответ на КАЖДУЮ беду: нет права, нет ядра, ядро занято, вопросов
  * больше позволенного, ядро бросило. Обещание на той стороне должно
- * разрешиться всегда, и разрешиться молча: подсказка — фон набора, и отказ в
- * ней не повод для слов на экране.
+ * разрешиться всегда.
+ *
+ * У ДОПОЛНЕНИЯ пустой ответ к тому же безмолвный, и это правило: список
+ * спрашивается на каждую букву, и тост «здесь запускает преподаватель» на
+ * каждую набранную точку — наказание за печатание. А у СПРАВКИ с 19.09 к
+ * пустому ответу прилагается причина (`inspect:reply.reason`): её спрашивают
+ * наведением, то есть осознанно и по одному разу, и молчание в ответ на жест
+ * читается как поломка — «она не всегда появляется». Причина едет одним словом
+ * (protocol.ts · `InspectMiss`), а слова к ней подбирает клиент: тексты живут
+ * на языке комнаты, а не на языке сервера.
  *
  * В журнал занятия не пишется ничего. Журнал — это то, что человек СДЕЛАЛ
  * («запустил ячейку», «открыл терминал»); нажатая точка — не поступок, а
@@ -2639,10 +2697,11 @@ function askKernel(
 ): void {
   const id = message.id
   if (typeof id !== 'number' || !Number.isFinite(id)) return
+  /** Отказ до всякого похода к ядру: причина у него одна — «спрашивать было нельзя». */
   const empty: ControlServerMessage =
     message.t === 'complete'
       ? { t: 'complete:reply', id, matches: [], start: 0, end: 0 }
-      : { t: 'inspect:reply', id, found: false }
+      : { t: 'inspect:reply', id, found: false, reason: 'refused' }
   if (typeof message.code !== 'string' || typeof message.cursor !== 'number') {
     send(ws, empty)
     return
@@ -2659,19 +2718,21 @@ function askKernel(
    * переменные своего листа: `df.` в семинаре — это `df` семинара, а не тот,
    * что преподаватель загрузил на лекции. Кадр называет ячейку; ячейка — свою
    * тетрадь. Ячейки нет (пишут в пустом месте) — тетрадь комнаты, как раньше.
+   *
+   * Той же тетрадью меряется и всё остальное, что знает эта дверь: право
+   * поднять ядро (`mayWake`) и шапка импортов для статического разбора
+   * (`importsAbove`). Спросить одну тетрадь, а ответить по другой — самый
+   * тихий способ показать человеку чужие переменные.
    */
   const askRoot = (message.cellId ? rootOf(sessionId, message.cellId) : null) ?? CELLS_KEY
-  const answer =
-    message.t === 'complete'
-      ? completeIn(sessionId, code, cursor, askRoot)
-      : inspectIn(sessionId, code, cursor, askRoot)
-  void answer
-    .then((result) => {
-      if (result === null) {
-        send(ws, empty)
-        return
-      }
-      if (message.t === 'complete' && 'matches' in result) {
+  const wake = mayWake(sessionId, payload, message.cellId)
+  if (message.t === 'complete') {
+    void completeIn(sessionId, code, cursor, askRoot, { mayWake: wake })
+      .then((result) => {
+        if (result === null) {
+          send(ws, empty)
+          return
+        }
         send(ws, {
           t: 'complete:reply',
           id,
@@ -2679,18 +2740,23 @@ function askKernel(
           start: result.cursorStart,
           end: result.cursorEnd,
         })
-        return
-      }
-      if (message.t === 'inspect' && 'found' in result) {
-        send(ws, {
-          t: 'inspect:reply',
-          id,
-          found: result.found,
-          ...(result.text === null ? {} : { text: result.text }),
-        })
-        return
-      }
-      send(ws, empty)
+      })
+      .catch(() => send(ws, empty))
+      .finally(() => askDone(ws))
+    return
+  }
+  void inspectIn(sessionId, code, cursor, askRoot, {
+    mayWake: wake,
+    header: importsAbove(sessionId, askRoot, optionalId(message.cellId)),
+  })
+    .then((result) => {
+      send(ws, {
+        t: 'inspect:reply',
+        id,
+        found: result.found,
+        ...(result.text === null ? {} : { text: result.text }),
+        ...(result.reason === null ? {} : { reason: result.reason }),
+      })
     })
     .catch(() => send(ws, empty))
     .finally(() => askDone(ws))

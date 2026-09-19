@@ -95,9 +95,15 @@ import {
   JupyterKernel,
   type CompleteResult,
   type ExecuteStatus,
-  type InspectResult,
   type KernelPhase,
 } from './jupyter.js'
+import {
+  inspectStaticSource,
+  parseStaticInspect,
+  INSPECT_BUDGET_SEC,
+  INSPECT_REPORT_EXPR,
+  INSPECT_REPORT_KEY,
+} from './inspect-static.js'
 import { dataBudgetFor, OutputWriter } from './outputs.js'
 import { CouncilOutputBuffer, type CouncilJob } from './council.js'
 import {
@@ -117,7 +123,7 @@ import {
   type CouncilLeftovers,
 } from './council-isolation.js'
 import { durationWords } from '@shared/text'
-import type { CouncilRun } from '@shared/protocol'
+import type { CouncilRun, InspectMiss } from '@shared/protocol'
 import { closeTerminal, terminalPhase } from './terminal.js'
 
 /**
@@ -3480,12 +3486,11 @@ export async function answerInput(
 /**
  * Ядро ТЕТРАДИ — но только то, которое УЖЕ живо.
  *
- * Про дополнение это не оговорка, а правило. `ensureKernel` поднимает
- * контейнер, и это до полутора минут: набранная точка после `df` не имеет
- * права заводить комнате Python, греть машину и объявлять всем «запускается
- * окружение» — тем более что человек, может быть, просто пишет текст в ячейку
- * и запускать ничего не собирается. Нет ядра, оно мертво или перезапускается —
- * ответ пуст, и клиент подставляет слова самой ячейки.
+ * Нет ядра, оно мертво или перезапускается — здесь `null`, и спрашивать
+ * нечего. ПОДНЯТЬ его отсюда нельзя: `ensureKernel` — это до полутора минут
+ * ожидания, и вопрос, заданный наведённой мышью, ждать их не может. Кто
+ * поднимает и по какому праву — сказано у `mayWake` ниже; сюда ядро приезжает
+ * уже живым или не приезжает вовсе.
  */
 function liveKernel(sessionId: string, root: string): JupyterKernel | null {
   const kernel = peekRuntime(sessionId, root)?.kernel ?? null
@@ -3493,6 +3498,34 @@ function liveKernel(sessionId: string, root: string): JupyterKernel | null {
   return kernel.phase === 'dead' || kernel.phase === 'restarting' || kernel.phase === 'starting'
     ? null
     : kernel
+}
+
+/**
+ * Разбудить ядро этим вопросом — и не ждать его.
+ *
+ * До 19.09 подсказка ядро не поднимала никогда, и довод был такой: `ensureKernel`
+ * — до полутора минут, а набранная точка после `df` не повод греть машину.
+ * Довод остался верным наполовину. Ждать вопрос по-прежнему не может и не
+ * ждёт — обещание разрешается тут же, ответом «запускается». Но ПРАВО на пуск у
+ * спросившего ровно то же, что у кнопки «Запустить»: решает его control.ts
+ * (`mayWake`), и тот, кто может нажать Run, может и навести мышь. Отказывать
+ * ему в справке потому, что он ещё ничего не запускал, значило отказывать
+ * ровно в начале занятия — когда тетрадь только открыли и справка нужнее всего.
+ */
+function wakeKernel(sessionId: string, root: string): void {
+  /*
+   * Ядро ТОЙ тетради, в которой набирают. У личной тетради оно своё, в своём
+   * контейнере, и поднять вместо него ядро комнаты значило бы показать справку
+   * про чужие переменные.
+   *
+   * Отказ наружу не уходит: у личных ядер есть потолок на занятие
+   * (`OwnKernelUnavailable`), а у брокера — свои поводы не дать Pod. Для
+   * справки это просто «ядра нет», и следующий вопрос скажет это словами;
+   * бросить отсюда исключение значило бы уронить ответ на наведение мышью.
+   */
+  void ensureKernel(sessionId, root).catch(() => {
+    /* не поднялось — следующий вопрос скажет об этом сам; жаловаться некому */
+  })
 }
 
 /**
@@ -3509,6 +3542,7 @@ export async function completeIn(
   cursor: number,
   /** Тетрадь, у чьего ядра спрашиваем; без неё — тетрадь комнаты. */
   root: string = CELLS_KEY,
+  opts: { mayWake?: boolean } = {},
 ): Promise<CompleteResult | null> {
   /*
    * У тестового бэкенда ядра нет вовсе (KERNEL_BACKEND=test, JUPYTER_URL
@@ -3519,7 +3553,12 @@ export async function completeIn(
    */
   if (kernelBackend() === 'test') return cannedComplete(code, cursor)
   const kernel = liveKernel(sessionId, root)
-  if (!kernel) return null
+  if (!kernel) {
+    // Первая же набранная точка поднимает этой тетради Python — см.
+    // `wakeKernel`. Этому вопросу ответить уже нечем, а следующему будет чем.
+    if (opts.mayWake === true) wakeKernel(sessionId, root)
+    return null
+  }
   try {
     return await kernel.complete(code, cursor)
   } catch {
@@ -3529,21 +3568,165 @@ export async function completeIn(
   }
 }
 
-/** Справка о том, что стоит под кареткой, — теми же правилами, что и выше. */
+/** Справка о том, что стоит под кареткой, — и причина, если её нет. */
+export interface InspectAnswer {
+  found: boolean
+  text: string | null
+  /** Почему не нашлось; `null` — нашлось. См. protocol.ts · `InspectMiss`. */
+  reason: InspectMiss | null
+}
+
+export interface InspectHelpOptions {
+  /**
+   * Шапка импортов тетради — для статического разбора.
+   *
+   * Собирает её тот, у кого есть документ (control.ts), а не эта функция: у
+   * слоя ядер тетрадей нет вовсе, и лезть за ними в CRDT отсюда значило бы
+   * завести вторую дорогу к документу ради одной строки.
+   */
+  header?: string
+  /** Можно ли поднять ядро этим вопросом: право решает control.ts. */
+  mayWake?: boolean
+}
+
+const miss = (reason: InspectMiss): InspectAnswer => ({ found: false, text: null, reason })
+
+/**
+ * Справка о том, что стоит под кареткой, — двумя дорогами и с причиной отказа.
+ *
+ * Спрашивается ядро ТОЙ тетради, в которой набирают: ядер теперь столько,
+ * сколько тетрадей, и `df` семинара — это не тот `df`, что преподаватель
+ * загрузил на лекции.
+ *
+ * Сначала спрашивается ЖИВОЕ ядро (`inspect_request`): оно смотрит на
+ * настоящий объект и знает про него всё, включая то, что человек досчитал в
+ * этой тетради минуту назад. Если ядро отвечает «не нашлось» — а так оно
+ * отвечает всякий раз, когда ячейку с импортом ещё не запускали, — спрашивается
+ * jedi по ИСХОДНИКАМ (inspect-static.ts). Порядок именно такой и обратным быть
+ * не может: статический разбор знает библиотеку, но не знает комнаты.
+ *
+ * Молчания больше нет ни в одной ветке. Раньше здесь на каждую беду
+ * возвращался `null`, и человек не мог отличить «имени нет в ядре» от «ядро
+ * ещё поднимается»: на занятии это читалось как «справка работает через раз».
+ */
 export async function inspectIn(
   sessionId: string,
   code: string,
   cursor: number,
+  /** Тетрадь, у чьего ядра спрашиваем; без неё — тетрадь комнаты. */
   root: string = CELLS_KEY,
-): Promise<InspectResult | null> {
-  if (kernelBackend() === 'test') return cannedInspect(code, cursor)
+  help: InspectHelpOptions = {},
+): Promise<InspectAnswer> {
+  const runtime = peekRuntime(sessionId, root) ?? null
   const kernel = liveKernel(sessionId, root)
-  if (!kernel) return null
-  try {
-    return await kernel.inspect(code, cursor)
-  } catch {
-    return null
+  /*
+   * Заготовленный ответ тестового бэкенда — вместо ядра, которого там нет.
+   *
+   * И только вместо него: пока живого ядра нет, отвечает заготовка, а как
+   * только оно появилось (подделка Jupyter в tests/kernel.test.mts), работает
+   * настоящая дорога — с причинами отказа и со статическим разбором. Иначе
+   * проверить их было бы нечем: под тестовым бэкендом всё кончалось первой же
+   * строкой этой функции.
+   */
+  if (kernelBackend() === 'test' && !kernel) return cannedInspect(code, cursor)
+  if (!kernel) {
+    const phase = runtime?.kernel?.phase ?? null
+    // Уже поднимается — своим ли вопросом, чужим ли Run: ответ будет, но не
+    // этот. Говорим «через несколько секунд», а не «ядра нет».
+    if (runtime?.starting || phase === 'starting' || phase === 'restarting') return miss('starting')
+    if (help.mayWake === true) {
+      wakeKernel(sessionId, root)
+      return miss('starting')
+    }
+    return miss('no-kernel')
   }
+  /*
+   * Занято — говорим сразу, не выжидая своих двух с половиной секунд.
+   *
+   * Про занятость сервер знает и без ядра: у области этой тетради своя очередь
+   * и своя работающая ячейка. Ждать в этом случае нечего — shell у ipykernel
+   * один и последовательный, — а две с половиной секунды тишины на наведение
+   * мышью читаются как «подсказка сломалась».
+   *
+   * Занятость СОСЕДНЕЙ тетради справке не мешает, и это следствие того, что
+   * ядер теперь столько, сколько тетрадей: очередь и ячейка спрашиваются у
+   * области (`peekRuntime(sessionId, root)`), а не у занятия. Пока лекция
+   * считает, справка в личной тетради студента отвечает как ни в чём не бывало.
+   */
+  if (kernel.phase === 'busy' || runtime?.currentCell || (runtime?.queue.length ?? 0) > 0) {
+    return miss('busy')
+  }
+  try {
+    const live = await kernel.inspect(code, cursor)
+    if (live.found && live.text !== null && live.text !== '') {
+      return { found: true, text: live.text, reason: null }
+    }
+  } catch {
+    // Ядро занялось между проверкой выше и вопросом: обычная гонка семинара.
+    return miss('busy')
+  }
+  return runtime ? await inspectStatically(runtime, code, cursor, help.header ?? '') : miss('unknown')
+}
+
+/**
+ * Сколько ждём ответа СЛУЖЕБНОГО запуска, прежде чем считать, что его не будет.
+ *
+ * Бюджет jedi плюс секунда на дорогу. Будильник стоит внутри Python
+ * (inspect-static.ts · `_arm`), и в обычной жизни он срабатывает первым; этот
+ * потолок — про случай, когда сигнал не дошёл вовсе (ядро считает в чужом
+ * потоке, ядро не ipykernel). Обещание обязано разрешиться в любом из них.
+ */
+const STATIC_INSPECT_WAIT_MS = Math.round(INSPECT_BUDGET_SEC * 1000) + 1000
+
+/**
+ * Второй путь: то же имя, прочитанное jedi из исходников, без единого запуска.
+ *
+ * Только на СВОБОДНОМ ядре этой тетради. Это настоящий `execute_request`, и
+ * встань он в очередь за чужой ячейкой — подсказка приехала бы через минуту, а
+ * ядро в это время принадлежало бы наведённой мыши, а не занятию. Область
+ * приезжает сюда целиком, поэтому и очередь спрашивается её собственная.
+ */
+async function inspectStatically(
+  runtime: Runtime,
+  code: string,
+  cursor: number,
+  header: string,
+): Promise<InspectAnswer> {
+  const kernel = runtime.kernel
+  if (!kernel || kernel.phase !== 'idle') return miss('busy')
+  if (runtime.currentCell || runtime.queue.length > 0) return miss('busy')
+  let raw: unknown = null
+  try {
+    const status = await Promise.race([
+      kernel.execute(
+        inspectStaticSource({ code, cursor, header }),
+        {
+          ...SILENT_HANDLERS,
+          onUserExpressions: (values) => {
+            raw = values[INSPECT_REPORT_KEY]
+          },
+        },
+        {
+          silent: true,
+          storeHistory: false,
+          // Комнате об этом знать незачем: индикатор ядра не моргает — см.
+          // jupyter.ts · `Pending.quiet`.
+          quiet: true,
+          userExpressions: { [INSPECT_REPORT_KEY]: INSPECT_REPORT_EXPR },
+        },
+      ),
+      new Promise<'abort'>((resolve) => {
+        const timer = setTimeout(() => resolve('abort'), STATIC_INSPECT_WAIT_MS)
+        timer.unref?.()
+      }),
+    ])
+    if (status !== 'ok') return miss('unknown')
+  } catch {
+    return miss('unknown')
+  }
+  const answer = parseStaticInspect(raw)
+  if (answer?.found && answer.text !== null) return { found: true, text: answer.text, reason: null }
+  return miss('unknown')
 }
 
 /** Дополнение тестового бэкенда: несколько имён pandas и ничего больше. */
@@ -3569,13 +3752,175 @@ function cannedComplete(code: string, cursor: number): CompleteResult {
   }
 }
 
-/** Справка тестового бэкенда: сигнатура, узнаваемая на глаз и в утверждении. */
-function cannedInspect(code: string, cursor: number): InspectResult {
+/**
+ * Длинная справка тестового бэкенда — настоящий ответ seaborn, как есть.
+ *
+ * Стоит здесь ради двух вещей, которые на коротком ответе не проверяются
+ * вовсе: прокрутки внутри окна и того, что длинная сигнатура не прячет собой
+ * документацию. У `sns.lmplot` сорок с лишним параметров — то есть сигнатура
+ * длиннее, чем всё окно, — и ровно на ней подсказка и сломалась на занятии
+ * 19.09, когда показывала первые шесть строк.
+ *
+ * Текст снят с живого ядра (`colloq-kernel:base`, seaborn 0.13.2) и обрезан по
+ * границе раздела; `File:` и `Type:` дописаны, чтобы разбор видел и их.
+ */
+const CANNED_LONG = `Signature:
+sns.lmplot(
+    data,
+    *,
+    x=None,
+    y=None,
+    hue=None,
+    col=None,
+    row=None,
+    palette=None,
+    col_wrap=None,
+    height=5,
+    aspect=1,
+    markers='o',
+    sharex=None,
+    sharey=None,
+    hue_order=None,
+    col_order=None,
+    row_order=None,
+    legend=True,
+    legend_out=None,
+    x_estimator=None,
+    x_bins=None,
+    x_ci='ci',
+    scatter=True,
+    fit_reg=True,
+    ci=95,
+    n_boot=1000,
+    units=None,
+    seed=None,
+    order=1,
+    logistic=False,
+    lowess=False,
+    robust=False,
+    logx=False,
+    x_partial=None,
+    y_partial=None,
+    truncate=True,
+    x_jitter=None,
+    y_jitter=None,
+    scatter_kws=None,
+    line_kws=None,
+    facet_kws=None,
+)
+Docstring:
+Plot data and regression model fits across a FacetGrid.
+
+This function combines :func:\`regplot\` and :class:\`FacetGrid\`. It is
+intended as a convenient interface to fit regression models across
+conditional subsets of a dataset.
+
+When thinking about how to assign variables to different facets, a general
+rule is that it makes sense to use \`\`hue\`\` for the most important
+comparison, followed by \`\`col\`\` and \`\`row\`\`. However, always think about
+your particular dataset and the goals of the visualization you are
+creating.
+
+There are a number of mutually exclusive options for estimating the
+regression model. See the :ref:\`tutorial <regression_tutorial>\` for more
+information.
+
+The parameters to this function span most of the options in
+:class:\`FacetGrid\`, although there may be occasional cases where you will
+want to use that class and :func:\`regplot\` directly.
+
+Parameters
+----------
+data : DataFrame
+    Tidy ("long-form") dataframe where each column is a variable and each
+    row is an observation.
+x, y : strings, optional
+    Input variables; these should be column names in \`\`data\`\`.
+hue, col, row : strings
+    Variables that define subsets of the data, which will be drawn on
+    separate facets in the grid. See the \`\`*_order\`\` parameters to control
+    the order of levels of this variable.
+palette : palette name, list, or dict
+    Colors to use for the different levels of the \`\`hue\`\` variable. Should
+    be something that can be interpreted by :func:\`color_palette\`, or a
+    dictionary mapping hue levels to matplotlib colors.
+col_wrap : int
+    "Wrap" the column variable at this width, so that the column facets
+    span multiple rows. Incompatible with a \`\`row\`\` facet.
+height : scalar
+    Height (in inches) of each facet. See also: \`\`aspect\`\`.
+aspect : scalar
+    Aspect ratio of each facet, so that \`\`aspect * height\`\` gives the width
+    of each facet in inches.
+markers : matplotlib marker code or list of marker codes, optional
+    Markers for the scatterplot. If a list, each marker in the list will be
+    used for each level of the \`\`hue\`\` variable.
+share{x,y} : bool, 'col', or 'row' optional
+    If true, the facets will share y axes across columns and/or x axes
+    across rows.
+
+    .. deprecated:: 0.12.0
+        Pass using the \`facet_kws\` dictionary.
+
+{hue,col,row}_order : lists, optional
+    Order for the levels of the faceting variables. By default, this will
+    be the order that the levels appear in \`\`data\`\` or, if the variables
+    are pandas categoricals, the category order.
+legend : bool, optional
+    If \`\`True\`\` and there is a \`\`hue\`\` variable, add a legend.
+legend_out : bool
+    If \`\`True\`\`, the figure size will be extended, and the legend will be
+    drawn outside the plot on the center right.
+
+    .. deprecated:: 0.12.0
+        Pass using the \`facet_kws\` dictionary.
+
+x_estimator : callable that maps vector -> scalar, optional
+    Apply this function to each unique value of \`\`x\`\` and plot the
+    resulting estimate. This is useful when \`\`x\`\` is a discrete variable.
+    If \`\`x_ci\`\` is given, this estimate will be bootstrapped and a
+    confidence interval will be drawn.
+x_bins : int or vector, optional
+    Bin the \`\`x\`\` variable into discrete bins and then estimate the central
+    tendency and a confidence interval. This binning only influences how
+    the scatterplot is drawn; the regression is still fit to the original
+    data.  This parameter is interpreted either as the number of
+    evenly-sized (not necessary spaced) bins or the positions of the bin
+    centers. When this parameter is used, it implies that the default of
+    \`\`x_estimator\`\` is \`\`numpy.mean\`\`.
+x_ci : "ci", "sd", int in [0, 100] or None, optional
+    Size of the confidence interval used when plotting a central tendency
+File:      /usr/local/lib/python3.11/site-packages/seaborn/regression.py
+Type:      function`
+
+/**
+ * Справка тестового бэкенда: сигнатура, узнаваемая на глаз и в утверждении.
+ *
+ * Имя решает, какой ответ придёт, и это не прихоть: у тестового бэкенда ядра
+ * нет вовсе, а проверять надо оба случая — короткий ответ, который помещается
+ * в окно целиком, и длинный, ради которого окно вообще прокручивается. Всё,
+ * что кончается на `lmplot`, отвечает длинным.
+ *
+ * Пустое имя — `unknown`, а не молчание: под указателем пробел или скобка, и
+ * сказать об этом надо тем же словом, каким это сказало бы живое ядро.
+ */
+function cannedInspect(code: string, cursor: number): InspectAnswer {
   const name = /[A-Za-z_][A-Za-z0-9_.]*$/.exec(code.slice(0, cursor))?.[0] ?? ''
-  if (!name) return { found: false, text: null }
+  if (!name) return miss('unknown')
+  /*
+   * Имена-ключи для причин отказа. Настоящих поводов у тестового бэкенда нет
+   * вовсе — ядра в нём нет, — а проверить надо ЧЕТЫРЕ строки, которые человек
+   * видит вместо справки: «ядро запускается», «ядро занято» и остальные. Без
+   * этой ветки увидеть их на стенде было бы нечем, и проверялись бы они только
+   * чтением локалей.
+   */
+  const staged = /(?:^|\.)zz_(starting|busy|nokernel|unknown)$/.exec(name)?.[1]
+  if (staged) return miss(staged === 'nokernel' ? 'no-kernel' : (staged as InspectMiss))
+  if (/(^|\.)lmplot$/.test(name)) return { found: true, text: CANNED_LONG, reason: null }
   return {
     found: true,
     text: `Signature: ${name}(n: int = 5)\nDocstring:\nReturn the first n rows.`,
+    reason: null,
   }
 }
 
