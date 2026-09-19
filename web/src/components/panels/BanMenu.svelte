@@ -150,7 +150,14 @@
 
 {#if target && !asked}
   <!-- Подложка ловит нажатие мимо меню — тем же способом, что и пульт правил. -->
-  <div class="fixed inset-0 z-40" role="presentation" onclick={close}></div>
+  <!--
+    Ярус — над пультом консилиума. Меню зовут из двух мест: из панели людей и
+    из пульта, а пульт — непрозрачная обёртка на z-[95] (SessionScreen). Пока
+    меню жило на z-40/z-50, из пульта оно открывалось ПОД ним: нарисованное,
+    кликабельное и невидимое — «Удалить с занятия» молча не делало ничего. 96
+    — выше пульта и ниже окна отказа (97) и плашек «удалён» (100).
+  -->
+  <div class="fixed inset-0 z-[96]" role="presentation" onclick={close}></div>
   <!--
     Только вход, и кривая — домашняя. Здесь и у окна ниже.
 
@@ -163,7 +170,7 @@
     заметно мягче и читается как чужая.
   -->
   <div
-    class="fixed z-50 border border-line bg-raised py-1 shadow-pop"
+    class="fixed z-[96] border border-line bg-raised py-1 shadow-pop"
     style="left: {at.x}px; top: {at.y}px; width: {MENU_W}px"
     role="menu"
     aria-label={tr('room.ui.540')}
@@ -188,7 +195,7 @@
 {#if target && asked}
   {@const who = target}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
+    class="fixed inset-0 z-[96] flex items-center justify-center bg-brand/40 p-6"
     role="presentation"
     onclick={(event) => {
       if (event.target === event.currentTarget) close()
