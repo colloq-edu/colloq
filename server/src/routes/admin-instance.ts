@@ -53,6 +53,7 @@ import {
   stepCount,
 } from '../publish/store.js'
 import { environmentOf, shutdownSession, syncBookKernels } from '../kernel/index.js'
+import { applyOwnLimits } from '../kernel/pool.js'
 import { applyCpuLimit, applyMemoryLimit } from '../kernel/pool.js'
 import {
   cpuBounds,
@@ -547,6 +548,8 @@ export function adminInstanceRoutes(): Router {
         return invalid(res, tr("server.rulesMustBeAnObject.c2a9d1"))
       }
       setRules(row.id, readRules({ ...storedRules(row.id), ...(body.rules as object) }))
+      // И числа личных тетрадей — их контейнеру, тем же путём, что из комнаты.
+      void applyOwnLimits(row.id).catch(() => {})
       // Доступ тетради решает, в каком контейнере её ядро; сменился — ядро
       // гасится. Тот же довод, что в routes/sessions.ts.
       syncBookKernels(row.id)

@@ -35,6 +35,7 @@ import { freeMark } from '@shared/marks'
 import { seldom, tally } from '../log.js'
 import { ensureKernel, syncBookKernels } from '../kernel/index.js'
 import { forgetResources, readCpuInput, readMemoryInput } from '../kernel/resources.js'
+import { applyOwnLimits } from '../kernel/pool.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { publicationOf, stepCount } from '../publish/store.js'
 import { broadcast } from '../control.js'
@@ -869,7 +870,31 @@ export function sessionRoutes(): Router {
     if (typeof incoming !== 'object' || incoming === null) {
       return res.status(400).json({ error: tr("server.rulesMustBeAnObject.c2a9d1") })
     }
+    /*
+     * Числа личных тетрадей меряются машиной — той же меркой, что и память
+     * самого занятия.
+     *
+     * `readRules` чистит их тотально и до разумных границ, но про докер и про
+     * память этой машины не знает ничего: он общий с браузером. Здесь число,
+     * которого машина не даст, отвергается словами — иначе контейнер просто не
+     * поднялся бы посреди пары, и связать это с нажатием было бы нечем.
+     */
+    const asked = incoming as Record<string, unknown>
+    if ('ownMemoryMb' in asked && asked.ownMemoryMb !== null) {
+      const read = readMemoryInput(asked.ownMemoryMb)
+      if (!read.ok) return res.status(400).json({ error: tr('server.rules.ownMemoryRefused') })
+    }
+    if ('ownCpus' in asked && asked.ownCpus !== null) {
+      const read = readCpuInput(asked.ownCpus)
+      if (!read.ok) return res.status(400).json({ error: tr('server.rules.ownCpusRefused') })
+    }
     const rules = setRules(sessionId, readRules({ ...storedRules(sessionId), ...incoming }))
+    /*
+     * Сколько отсыпано личным тетрадям — их контейнеру, и сейчас: преподаватель
+     * выбрал число посреди пары и ждёт, что оно подействует, а не после того,
+     * как занятие однажды закроют. Контейнер комнаты эта дорога не трогает.
+     */
+    void applyOwnLimits(sessionId).catch(() => {})
     /*
      * Доступ тетради решает, в каком контейнере её ядро: у личной он свой, без
      * GPU занятия (shared/rules.ts · bookHasOwnKernel). Переселить живой

@@ -19,10 +19,15 @@ test('в лекции щелчок — закрыта ↔ открыта все�
   // В консилиум щелчком не попадали — щелчок по нему открывает меню.
   assert.deepEqual(lockPress('council', 'shared'), { kind: 'menu' })
 
-  assert.equal(lockLabel('closed', 'shared'), 'Открыть ячейку для совместной работы')
+  /*
+   * Два режима замка зовутся одинаково везде, где о них говорят: в строке
+   * правил, в меню замка и в подсказке. Разные имена одного и того же и есть
+   * то, из-за чего «открытая ячейка» ничего не объясняла.
+   */
+  assert.equal(lockLabel('closed', 'shared'), 'Открыть ячейку: пишут вместе')
   assert.equal(lockLabel('open', 'shared'), 'Закрыть ячейку')
   assert.equal(lockLabel('council', 'shared'), 'Изменить доступ к ячейке')
-  assert.equal(lockHint('closed', 'shared'), 'Открыть ячейку для совместной работы · удержать — выбрать доступ')
+  assert.equal(lockHint('closed', 'shared'), 'Открыть ячейку: пишут вместе · удержать — выбрать доступ')
   assert.equal(lockHint('open', 'shared'), 'Закрыть ячейку · удержать — выбрать доступ')
   assert.equal(lockHint('council', 'shared'), 'Консилиум · щелчок — настроить доступ к ячейке')
 })

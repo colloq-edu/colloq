@@ -65,6 +65,22 @@ export const adminMessages: MessageCatalog = {
     "ru": "Комнаты живут в Docker: там {p0} ГБ, свободно {p1} ГБ; по умолчанию для окружения {p2} — {p3} ГБ.",
     "en": "Rooms live in Docker: it has {p0} GB, {p1} GB free; the default for environment {p2} is {p3} GB."
   },
+  "admin.resources.ownHint": {
+    "ru": "Личным тетрадям студентов память выдаётся отдельно — по умолчанию столько же. Сколько именно, выбирается в правилах занятия, строка «Личные тетради студентов».",
+    "en": "Students\u2019 personal notebooks get memory of their own — the same amount by default. How much exactly is chosen in the class rules, the \u201cStudents\u2019 personal notebooks\u201d row."
+  },
+  "admin.resources.ownRow": {
+    "ru": "Контейнеры занятия:",
+    "en": "The class\u2019s containers:"
+  },
+  "admin.resources.ownRoom": {
+    "ru": "комната {p0} ГБ · {p1} ядр.",
+    "en": "room {p0} GB \u00b7 {p1} cores"
+  },
+  "admin.resources.ownBooks": {
+    "ru": "личные тетради {p0} ГБ · {p1} ядр. (без GPU)",
+    "en": "personal notebooks {p0} GB \u00b7 {p1} cores (no GPU)"
+  },
   "admin.resources.hintNoFree": {
     "ru": "На машине {p0} ГБ; по умолчанию для окружения {p1} — {p2} ГБ.",
     "en": "The machine has {p0} GB; the default for environment {p1} is {p2} GB."

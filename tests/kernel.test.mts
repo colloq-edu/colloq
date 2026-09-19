@@ -2398,3 +2398,97 @@ test('ячейка из чужой тетради в эту очередь не 
   requestRun(room.id, [other.id], 'Teacher', 'p_host', undefined, other.root)
   assert.ok(await until(() => other.state() === 'ok'))
 })
+
+/* ------------------------------------------ простой личных ядер */
+
+/** Комната с личной тетрадью: доступ `owner`, то есть отдельный контейнер. */
+async function personalBook(room: Awaited<ReturnType<typeof seminar>>, path = 'Аким.ipynb') {
+  const { setRules, storedRules } = await import('../server/src/db.js')
+  const book = await secondBook(room, path)
+  const stored = storedRules(room.id)
+  setRules(room.id, {
+    ...stored,
+    books: {
+      ...(stored.books ?? {}),
+      [book.root]: { access: 'owner', owner: 'p_akim', ownerName: 'Аким' },
+    },
+  })
+  return book
+}
+
+const LATER = (minutes: number) => Date.now() + minutes * 60_000
+
+test('личное ядро гаснет по простою, а ядро занятия — нет', async () => {
+  const { requestRun, sweepIdleKernels } = await import('../server/src/kernel/index.js')
+  const { bookKernel, CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const mine = await personalBook(room)
+  room.type('print("lecture")')
+  mine.type('print("draft")')
+  requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
+  requestRun(room.id, [mine.id], 'Аким', 'p_akim', undefined, mine.root)
+  assert.ok(await until(() => room.state() === 'ok' && mine.state() === 'ok'))
+
+  // Полчаса ещё не прошло — не трогаем ничего.
+  await sweepIdleKernels(LATER(29))
+  assert.notEqual(bookKernel(room.doc, mine.root).status, 'starting')
+
+  /*
+   * Прошло — гаснет ОДНО ядро, личное. Занятие при этом идёт дальше: его
+   * собственное ядро живёт по другому счёту (два часа пустой комнаты), и
+   * путать эти два — значит гасить лекцию посреди пары.
+   */
+  await sweepIdleKernels(LATER(31))
+  assert.equal(bookKernel(room.doc, mine.root).status, 'starting', 'личное ядро не погасло')
+  assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'idle', 'ядро занятия погасло вместе с личным')
+  assert.ok(
+    room.notes().some((line) => /Аким\.ipynb/.test(line) && /30/.test(line)),
+    room.notes().join(' | '),
+  )
+
+  // И следующий запуск поднимает его обычным путём.
+  requestRun(room.id, [mine.id], 'Аким', 'p_akim', undefined, mine.root)
+  assert.ok(await until(() => mine.state() === 'ok'), 'ядро не поднялось после уборки')
+})
+
+test('считающее и ждущее личное ядро уборка простоя не трогает', async () => {
+  const { requestRun, sweepIdleKernels } = await import('../server/src/kernel/index.js')
+  const { bookKernel } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const mine = await personalBook(room, 'Борис.ipynb')
+  mine.type('HOLD draft')
+  requestRun(room.id, [mine.id], 'Борис', 'p_boris', undefined, mine.root)
+  assert.ok(await until(() => mine.state() === 'running'))
+
+  /*
+   * Ячейка идёт — у работы есть хозяин, который вернётся за результатом.
+   * Долгое обучение в личной тетради выглядит для этого прохода ровно как
+   * простой: ничего не происходило полчаса, — и без этой проверки уборка
+   * убивала бы именно то, ради чего тетрадь и открыли.
+   */
+  await sweepIdleKernels(LATER(120))
+  assert.equal(mine.state(), 'running', 'считающую ячейку унесла уборка простоя')
+  assert.equal(bookKernel(room.doc, mine.root).status, 'busy')
+  assert.equal(finishHeld(/HOLD/), 1)
+  assert.ok(await until(() => mine.state() === 'ok'))
+})
+
+test('KERNEL_OWN_IDLE_MIN=0 выключает уборку личных ядер', async () => {
+  const { requestRun, sweepIdleKernels } = await import('../server/src/kernel/index.js')
+  const { bookKernel } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const mine = await personalBook(room, 'Вера.ipynb')
+  mine.type('print("draft")')
+  requestRun(room.id, [mine.id], 'Вера', 'p_vera', undefined, mine.root)
+  assert.ok(await until(() => mine.state() === 'ok'))
+
+  const previous = process.env.KERNEL_OWN_IDLE_MIN
+  process.env.KERNEL_OWN_IDLE_MIN = '0'
+  try {
+    await sweepIdleKernels(LATER(600))
+    assert.equal(bookKernel(room.doc, mine.root).status, 'idle', 'ноль не выключил уборку')
+  } finally {
+    if (previous === undefined) delete process.env.KERNEL_OWN_IDLE_MIN
+    else process.env.KERNEL_OWN_IDLE_MIN = previous
+  }
+})

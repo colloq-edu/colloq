@@ -5157,7 +5157,10 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     t: 'ready',
     kernel: kernelStatus(sessionId),
     kernels: kernelStatuses(sessionId),
-    ownKernels: kernelBackend() === 'docker',
+    // Не умеет их ровно брокер: Pod он заводит один на занятие. Тестовый
+    // бэкенд умеет — у него ядра живут в одном Jupyter, и сессии по тетрадям
+    // там такие же настоящие, как в контейнере.
+    ownKernels: kernelBackend() !== 'broker',
   })
   send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
   /*

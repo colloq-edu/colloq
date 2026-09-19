@@ -1,6 +1,6 @@
 import { tr } from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision } from './runtime-client.js'
-import { sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionMemoryMb, sessionRowExists } from '../db.js'
+import { sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
 import { blockKernelStarts, kernelRetirementInProgress } from './retirement.js'
 /** Production starts fixed, isolated Pods through the private runtime broker.
  * The direct Docker adapter is retained only for explicit local development.
@@ -129,6 +129,31 @@ const sessionOfSlot = (slot: string): string => {
 }
 
 /**
+ * Сколько памяти и процессора получает контейнер личных тетрадей.
+ *
+ * Своё число занятия, если преподаватель его назвал (правило
+ * `ownMemoryMb`/`ownCpus`), иначе — ровно столько же, сколько у комнаты. Одно
+ * место на весь пул: этот вопрос задают и подъём контейнера, и смена лимита на
+ * живом занятии, и разошедшись, они дали бы контейнер, поднятый с одним
+ * числом и обновлённый другим.
+ *
+ * Строки занятия в базе нет (тест, удалённая комната) — числа комнаты: это
+ * прежнее поведение и единственный ответ, который точно не врёт.
+ */
+export function ownLimits(sessionId: string): { memoryMb: number | null; cpus: number | null } {
+  const room = { memoryMb: sessionMemoryMb(sessionId), cpus: sessionCpus(sessionId) }
+  try {
+    const rules = storedRules(sessionId)
+    return {
+      memoryMb: rules.ownMemoryMb ?? room.memoryMb,
+      cpus: rules.ownCpus ?? room.cpus,
+    }
+  } catch {
+    return room
+  }
+}
+
+/**
  * Потолок ЖИВЫХ личных ядер в одном занятии.
  *
  * Ядер в контейнере личных тетрадей десятки, и каждое — это питон с
@@ -144,6 +169,30 @@ const sessionOfSlot = (slot: string): string => {
 export function ownKernelMax(env: NodeJS.ProcessEnv = process.env): number {
   const value = Number((env.KERNEL_OWN_MAX ?? '').trim())
   return Number.isInteger(value) && value >= 1 ? value : 40
+}
+
+/**
+ * Через сколько минут простоя гасится ядро ЛИЧНОЙ тетради; `0` — не гасить.
+ *
+ * У ядер занятия простой считается по комнате: пусто два часа — уходит весь
+ * контейнер (kernel/index.ts · IDLE_KERNEL_MS). Личным тетрадям этого мало, и
+ * счёт у них другой. Занятие, открытое на весь день, держит по ядру на каждый
+ * черновик, который кто-то когда-то запустил: сорок питонов по сотне мегабайт
+ * вхолостую, и ни один из них никому не нужен — работают в двух-трёх. Потолок
+ * `KERNEL_OWN_MAX` от этого не спасает, он только отказывает СОРОК ПЕРВОМУ.
+ *
+ * Полчаса — это «отошли на перерыв и вернулись», а не «закрыли черновик»: на
+ * паре в полтора часа ядро, которое полчаса ничего не считало, переменных уже
+ * почти наверняка не хранит нужных. Цена ошибки мала и названа вслух: заметка
+ * в тетради и один Run, чтобы поднять ядро заново.
+ *
+ * `0` — выключатель для того, у кого пара устроена иначе.
+ */
+export function ownIdleMinutes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.KERNEL_OWN_IDLE_MIN ?? '').trim()
+  if (raw === '0') return 0
+  const value = Number(raw)
+  return Number.isInteger(value) && value >= 1 ? value : 30
 }
 
 /**
@@ -386,8 +435,8 @@ export async function warmRoomPerimeter(): Promise<void> {
  * вчерашних семинаров переставали существовать для уборки простоя и жили до
  * `make down`. Метку ставит `docker run` ниже, и она переживает нас.
  */
-export async function listRoomKernels(): Promise<Array<{ session: string; running: boolean }>> {
-  if (kernelBackend() === 'broker') return (await kernelRuntimeClient().rooms()).map(room => ({session:room.sessionId,running:room.phase === 'ready' || room.phase === 'pending'}))
+export async function listRoomKernels(): Promise<Array<{ session: string; running: boolean; own: boolean }>> {
+  if (kernelBackend() === 'broker') return (await kernelRuntimeClient().rooms()).map(room => ({session:room.sessionId,running:room.phase === 'ready' || room.phase === 'pending',own:false}))
   if (kernelBackend() === 'test') return []
   /*
    * По ЗАНЯТИЯМ, а не по контейнерам: их у комнаты два.
@@ -397,12 +446,18 @@ export async function listRoomKernels(): Promise<Array<{ session: string; runnin
    * один из двух: контейнер личных тетрадей стоит, а лекция считает — это
    * работающее занятие, и отсчёт двух часов ему ещё рано.
    */
-  const rooms = new Map<string, boolean>()
+  const rooms = new Map<string, { running: boolean; own: boolean }>()
   for (const room of await roomContainers()) {
     if (room.session.length === 0) continue
-    rooms.set(room.session, (rooms.get(room.session) ?? false) || room.running)
+    const seen = rooms.get(room.session) ?? { running: false, own: false }
+    seen.running ||= room.running
+    // Есть ли у занятия второй контейнер — спрашивается ЗДЕСЬ, одним и тем же
+    // `docker ps`. Панель ресурсов иначе звала бы `inspect` на каждую живую
+    // комнату вслепую, чтобы в половине случаев узнать «такого контейнера нет».
+    seen.own ||= room.role === 'own'
+    rooms.set(room.session, seen)
   }
-  return [...rooms].map(([session, running]) => ({ session, running }))
+  return [...rooms].map(([session, seen]) => ({ session, ...seen }))
 }
 
 /** Комната и срез, который держит её контейнер; срез пустой — комната без GPU. */
@@ -987,19 +1042,63 @@ export async function applyMemoryLimit(sessionId: string, mb: number | null): Pr
     if (!(await canIsolate())) return 'pending'
   }
   const spec = memSpec(mb)
-  return bothContainers(sessionId, `${spec} памяти`, (container) =>
-    limitsDocker(['update', `--memory=${spec}`, `--memory-swap=${spec}`, container], 30_000),
+  /*
+   * Комнате — её число, личным тетрадям — их (`ownLimits`).
+   *
+   * Пока у личных тетрадей своего числа нет, им достаётся то же самое; как
+   * только преподаватель его назвал, поле «Память» занятия их не касается
+   * вовсе — иначе одно нажатие в настройках занятия молча отменяло бы то, что
+   * он выбрал им отдельно.
+   */
+  const own = ownLimits(sessionId).memoryMb
+  const ownSpec = own === null ? spec : memSpec(own)
+  return bothContainers(sessionId, `${spec} памяти`, (container, role) => {
+    const use = role === 'own' ? ownSpec : spec
+    return limitsDocker(['update', `--memory=${use}`, `--memory-swap=${use}`, container], 30_000)
+  })
+}
+
+/**
+ * Числа личных тетрадей — их контейнеру, и только ему.
+ *
+ * Зовётся там, где меняется правило (routes/sessions.ts, routes/admin-instance.ts):
+ * преподаватель выбрал, сколько отсыпать студентам, и ждёт, что это подействует
+ * сейчас, а не после того, как занятие однажды закроют. Контейнер комнаты эта
+ * дорога не трогает НИКОГДА: его число — поле «Память» занятия, и менять его
+ * отсюда значило бы отдать студентам память преподавателя тем самым нажатием,
+ * которым он ограничивал их.
+ *
+ * `null` в правиле — «как у занятия», и тогда контейнеру достаётся число
+ * комнаты; так он возвращается к общему лимиту без второго поля-выключателя.
+ */
+export async function applyOwnLimits(sessionId: string): Promise<LimitOutcome> {
+  if (!limitsInjected && kernelBackend() !== 'docker') return 'pending'
+  if (!limitsInjected && !(await canIsolate())) return 'pending'
+  const { memoryMb, cpus } = ownLimits(sessionId)
+  const spec = memSpec(memoryMb ?? defaultMemoryMb(false))
+  const cores = cpus ?? defaultCpus()
+  return bothContainers(
+    sessionId,
+    `${spec} памяти и ${cores} ядер личным тетрадям`,
+    (container) =>
+      limitsDocker(
+        ['update', `--memory=${spec}`, `--memory-swap=${spec}`, `--cpus=${cores}`, container],
+        30_000,
+      ),
+    ['own'],
   )
 }
 
 /**
- * Выданное число — ОБОИМ контейнерам комнаты, и одним исходом на двоих.
+ * Выданное число — ОБОИМ контейнерам комнаты, каждому своё, и одним исходом.
  *
- * Поле в форме занятия называется «Память» и говорит про комнату, а не про
- * один из её контейнеров: преподаватель, поднявший семинару восемь гигабайт,
- * вправе ожидать, что черновики его студентов не продолжат умирать на четырёх.
- * cgroup при этом остаются раздельными — в том и смысл второго контейнера, — а
- * это значит, что число применяется дважды, каждому своё.
+ * Поле в форме занятия называется «Память» и говорит про комнату. Пока
+ * личным тетрадям не назначили своего числа, им достаётся то же самое:
+ * преподаватель, поднявший семинару восемь гигабайт, вправе ожидать, что
+ * черновики его студентов не продолжат умирать на четырёх. Назначили — второй
+ * контейнер живёт по своему числу и на изменение комнатного не отзывается
+ * (`ownLimits`). cgroup у них раздельные в любом случае: в том и смысл
+ * второго контейнера.
  *
  * «Контейнера нет» — обычное дело и не отказ: личных тетрадей в занятии может
  * не быть вовсе, комнату могли ещё не открывать сегодня. Исход считается по
@@ -1010,13 +1109,14 @@ export async function applyMemoryLimit(sessionId: string, mb: number | null): Pr
 async function bothContainers(
   sessionId: string,
   shown: string,
-  update: (container: string) => Promise<RunResult>,
+  update: (container: string, role: KernelRole) => Promise<RunResult>,
+  roles: readonly KernelRole[] = ['room', 'own'],
 ): Promise<LimitOutcome> {
   let applied = false
   let failed = false
-  for (const role of ['room', 'own'] as const) {
+  for (const role of roles) {
     const container = containerFor(sessionId, role)
-    const res = await update(container)
+    const res = await update(container, role)
     if (res.code === 0) {
       applied = true
       continue
@@ -1087,9 +1187,10 @@ export async function applyCpuLimit(sessionId: string, own: number | null): Prom
     if (kernelBackend() !== 'docker') return 'pending'
     if (!(await canIsolate())) return 'pending'
   }
-  // Обоим контейнерам комнаты, по доводу `bothContainers`.
-  return bothContainers(sessionId, `${cpus} ядер`, (container) =>
-    limitsDocker(['update', `--cpus=${cpus}`, container], 30_000),
+  // Комнате — её число, личным тетрадям — их; довод у памяти выше.
+  const ownCores = ownLimits(sessionId).cpus ?? cpus
+  return bothContainers(sessionId, `${cpus} ядер`, (container, role) =>
+    limitsDocker(['update', `--cpus=${role === 'own' ? ownCores : cpus}`, container], 30_000),
   )
 }
 
@@ -1250,8 +1351,9 @@ async function startContainer(
         gpu,
         // Те же числа, что у комнаты, — но свой cgroup: «Память» в форме
         // занятия обещает столько каждому его Python, а не столько на двоих.
-        memoryMb: sessionMemoryMb(sessionId),
-        cpus: sessionCpus(sessionId),
+        // Контейнеру личных тетрадей — его собственные числа: занятие может
+        // отсыпать студентам не столько же, сколько взяло себе.
+        ...(role === 'own' ? ownLimits(sessionId) : { memoryMb: sessionMemoryMb(sessionId), cpus: sessionCpus(sessionId) }),
       }),
       120_000,
     )

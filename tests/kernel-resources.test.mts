@@ -615,3 +615,52 @@ test('столбец памяти заводится один раз и пере
   assert.equal(cores.length, 1, 'столбца ядер нет или их два')
   assert.throws(() => db.exec('ALTER TABLE sessions ADD COLUMN cpus INTEGER'))
 })
+
+test('своё число личных тетрадей меняет только их контейнер', async () => {
+  const { setRules, storedRules } = await import('../server/src/db.js')
+  const { applyMemoryLimit, applyCpuLimit, applyOwnLimits } = await import('../server/src/kernel/pool.js')
+  const id = 'res-own-rules'
+  createSession(id, 'Личные числа')
+  setRules(id, { ...storedRules(id), ownBooks: 'on', ownMemoryMb: 2048, ownCpus: 1 })
+
+  const calls: string[][] = []
+  useDockerForLimits(async (args) => {
+    calls.push(args)
+    return { code: 0, out: '' }
+  })
+  try {
+    /*
+     * Поле «Память» занятия поднимают до восьми гигабайт — комната получает
+     * восемь, личные тетради остаются на своих двух. Иначе одно нажатие в
+     * настройках занятия молча отменяло бы то, что преподаватель выбрал
+     * студентам отдельно.
+     */
+    assert.equal(await applyMemoryLimit(id, 8192), 'applied')
+    assert.deepEqual(
+      calls.map((args) => [args.at(-1), args.find((a) => a.startsWith('--memory='))]),
+      [[`colloq-room-${id}`, '--memory=8192m'], [`colloq-room-${id}-own`, '--memory=2048m']],
+    )
+
+    calls.length = 0
+    assert.equal(await applyCpuLimit(id, 6), 'applied')
+    assert.deepEqual(
+      calls.map((args) => [args.at(-1), args.find((a) => a.startsWith('--cpus='))]),
+      [[`colloq-room-${id}`, '--cpus=6'], [`colloq-room-${id}-own`, '--cpus=1']],
+    )
+
+    /*
+     * А смена самого правила трогает ТОЛЬКО их контейнер: числа комнаты —
+     * её поле, и менять его отсюда значило бы отдать студентам память
+     * преподавателя тем самым нажатием, которым он её ограничивал.
+     */
+    calls.length = 0
+    setRules(id, { ...storedRules(id), ownMemoryMb: 4096, ownCpus: 2 })
+    assert.equal(await applyOwnLimits(id), 'applied')
+    assert.equal(calls.length, 1, JSON.stringify(calls))
+    assert.equal(calls[0].at(-1), `colloq-room-${id}-own`)
+    assert.ok(calls[0].includes('--memory=4096m'), JSON.stringify(calls[0]))
+    assert.ok(calls[0].includes('--cpus=2'), JSON.stringify(calls[0]))
+  } finally {
+    useDockerForLimits(null)
+  }
+})

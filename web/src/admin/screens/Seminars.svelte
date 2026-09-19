@@ -1753,9 +1753,20 @@
         {/if}
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5">
+        <!--
+          Числа занятия и потолок машины — в строку правила «Личные тетради»:
+          «как у занятия» обязано называть, СКОЛЬКО это, а список — не
+          предлагать того, чего машина не даст.
+        -->
         <RoomRulesRows
           rules={ruling.rules}
           busy={rulesBusy}
+          own={{
+            roomMemoryMb: ruling.memoryMb ?? resources?.kernel.defaultMemoryMb ?? null,
+            roomCpus: ruling.cpus ?? resources?.kernel.defaultCpus ?? null,
+            maxMemoryMb: resources?.limits.max ?? null,
+            maxCpus: resources?.limits.cpus.max ?? null,
+          }}
           onchange={(patch) => void setRule(ruling as AdminSeminar, patch)}
         />
 

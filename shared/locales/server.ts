@@ -2246,7 +2246,7 @@ export const serverMessages: MessageCatalog = {
     "en": "The class is over. This room is now read-only."
   },
   "server.ownBooksAreOff": {
-    "ru": "Свои тетради в этом занятии не разрешены — их включает преподаватель в правилах",
+    "ru": "Личные тетради в этом занятии не разрешены — их включает преподаватель в правилах",
     "en": "Personal notebooks are not allowed in this class — the teacher turns them on in the rules"
   },
   "server.ownBooksLimit": {
@@ -2280,6 +2280,18 @@ export const serverMessages: MessageCatalog = {
   "server.kernel.ownFull": {
     "ru": "Личных ядер в занятии уже {p0} — закройте неиспользуемые тетради или попросите преподавателя",
     "en": "The class already has {p0} personal kernels — close the notebooks you are not using, or ask the teacher"
+  },
+  "server.rules.ownMemoryRefused": {
+    "ru": "Столько памяти личным тетрадям эта машина не даст — выберите число из списка",
+    "en": "This machine cannot give personal notebooks that much memory — pick a number from the list"
+  },
+  "server.rules.ownCpusRefused": {
+    "ru": "Столько ядер личным тетрадям эта машина не даст — выберите число из списка",
+    "en": "This machine cannot give personal notebooks that many cores — pick a number from the list"
+  },
+  "server.kernel.ownIdle": {
+    "ru": "Ядро этой тетради остановлено после {p0} мин простоя — переменные сброшены. Запустите ячейку, чтобы поднять его снова.",
+    "en": "This notebook\u2019s kernel was stopped after {p0} min of idling — its variables are gone. Run a cell to bring it back."
   },
   "server.kernel.bookAccessChanged": {
     "ru": "Доступ к тетради изменился — её ядро перезапущено, переменные сброшены.",

@@ -20,12 +20,21 @@ export const roomMessages: MessageCatalog = {
   "room.book.mark.all": {"ru": "открыта всем", "en": "open to everyone"},
   "room.book.mark.host": {"ru": "только преподаватель", "en": "teacher only"},
   "room.book.busy": {"ru": "Ядро этой тетради считает", "en": "This notebook’s kernel is running"},
-  "room.ui.ownBooksOff": {"ru": "Свои тетради в этом занятии не разрешены — их включает преподаватель", "en": "Personal notebooks are not allowed in this class — the teacher turns them on"},
-  "room.rules.ownBooks.title": {"ru": "Свои тетради студентов", "en": "Students’ own notebooks"},
-  "room.rules.ownBooks.note": {"ru": "Может ли студент завести в комнате свою тетрадь — пустую или внеся .ipynb из папки. Своя тетрадь всегда личная: правят и запускают автор и преподаватель, остальные смотрят. У личной тетради своё ядро в отдельном контейнере: переменные занятия в неё не попадают, GPU занятия ей не даётся, а перезапустить её ядро и стереть её вывод может сам автор. По умолчанию выключено. Не то же, что строка выше: та про общую папку занятия. Не больше трёх своих тетрадей на человека; свою автор может и убрать.", "en": "Whether a student may start their own notebook in the room — empty, or by bringing in an .ipynb from the folder. An own notebook is always personal: its author and the teacher edit and run it, everyone else watches. A personal notebook has a kernel of its own in a separate container: the class’s variables do not reach it, it is not given the class’s GPU, and its author may restart its kernel and clear its output. Off by default. Not the same as the row above, which is about the class’s shared folder. At most three own notebooks per person; the author may remove their own."},
-  "room.rules.ownBooks.noKernel": {"ru": "На этом сервере у личных тетрадей пока нет своего ядра — запускать в них не получится.", "en": "On this server personal notebooks have no kernel of their own yet — running in them will not work."},
-  "room.rules.ownBooks.off": {"ru": "нельзя", "en": "not allowed"},
-  "room.rules.ownBooks.on": {"ru": "можно", "en": "allowed"},
+  "room.ui.ownBooksOff": {"ru": "Личные тетради в этом занятии не разрешены — их включает преподаватель", "en": "Personal notebooks are not allowed in this class — the teacher turns them on"},
+  "room.rules.ownBooks.title": {"ru": "Личные тетради студентов", "en": "Students’ personal notebooks"},
+  "room.rules.ownBooks.note": {"ru": "Студент заводит свою тетрадь и работает в ней отдельно от общей: правят и запускают её только он и вы, остальные смотрят. У неё своё ядро. До трёх на человека.", "en": "A student starts a notebook of their own and works apart from the shared one: only they and you edit and run it, everyone else watches. It has a kernel of its own. Up to three per person."},
+  "room.rules.ownRes.title": {"ru": "Ресурсы на все личные тетради", "en": "Resources for all personal notebooks"},
+  "room.rules.ownRes.memory": {"ru": "Память", "en": "Memory"},
+  "room.rules.ownRes.cpu": {"ru": "Процессор", "en": "CPU"},
+  "room.rules.ownRes.asClass": {"ru": "как у занятия", "en": "as for the class"},
+  "room.rules.ownRes.asClassValue": {"ru": "как у занятия ({p0})", "en": "as for the class ({p0})"},
+  "room.rules.ownRes.gb": {"ru": "{p0} ГБ", "en": "{p0} GB"},
+  "room.rules.ownRes.cores": {"ru": "{p0} ядр.", "en": "{p0} cores"},
+  "room.rules.ownRes.noGpu": {"ru": "без GPU", "en": "no GPU"},
+  "room.rules.ownRes.note": {"ru": "Это отдельно от ресурсов занятия: студенты не заберут память у вашей тетради.", "en": "This is separate from the class\u2019s resources: students will not take memory from your notebook."},
+  "room.rules.ownBooks.noKernel": {"ru": "На этом инстансе у личных тетрадей пока нет своего ядра — запуск в них недоступен.", "en": "On this instance personal notebooks have no kernel of their own yet — running in them is unavailable."},
+  "room.rules.ownBooks.off": {"ru": "Нельзя", "en": "Off"},
+  "room.rules.ownBooks.on": {"ru": "Можно", "en": "On"},
   "room.council.nextRun": {"ru": "Запуск через {p0}", "en": "Run in {p0}"},
   "room.council.nextRunWhy": {"ru": "Пауза между запусками — правило преподавателя: ядро у тетради одно на всех", "en": "The pause between runs is the teacher’s rule: everyone shares this notebook’s one kernel"},
   "room.oracle.working": {"ru": "Оракул смотрит эту ячейку", "en": "The oracle is looking at this cell"},
@@ -3493,8 +3502,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Open council in this cell"
   },
   "room.ui.1079": {
-    "ru": "Открыть ячейку для совместной работы",
-    "en": "Open this cell for collaboration"
+    "ru": "Открыть ячейку: пишут вместе",
+    "en": "Open this cell: they write together"
   },
   "room.ui.1080": {
     "ru": "Изменить доступ к ячейке",
@@ -3513,8 +3522,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Close cell · hold to choose access"
   },
   "room.ui.1084": {
-    "ru": "Открыть ячейку для совместной работы · удержать — выбрать доступ",
-    "en": "Open this cell for collaboration · hold to choose access"
+    "ru": "Открыть ячейку: пишут вместе · удержать — выбрать доступ",
+    "en": "Open this cell: they write together · hold to choose access"
   },
   "room.ui.1085": {
     "ru": "Консилиум · щелчок — настроить доступ к ячейке",
@@ -3525,8 +3534,8 @@ export const roomMessages: MessageCatalog = {
     "en": "In this class, the teacher does this"
   },
   "room.ui.1092": {
-    "ru": "Редактировать ячейки может только преподаватель",
-    "en": "Only the teacher can edit cells"
+    "ru": "Печатать в ячейках может только преподаватель",
+    "en": "Only the teacher can type in cells"
   },
   "room.ui.1093": {
     "ru": "Запускать ячейки и команды терминала может только преподаватель",
@@ -3549,16 +3558,16 @@ export const roomMessages: MessageCatalog = {
     "en": "Only the teacher can add, delete and reorder cells"
   },
   "room.ui.1098": {
-    "ru": "Очищать общие результаты и историю сообщений может только преподаватель",
-    "en": "Only the teacher can clear shared output and message history"
+    "ru": "Очищать весь вывод может только преподаватель",
+    "en": "Only the teacher can clear all output"
   },
   "room.ui.1099": {
     "ru": "Перезапускать ядро может только преподаватель",
     "en": "Only the teacher can restart the kernel"
   },
   "room.ui.1100": {
-    "ru": "Создавать и редактировать файлы может только преподаватель",
-    "en": "Only the teacher can create and edit files"
+    "ru": "Загружать и править файлы может только преподаватель",
+    "en": "Only the teacher can upload and edit files"
   },
   "room.ui.1101": {
     "ru": "Режим работы оракула с файлами отключён",
@@ -3569,8 +3578,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Oracle file editing mode is available only to the teacher"
   },
   "room.ui.1103": {
-    "ru": "Показывать документ всей комнате может только преподаватель",
-    "en": "Only the teacher can show a document to the room"
+    "ru": "Выводить документ на общий экран может только преподаватель",
+    "en": "Only the teacher can put a document on the shared screen"
   },
   "room.ui.1104": {
     "ru": "Консилиум ведёт преподаватель",
@@ -3645,76 +3654,76 @@ export const roomMessages: MessageCatalog = {
     "en": "Everyone"
   },
   "room.ui.1128": {
-    "ru": "Открытая ячейка",
-    "en": "Open cell"
+    "ru": "Когда открываю ячейку студентам",
+    "en": "When I open a cell to students"
   },
   "room.ui.1129": {
-    "ru": "Действие кнопки замка: открыть общую ячейку для редактирования или включить Консилиум с отдельным ответом каждого студента.",
-    "en": "Lock button action: open the shared cell for editing or enable Council with a separate answer for each student."
+    "ru": "Что делает замок на ячейке. «Пишут вместе» — одна общая ячейка на всех. «Каждый отвечает сам» — у каждого свой ответ, а вы видите все ответы в пульте (консилиум).",
+    "en": "What the lock on a cell does. “They write together”: one shared cell for everyone. “Each answers alone”: every student gets an answer of their own, and you see them all in the console (Council)."
   },
   "room.ui.1130": {
-    "ru": "Всем вместе",
-    "en": "Work together"
+    "ru": "Пишут вместе",
+    "en": "They write together"
   },
   "room.ui.1131": {
-    "ru": "Каждому свой лист",
-    "en": "A sheet for each student"
+    "ru": "Каждый отвечает сам",
+    "en": "Each answers alone"
   },
   "room.ui.1132": {
     "ru": "Печатать в ячейках",
-    "en": "Edit cells"
+    "en": "Type in cells"
   },
   "room.ui.1133": {
-    "ru": "Кто может редактировать текст ячеек. Преподаватель также может открыть отдельную ячейку для группы.",
-    "en": "Who can edit cell text. The teacher can also open an individual cell to the group."
+    "ru": "Кто может менять текст ячеек. При «Преподаватель» отдельную ячейку всё равно можно открыть студентам замком.",
+    "en": "Who can change the text of cells. With “Teacher”, you can still open a single cell to students with its lock."
   },
   "room.ui.1134": {
     "ru": "Запускать код",
     "en": "Run code"
   },
   "room.ui.1135": {
-    "ru": "Правило действует на ячейки, запуск файлов и команды терминала. «По одной» ограничивает участника одним запуском ячейки одновременно.",
-    "en": "This rule covers cells, file execution and terminal commands. “One at a time” limits each participant to one running cell."
+    "ru": "Ячейки, файлы и терминал — одним правилом. «По одной» — у студента в тетради не больше одной ячейки: считающейся или в очереди.",
+    "en": "Cells, files and the terminal follow this one rule. “One at a time”: a student has at most one cell per notebook queued or running."
   },
   "room.ui.1136": {
     "ru": "По одной",
     "en": "One at a time"
   },
   "room.ui.1137": {
-    "ru": "Менять состав тетради",
-    "en": "Change notebook structure"
+    "ru": "Добавлять и удалять ячейки",
+    "en": "Add and remove cells"
   },
   "room.ui.1138": {
-    "ru": "«Только добавлять»: участники добавляют ячейки, а удаляет и переставляет их преподаватель.",
-    "en": "“Add only”: participants add cells; the teacher deletes and reorders them."
+    "ru": "Добавлять, удалять и переставлять ячейки. «Только добавлять» — студенты добавляют, удаляете и переставляете вы.",
+    "en": "Adding, deleting and reordering cells. “Add only”: students add; you delete and reorder."
   },
   "room.ui.1139": {
     "ru": "Только добавлять",
     "en": "Add only"
   },
   "room.ui.1140": {
-    "ru": "Показывать документ комнате",
-    "en": "Show documents to the room"
+    "ru": "Выводить документ на общий экран",
+    "en": "Put a document on the shared screen"
   },
   "room.ui.1141": {
-    "ru": "Кто может открыть документ на общем экране. Участники по-прежнему могут просматривать документы у себя.",
-    "en": "Who can open a document on the shared screen. Participants can still browse documents on their own."
+    "ru": "Кто может показать PDF или файл всем на общем экране. Листать у себя студенты могут всегда.",
+    "en": "Who can show a PDF or a file to everyone on the shared screen. Students can always browse documents on their own."
   },
   "room.ui.1142": {
-    "ru": "Создавать и редактировать файлы",
-    "en": "Create and edit files"
+    "ru": "Загружать и править файлы",
+    "en": "Upload and edit files"
   },
   "room.ui.1143": {
-    "ru": "Правило не ограничивает скачивание. Удалять и переименовывать файлы может только преподаватель.",
-    "en": "Downloads are not restricted. Only the teacher can delete and rename files."
+    "ru": "Общая папка занятия: загрузить, создать, изменить файл. Скачивать могут все; удаляете и переименовываете только вы.",
+    "en": "The class’s shared folder: upload, create or change a file. Anyone can download; only you delete and rename."
   },
   "room.ui.1144": {
-    "ru": "Оракул правит файлы сам",
-    "en": "Oracle edits files directly"
+    "ru": "Оракул в режиме «Сделать»",
+    "en": "Oracle in Act mode"
   },
   "room.ui.1145": {
-    "ru": "Режим «Сделать» позволяет оракулу читать, создавать и изменять файлы, запускать код. Отмена восстанавливает доступные версии файлов, но не последствия выполнения кода. Правки ячеек в этом режиме применяются сразу.",
-    "en": "Act mode lets the oracle read, create and edit files and run code. Undo restores available file versions, but not the effects of running code. Cell edits are applied immediately in this mode."
+    "ru": "Для кого оракул сам читает и меняет файлы и запускает код. Правки ячеек применяются сразу; отмена возвращает файлы, но не последствия запуска.",
+    "en": "For whom the oracle reads and changes files and runs code by itself. Cell edits apply at once; undo restores files, not the effects of running code."
   },
   "room.ui.1146": {
     "ru": "Никто",
@@ -3725,8 +3734,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Oracle questions per hour"
   },
   "room.ui.1148": {
-    "ru": "Лимит на одного участника. Не выше общего лимита сервера; на преподавателя не распространяется. Пустое поле — использовать настройку сервера.",
-    "en": "Limit per participant. Cannot exceed the server limit; does not apply to the teacher. Leave blank to use the server setting."
+    "ru": "На одного студента; вас лимит не касается. Пусто — как на сервере, выше серверного не поднять.",
+    "en": "Per student; the limit does not apply to you. Blank: as on the server; it cannot go above the server’s."
   },
   "room.ui.1149": {
     "ru": "в час",
@@ -3741,12 +3750,12 @@ export const roomMessages: MessageCatalog = {
     "en": "{p0} per hour"
   },
   "room.ui.1152": {
-    "ru": "Промежуток между вопросами",
-    "en": "Time between questions"
+    "ru": "Пауза между вопросами оракулу",
+    "en": "Pause between oracle questions"
   },
   "room.ui.1153": {
-    "ru": "Минимальный интервал между вопросами одного участника. Не меньше интервала на сервере; на преподавателя не распространяется. Пустое поле — использовать настройку сервера.",
-    "en": "Minimum interval between one participant’s questions. Cannot be less than the server interval; does not apply to the teacher. Leave blank to use the server setting."
+    "ru": "Сколько секунд студент ждёт перед следующим вопросом; вас не касается. Пусто — как на сервере, меньше серверного не поставить.",
+    "en": "How many seconds a student waits before the next question; does not apply to you. Blank: as on the server; it cannot go below the server’s."
   },
   "room.ui.1154": {
     "ru": "сек",
@@ -3761,28 +3770,28 @@ export const roomMessages: MessageCatalog = {
     "en": "every {p0} sec"
   },
   "room.ui.1157": {
-    "ru": "Смотреть ленту версий",
+    "ru": "Смотреть историю версий",
     "en": "View version history"
   },
   "room.ui.1158": {
-    "ru": "Кто может просматривать предыдущие версии тетради и авторов изменений.",
-    "en": "Who can view previous notebook versions and change authors."
+    "ru": "Кто видит прошлые версии тетради и авторов правок.",
+    "en": "Who can see earlier versions of the notebook and who changed what."
   },
   "room.ui.1159": {
     "ru": "Перезапускать ядро",
-    "en": "Restart kernel"
+    "en": "Restart the kernel"
   },
   "room.ui.1160": {
-    "ru": "Перезапуск сбрасывает переменные для всех участников. Текст ячеек и файлы сохраняются.",
-    "en": "Restarting clears variables for all participants. Cell text and files are preserved."
+    "ru": "Перезапуск сбрасывает переменные тетради у всех, кто в ней работает; текст и файлы остаются. В личной тетради ядро перезапускает её автор.",
+    "en": "A restart clears the notebook’s variables for everyone working in it; text and files stay. In a personal notebook its author restarts the kernel."
   },
   "room.ui.1161": {
-    "ru": "Очищать общие результаты",
-    "en": "Clear shared output"
+    "ru": "Очищать весь вывод",
+    "en": "Clear all output"
   },
   "room.ui.1162": {
-    "ru": "Кто может очистить все выводы ячеек, историю терминала и ленту оракула. Очистка вывода отдельной ячейки зависит от права редактировать её.",
-    "en": "Who can clear all cell outputs, terminal history and oracle feed. Clearing one cell’s output depends on permission to edit it."
+    "ru": "Стереть разом вывод всех ячеек тетради, историю терминала и ленту оракула. Вывод одной ячейки чистит тот, кто может её править; в личной тетради — её автор.",
+    "en": "Wipe the output of every cell in the notebook, the terminal history and the oracle feed at once. One cell’s output is cleared by whoever may edit it; in a personal notebook, by its author."
   },
   "room.ui.1163": {
     "ru": "Остановить выполняющуюся ячейку",

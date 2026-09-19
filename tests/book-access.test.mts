@@ -807,3 +807,37 @@ test('ячейка личной тетради правится её автор�
     true,
   )
 })
+
+test('числа личных тетрадей читаются тотально и звонок их не трогает', () => {
+  /*
+   * `null` — «как у занятия», и это умолчание: одно число на оба контейнера,
+   * пока преподаватель не решил иначе.
+   */
+  assert.equal(OPEN_ROOM.ownMemoryMb, null)
+  assert.equal(OPEN_ROOM.ownCpus, null)
+
+  const good = readRules({ ...OPEN_ROOM, ownMemoryMb: 2048, ownCpus: 2 })
+  assert.deepEqual([good.ownMemoryMb, good.ownCpus], [2048, 2])
+
+  /*
+   * Мусор становится `null`, а не отказом: правила читает каждый кадр
+   * синхронизации, и строка из базы, испорченная чьей-то рукой, не должна
+   * запирать комнату.
+   */
+  for (const bad of ['4g', 1.5, -1, 0, 1e9, null, undefined, {}, NaN]) {
+    const read = readRules({ ...OPEN_ROOM, ownMemoryMb: bad, ownCpus: bad } as never)
+    assert.deepEqual([read.ownMemoryMb, read.ownCpus], [null, null], String(bad))
+  }
+  // Один процессор — законное число, а для памяти это уже ниже пола.
+  assert.equal(readRules({ ...OPEN_ROOM, ownCpus: 1 } as never).ownCpus, 1)
+  assert.equal(readRules({ ...OPEN_ROOM, ownMemoryMb: 1 } as never).ownMemoryMb, null)
+
+  /*
+   * Конец занятия — про права, а не про железо: он закрывает дверь к личным
+   * тетрадям (`ownBooks: 'off'`), но число пригодится в ту же секунду, когда
+   * занятие откроют обратно.
+   */
+  const after = rulesAfterClass({ ...OPEN_ROOM, ownBooks: 'on', ownMemoryMb: 4096, ownCpus: 2 })
+  assert.equal(after.ownBooks, 'off')
+  assert.deepEqual([after.ownMemoryMb, after.ownCpus], [4096, 2])
+})

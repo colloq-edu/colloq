@@ -56,9 +56,56 @@
      * ДО того, как преподаватель включит своим тетради, которые не считают.
      */
     ownKernels?: boolean
+    /**
+     * Что занятие получило само — чтобы «как у занятия» называло число.
+     *
+     * Необязательное: комната своих ресурсов не знает (их считает панель
+     * преподавателя по машине), и без них строка честно говорит «как у
+     * занятия» без цифры. Потолок тоже отсюда: браузер про память докера не
+     * знает и знать не должен — число вне границ отвергает сервер словами.
+     */
+    own?: { roomMemoryMb: number | null; roomCpus: number | null; maxMemoryMb: number | null; maxCpus: number | null } | null
   }
 
-  let { rules, onchange, busy = false, instance = null, ownKernels = true }: Props = $props()
+  let { rules, onchange, busy = false, instance = null, ownKernels = true, own = null }: Props = $props()
+
+  /* ------------------------------------------ ресурсы личных тетрадей */
+
+  const MB_IN_GB = 1024
+  /**
+   * Лестница, а не поле ввода.
+   *
+   * Вопрос здесь не «сколько ровно мегабайт», а «сколько отсыпать студентам», и
+   * ответов на него в жизни пять. Поле ввода на этот вопрос отвечало бы
+   * приглашением набрать 3,5 ГБ и отказом сервера в ответ; список — двумя
+   * щелчками и ни одного неверного значения.
+   */
+  const MEMORY_LADDER = [1, 2, 4, 8, 16, 32]
+  const CPU_LADDER = [1, 2, 4, 8, 16]
+
+  const gbOf = (mb: number): string => {
+    const value = mb / MB_IN_GB
+    return Number.isInteger(value) ? String(value) : value.toFixed(1)
+  }
+  const memoryChoices = $derived(
+    MEMORY_LADDER.filter((gb) => own?.maxMemoryMb == null || gb * MB_IN_GB <= own.maxMemoryMb),
+  )
+  const cpuChoices = $derived(CPU_LADDER.filter((n) => own?.maxCpus == null || n <= own.maxCpus))
+  /** Подпись «как у занятия»: с числом, когда оно известно, и без — когда нет. */
+  const asClassMemory = $derived(
+    own?.roomMemoryMb != null
+      ? tr('room.rules.ownRes.asClassValue', {
+          p0: tr('room.rules.ownRes.gb', { p0: gbOf(own.roomMemoryMb) }),
+        })
+      : tr('room.rules.ownRes.asClass'),
+  )
+  const asClassCpus = $derived(
+    own?.roomCpus != null
+      ? tr('room.rules.ownRes.asClassValue', {
+          p0: tr('room.rules.ownRes.cores', { p0: String(own.roomCpus) }),
+        })
+      : tr('room.rules.ownRes.asClass'),
+  )
 
   /** Поля потолков, чтобы вернуть их к правде после отказа сервера, — см. ниже. */
   let fields = $state<Record<string, HTMLInputElement | null>>({})
@@ -221,10 +268,135 @@
         </div>
       {/if}
     </div>
+    <!--
+      Сколько отсыпать студентам — здесь же, под правилом, и только когда оно
+      включено.
+      Вопрос «можно ли» и вопрос «сколько» человек задаёт себе подряд, одним
+      движением: он разрешает студентам свои тетради и в ту же секунду думает,
+      не заберут ли они память у его собственной. Отдельный экран для второго
+      вопроса означал бы, что большинство на него не ответит никогда — а
+      умолчание «столько же» на машине стоит вдвое.
+    -->
+    {#if row.key === 'ownBooks' && rules.ownBooks === 'on'}
+      <div class="own-res">
+        <p class="own-res-title">{tr('room.rules.ownRes.title')}</p>
+        <div class="own-res-row">
+          <label class="own-res-pick">
+            <span class="own-res-label">{tr('room.rules.ownRes.memory')}</span>
+            <select
+              class="rule-pick"
+              disabled={busy}
+              value={rules.ownMemoryMb === null ? '' : String(rules.ownMemoryMb)}
+              onchange={(event) =>
+                onchange({
+                  ownMemoryMb: event.currentTarget.value === '' ? null : Number(event.currentTarget.value),
+                } as Partial<RoomRules>)}
+            >
+              <option value="">{asClassMemory}</option>
+              {#each memoryChoices as gb (gb)}
+                <option value={String(gb * MB_IN_GB)}>{tr('room.rules.ownRes.gb', { p0: String(gb) })}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="own-res-pick">
+            <span class="own-res-label">{tr('room.rules.ownRes.cpu')}</span>
+            <select
+              class="rule-pick"
+              disabled={busy}
+              value={rules.ownCpus === null ? '' : String(rules.ownCpus)}
+              onchange={(event) =>
+                onchange({
+                  ownCpus: event.currentTarget.value === '' ? null : Number(event.currentTarget.value),
+                } as Partial<RoomRules>)}
+            >
+              <option value="">{asClassCpus}</option>
+              {#each cpuChoices as n (n)}
+                <option value={String(n)}>{tr('room.rules.ownRes.cores', { p0: String(n) })}</option>
+              {/each}
+            </select>
+          </label>
+          <span class="own-res-gpu">{tr('room.rules.ownRes.noGpu')}</span>
+        </div>
+        <p class="own-res-note">{tr('room.rules.ownRes.note')}</p>
+      </div>
+    {/if}
   {/each}
 </div>
 
 <style>
+  /*
+   * Блок ресурсов личных тетрадей: вложенный, а не ещё одна строка правил.
+   *
+   * Отступ слева и тонкая линия говорят, чей он: это подробность ОДНОГО
+   * правила, и появляется он, только когда правило включено. Строкой в общем
+   * списке он читался бы как двенадцатое правило комнаты — а это не право, а
+   * железо.
+   */
+  .own-res {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-block: -4px 12px;
+    padding: 12px 0 0 14px;
+    border-left: 2px solid rgb(var(--line));
+  }
+  .own-res-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: rgb(var(--ink));
+  }
+  .own-res-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+  }
+  .own-res-pick {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .own-res-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: rgb(var(--muted));
+  }
+  .own-res-gpu {
+    font-size: 12px;
+    font-weight: 600;
+    color: rgb(var(--muted));
+  }
+  .own-res-note {
+    font-size: 12px;
+    line-height: 1.45;
+    color: rgb(var(--muted));
+  }
+  /* Выбор — по мерке поля числа рядом: одна высота, одна рамка, один кегль. */
+  .rule-pick {
+    height: 32px;
+    padding-inline: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: rgb(var(--ink));
+    background: none;
+    border: 1px solid rgb(var(--line));
+  }
+  .rule-pick:disabled {
+    opacity: 0.5;
+  }
+  /* Телефон: то же, что у сегментов, — палец, а не курсор. */
+  @media (max-width: 640px) {
+    .own-res-pick {
+      width: 100%;
+      justify-content: space-between;
+    }
+    .rule-pick {
+      height: 44px;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+  }
+
   .rule-seg {
     height: 32px;
     padding-inline: 11px;

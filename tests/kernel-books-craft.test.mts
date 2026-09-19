@@ -124,6 +124,45 @@ test('состояние ядер в браузере читается по те
   assert.match(lib, /bookKernel\(this\.#doc, root\)/)
 })
 
+/* ------------------------------------ ресурсы личных тетрадей в правилах */
+
+test('ресурсы личных тетрадей раскрываются под правилом, и только когда оно включено', () => {
+  const rows = code(read('web/src/components/RoomRulesRows.svelte'))
+  /*
+   * Вопрос «можно ли» и вопрос «сколько» человек задаёт себе подряд, одним
+   * движением. Блок на отдельном экране означал бы, что на второй вопрос
+   * большинство не ответит никогда — а умолчание «столько же» на машине стоит
+   * вдвое.
+   */
+  assert.match(rows, /\{#if row\.key === 'ownBooks' && rules\.ownBooks === 'on'\}/)
+  assert.match(rows, /ownMemoryMb: event\.currentTarget\.value === '' \? null : Number/)
+  assert.match(rows, /ownCpus: event\.currentTarget\.value === '' \? null : Number/)
+  // «Как у занятия» — пустая строка выбора, то есть `null`: отдельного
+  // выключателя у неё нет, и заводить его было бы вторым способом сказать то же.
+  assert.match(rows, /<option value="">\{asClassMemory\}<\/option>/)
+  assert.match(rows, /room\.rules\.ownRes\.noGpu/)
+  assert.match(rows, /room\.rules\.ownRes\.note/)
+  // Телефон: выбор растёт до пальца, как соседние сегменты.
+  assert.match(rows, /@media \(max-width: 640px\)[\s\S]*?\.rule-pick \{\s*height: 44px/)
+})
+
+test('слова правил называют вещи так, как их называет преподаватель', () => {
+  // Два режима замка зовутся ОДИНАКОВО везде, где о них говорят.
+  assert.equal(tr('room.ui.1130'), 'Пишут вместе')
+  assert.equal(tr('room.ui.1131'), 'Каждый отвечает сам')
+  assert.match(tr('room.ui.1079'), /пишут вместе/)
+  // Правило про личные тетради называет ядро и потолок в три строки.
+  assert.match(tr('room.rules.ownBooks.note'), /своё ядро/)
+  assert.match(tr('room.rules.ownBooks.note'), /трёх/)
+  assert.equal(tr('room.rules.ownBooks.on'), 'Можно')
+  // «По одной» — про тетрадь, а не про комнату: очередей столько же, сколько
+  // тетрадей (server/src/kernel/index.ts · requestRun).
+  assert.match(tr('room.ui.1135'), /в тетради не больше одной ячейки/)
+  // Очистка вывода теперь тоже по тетради.
+  assert.match(tr('room.ui.1162'), /ячеек тетради/)
+  assert.match(tr('room.ui.1160'), /личной тетради/)
+})
+
 /* --------------------------------------------------------------- слова */
 
 test('слова про ядро говорят про тетрадь, а не про комнату', () => {
@@ -131,7 +170,11 @@ test('слова про ядро говорят про тетрадь, а не �
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /ядре этой тетради/)
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /по очереди/)
   assert.doesNotMatch(tr(COUNCIL_SHARED_KERNEL_NOTE), /в общем ядре/)
-  // Подсказка правила называет и ядро, и то, что GPU занятия ему не даётся.
+  /*
+   * Подсказка правила называет ядро; про GPU говорит блок ресурсов под ней —
+   * там, где выбирают, сколько отсыпать, и где «без GPU» и есть ответ на
+   * вопрос «а карту они заберут?».
+   */
   assert.match(tr('room.rules.ownBooks.note'), /своё ядро/)
-  assert.match(tr('room.rules.ownBooks.note'), /GPU/)
+  assert.match(tr('room.rules.ownRes.noGpu'), /GPU/)
 })

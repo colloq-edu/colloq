@@ -1228,8 +1228,12 @@
   const ADD_LABEL = 'text-2xs font-bold uppercase tracking-label'
   const ADD =
     `inline-flex h-6 items-center gap-1.5 border border-line bg-canvas px-2.5 ${ADD_LABEL} ` +
-    'text-muted transition-colors duration-[var(--speed-quick)] hover:text-ink ' +
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+    'text-muted transition-colors duration-[var(--speed-quick)] enabled:hover:text-ink ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ' +
+    // Состав тетради закрыт — и кнопка это показывает, как показывают соседние
+    // кнопки тулбара ячейки («вверх», «вниз», «убрать»). Нажимающаяся кнопка,
+    // отвечающая тостом, читается как поломка, а не как решение преподавателя.
+    'disabled:pointer-events-none disabled:opacity-40'
 
   /*
    * Whether the run bar has more to the right than the window is showing. Only
@@ -1359,8 +1363,20 @@
   /** Same button, at the foot of the sheet, where nothing needs to hide a rule. */
   const ADD_FOOT =
     `inline-flex h-6 items-center gap-1.5 border border-line px-2.5 ${ADD_LABEL} text-muted ` +
-    'transition-colors duration-[var(--speed-quick)] hover:text-ink ' +
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
+    'transition-colors duration-[var(--speed-quick)] enabled:hover:text-ink ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ' +
+    'disabled:pointer-events-none disabled:opacity-40'
+
+  /**
+   * Почему добавить ячейку нельзя — или что будет, если можно.
+   *
+   * Причина берётся из того же места, что и отказ на клавишу `a` (`addAt`) и
+   * серые кнопки тулбара ячейки: `may.structureWhy` знает и про правила
+   * тетради, и про правила комнаты, и про конец занятия. Второй копии этого
+   * вопроса здесь заводить нельзя — разойдясь, она даст серую кнопку там, где
+   * право есть.
+   */
+  const addTitle = (can: string): string => (may.add ? can : may.structureWhy)
 </script>
 
 <svelte:window {onkeydown} />
@@ -1389,12 +1405,19 @@
              duration-[var(--speed-quick)] focus-within:pointer-events-auto focus-within:opacity-100
              group-hover/add:pointer-events-auto group-hover/add:opacity-100"
     >
-      <button type="button" class={ADD} title={tr('room.ui.440')} onclick={() => addAt(index, 'code')}>
+      <button
+        type="button"
+        class={ADD}
+        disabled={!may.add}
+        title={addTitle(tr('room.ui.440'))}
+        onclick={() => addAt(index, 'code')}
+      >
         <Icon name="plus" size={11} /> {tr('room.ui.441')} </button>
       <button
         type="button"
         class={ADD}
-        title={tr('room.ui.442')}
+        disabled={!may.add}
+        title={addTitle(tr('room.ui.442'))}
         onclick={() => addAt(index, 'markdown')}
       >
         <Icon name="plus" size={11} /> {tr('room.ui.443')} </button>
@@ -1469,8 +1492,8 @@
   <div
     data-notebook-bar
     bind:clientWidth={barWidth}
-    class="sticky top-0 z-30 mb-4 flex h-10 items-stretch border-b border-line bg-canvas
-           [contain:paint]"
+    class="sticky top-0 z-30 mb-4 flex h-11 items-stretch border-b border-line bg-canvas
+           [contain:paint] min-[651px]:h-10"
   >
     <!--
       Непрозрачная подложка, а не размытая.
@@ -1726,14 +1749,16 @@
     <button
       type="button"
       class={ADD_FOOT}
-      title={tr('room.ui.455')}
+      disabled={!may.add}
+      title={addTitle(tr('room.ui.455'))}
       onclick={() => addAt(ids.current.length, 'code')}
     >
       <Icon name="plus" size={11} /> {tr('room.ui.441')} </button>
     <button
       type="button"
       class={ADD_FOOT}
-      title={tr('room.ui.456')}
+      disabled={!may.add}
+      title={addTitle(tr('room.ui.456'))}
       onclick={() => addAt(ids.current.length, 'markdown')}
     >
       <Icon name="text" size={11} /> {tr('room.ui.443')} </button>

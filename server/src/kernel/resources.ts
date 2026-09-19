@@ -342,10 +342,22 @@ const selectRooms = db.prepare(
 
 async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promise<RoomResource[]> {
   let alive: Set<string>
+  /*
+   * У кого из занятий есть ВТОРОЙ контейнер — тот, где живут личные тетради.
+   *
+   * Спрашивается тем же `docker ps`, что и список живых: иначе панель звала бы
+   * `inspect` на каждую живую комнату вслепую, чтобы у половины узнать «такого
+   * контейнера нет». Под брокером второго контейнера не бывает вовсе.
+   */
+  let withOwn = new Set<string>()
   try {
-    alive = runtimeRooms
-      ? new Set(runtimeRooms.filter((room) => room.phase === 'ready' || room.phase === 'pending').map((room) => room.sessionId))
-      : new Set((await listRoomKernels()).filter((r) => r.running).map((r) => r.session))
+    if (runtimeRooms) {
+      alive = new Set(runtimeRooms.filter((room) => room.phase === 'ready' || room.phase === 'pending').map((room) => room.sessionId))
+    } else {
+      const census = await listRoomKernels()
+      alive = new Set(census.filter((r) => r.running).map((r) => r.session))
+      withOwn = new Set(census.filter((r) => r.own).map((r) => r.session))
+    }
   } catch {
     alive = new Set()
   }
@@ -370,6 +382,17 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
       const real = alive.has(row.id) && kernelBackend() === 'docker'
         ? await containerLimits(row.id).catch(() => ({ memoryMb: null, cpus: null }))
         : { memoryMb: census?.memoryMb ?? null, cpus: census?.cpus ?? null }
+      /*
+       * И то же самое у контейнера личных тетрадей — но только когда он есть.
+       *
+       * Числа у него те же, что у комнаты (pool.ts · startContainer), однако
+       * спрашивается всё равно docker: разойтись они могут ровно тогда, когда
+       * это важно — лимит подняли между парами, а один из контейнеров с утра
+       * работает на старом.
+       */
+      const own = withOwn.has(row.id)
+        ? await containerLimits(row.id, 'own').catch(() => ({ memoryMb: null, cpus: null }))
+        : null
       return {
         id: row.id,
         name: row.name,
@@ -377,6 +400,7 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
         cpus: real.cpus ?? settledCpus,
         environment: row.environment,
         alive: alive.has(row.id),
+        ...(own ? { own: { memoryMb: own.memoryMb ?? settledMb, cpus: own.cpus ?? settledCpus } } : {}),
       }
     }),
   )

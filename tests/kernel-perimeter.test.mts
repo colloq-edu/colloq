@@ -12,7 +12,7 @@
 import './_env.mts'
 import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { ownKernelMax, runArgs } from '../server/src/kernel/pool.js'
+import { ownIdleMinutes, ownKernelMax, runArgs } from '../server/src/kernel/pool.js'
 import {
   BLOCKED_V4,
   DEFAULT_ROOM_SUBNET,
@@ -203,6 +203,20 @@ test('потолок процессов контейнера личных тет
   withEnv({ KERNEL_OWN_MAX: '4' }, () => assert.equal(ownKernelMax(), 4))
   for (const bad of ['0', '-1', 'сорок', '1.5', '']) {
     withEnv({ KERNEL_OWN_MAX: bad }, () => assert.equal(ownKernelMax(), 40, bad))
+  }
+
+  /*
+   * Простой личного ядра — третье число, и у него `0` ЗНАЧАЩИЙ.
+   *
+   * У потолков ноль бессмыслен и читается как мусор; здесь это выключатель для
+   * того, у кого пара устроена иначе, и спутать их значило бы тихо включить
+   * уборку там, где её выключили.
+   */
+  withEnv({ KERNEL_OWN_IDLE_MIN: undefined }, () => assert.equal(ownIdleMinutes(), 30))
+  withEnv({ KERNEL_OWN_IDLE_MIN: '5' }, () => assert.equal(ownIdleMinutes(), 5))
+  withEnv({ KERNEL_OWN_IDLE_MIN: ' 0 ' }, () => assert.equal(ownIdleMinutes(), 0))
+  for (const bad of ['-1', 'полчаса', '1.5', '']) {
+    withEnv({ KERNEL_OWN_IDLE_MIN: bad }, () => assert.equal(ownIdleMinutes(), 30, bad))
   }
 })
 
@@ -490,4 +504,29 @@ test('образа ядра нет ни одного — отказ, помощ�
     await assert.rejects(ensureRoomPerimeter(docker, { network: 'colloq-rooms', create: true }, 'colloq-kernel:base'), /colloq-kernel image/)
     assert.ok(!calls.some((call) => isHelper(call.args)))
   })
+})
+
+test('контейнер личных тетрадей берёт СВОИ числа, если занятие их назвало', () => {
+  /*
+   * Поле «Память» занятия преподаватель ставит под свою работу — под датасет,
+   * который грузит на лекции. Отсыпать столько же тридцати черновикам он не
+   * подписывался, а на машине это ровно вдвое больше памяти.
+   */
+  const args = (memoryMb: number | null, cpus: number | null) =>
+    runArgs({
+      sessionId: 'r4', env: 'base', mount: '/m', network: 'colloq-rooms',
+      publish: true, gpu: null, role: 'own', memoryMb, cpus,
+    })
+  const mine = args(2048, 1)
+  assert.ok(mine.includes('--memory=2048m'), JSON.stringify(mine))
+  assert.ok(mine.includes('--memory-swap=2048m'), JSON.stringify(mine))
+  assert.ok(mine.includes('--cpus=1'), JSON.stringify(mine))
+  // Потоки numpy и torch считаются по ВЫДАННЫМ ядрам, а не по ядрам машины:
+  // иначе одно ядро поднимало бы тридцать потоков на нём.
+  assert.ok(mine.includes('OMP_NUM_THREADS=1'), JSON.stringify(mine))
+
+  // Не назвали — прежнее поведение: столько же, сколько у комнаты.
+  const same = withEnv({ KERNEL_MEM: undefined, KERNEL_CPUS: undefined }, () => args(null, null))
+  assert.ok(same.includes('--memory=4g'), JSON.stringify(same))
+  assert.ok(same.includes('--cpus=2'), JSON.stringify(same))
 })

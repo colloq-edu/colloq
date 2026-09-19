@@ -176,8 +176,26 @@
    * свободно» (16 − 1 − 8 = 7) — ровно тогда, когда преподаватель пришёл
    * поднять память посреди пары.
    */
+  /** Строка этого занятия в переписи комнат — из неё берутся оба контейнера. */
+  const row = $derived(
+    (roomId && resources?.rooms.find((one) => one.id === roomId)) || null,
+  )
+  /**
+   * Второй контейнер занятия — тот, где считаются личные тетради студентов.
+   *
+   * `null` — его сейчас нет: личных тетрадей не открывали, они не разрешены
+   * или это не docker-бэкенд. Тогда раздел выглядит ровно как раньше.
+   */
+  const ownRoom = $derived(row?.own ?? null)
+  /*
+   * Держит машина ОБА контейнера, а не один.
+   *
+   * Иначе «свободно» врало бы ровно в занятии с личными тетрадями: их
+   * контейнер с той же памятью уже стоит на машине, и прибавка комнате
+   * считалась бы от числа, в котором его нет.
+   */
   const heldMb = $derived(
-    (roomId && resources?.rooms.find((room) => room.id === roomId && room.alive)?.memoryMb) || 0,
+    !row?.alive ? 0 : row.memoryMb + (ownRoom?.memoryMb ?? 0),
   )
   const tight = $derived(
     resources !== null &&
@@ -361,6 +379,35 @@
           })}
         {/if}
       </p>
+
+      <!--
+        Про второй контейнер — сразу под полем, а не только строкой ниже.
+
+        Строка ниже показывает числа ЖИВОГО занятия; она появляется, когда
+        контейнер уже стоит. А знать, что поле выше стоит на машине вдвое,
+        нужно ДО того, как его поднимут: число выбирают один раз, и выбирают
+        его здесь.
+      -->
+      <p class="text-2xs leading-snug text-muted">{tr('admin.resources.ownHint')}</p>
+
+      <!--
+        Второй контейнер занятия — строкой, а не прибавкой к числу выше.
+
+        Личные тетради студентов считаются отдельно, со своим лимитом памяти и
+        своим процессором (server/src/kernel/pool.ts · KernelRole). Сложить их
+        с комнатой в одно число значило бы обещать преподавателю память,
+        которой ни один его Python не получит; промолчать — не сказать, что
+        машина держит вдвое больше. Поэтому оба числа названы по имени, и
+        строка появляется только когда второй контейнер правда есть.
+      -->
+      {#if ownRoom}
+        <p class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-2xs leading-snug text-muted">
+          <span class="font-semibold text-ink">{tr('admin.resources.ownRow')}</span>
+          <span>{tr('admin.resources.ownRoom', { p0: asGb(row?.memoryMb ?? 0), p1: String(row?.cpus ?? 0) })}</span>
+          <span aria-hidden="true">·</span>
+          <span>{tr('admin.resources.ownBooks', { p0: asGb(ownRoom.memoryMb), p1: String(ownRoom.cpus) })}</span>
+        </p>
+      {/if}
 
       {#if tight}
         <p class="flex items-start gap-2 text-2xs leading-snug text-warning">

@@ -1125,7 +1125,19 @@
         <p class="text-2xs text-muted">{tr("admin.you.can.change.the.mode.on.the.seminar.page")}</p>
       </div>
 
-      <RoomRulesRows {rules} instance={instanceOracle} onchange={(patch) => (rules = { ...rules, ...patch })} />
+      <!-- «Как у занятия» называет число, которое форма только что выбрала
+           выше, а список не предлагает того, чего машина не даст. -->
+      <RoomRulesRows
+        {rules}
+        instance={instanceOracle}
+        own={{
+          roomMemoryMb: memoryMb ?? resources?.kernel.defaultMemoryMb ?? null,
+          roomCpus: cpus ?? resources?.kernel.defaultCpus ?? null,
+          maxMemoryMb: resources?.limits.max ?? null,
+          maxCpus: resources?.limits.cpus.max ?? null,
+        }}
+        onchange={(patch) => (rules = { ...rules, ...patch })}
+      />
 
       <!--
         Сцепки, напечатанные здесь, а не спрятанные в коде. Каждая — про

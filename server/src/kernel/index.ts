@@ -78,6 +78,7 @@ import {
   forgetSessionKernel,
   listRoomKernels,
   onRoomKernelRecreated,
+  ownIdleMinutes,
   ownKernelMax,
   runningRoomKernels,
   OwnKernelUnavailable,
@@ -307,6 +308,15 @@ interface Runtime {
    * сейчас, — то есть чужая.
    */
   lastFinished: { cellId: string; batch: number } | null
+  /**
+   * Когда эта область в последний раз что-то делала, по часам сервера.
+   *
+   * Только для уборки простоя ЛИЧНЫХ тетрадей: у них свой счёт (см.
+   * `sweepIdleOwnScopes`). Ставится при подъёме ядра и на каждом конце работы
+   * — ячейки и попытки консилиума, — то есть в тех же местах, где область
+   * перестаёт быть занятой. `null` до первого подъёма: гасить ещё нечего.
+   */
+  lastWorkAt: number | null
   writer: OutputWriter | null
   /**
    * «Не выселяй комнату»: писатель держит `Y.Doc` дольше одного вызова.
@@ -400,6 +410,7 @@ function getRuntime(sessionId: string, root: string): Runtime {
       started: null,
       currentRunById: null,
       lastFinished: null,
+      lastWorkAt: null,
       writer: null,
       writerHold: null,
       job: null,
@@ -1215,6 +1226,9 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
       // Подъём ядра — настоящее событие: до полутора минут холодного старта, и
       // именно между этой строкой и следующей комната смотрит в пустоту.
       console.log(`[kernel ${sessionId}/${runtime.root}] up (${envName ?? 'shared'}, ${runtime.role})`)
+      // Отсчёт простоя начинается с подъёма: ядро, поднятое и не тронутое
+      // полчаса, — это ровно тот черновик, который открыли и забыли.
+      runtime.lastWorkAt = Date.now()
       /*
        * Точка отсчёта для будущего вскрытия.
        *
@@ -1721,11 +1735,17 @@ export function idleVerdict(opts: {
 
 let idleSweep: Promise<void> | null = null
 
-/** A broker outage postpones maintenance; it must not reject the interval's
- * detached promise or strand the single-flight slot for all later sweeps. */
-export function sweepIdleKernels(): Promise<void> {
+/**
+ * A broker outage postpones maintenance; it must not reject the interval's
+ * detached promise or strand the single-flight slot for all later sweeps.
+ *
+ * `now` — часы вызывающего, тем же приёмом, что у `sweepOrphanRuns`: полчаса
+ * простоя личного ядра проверяются за миллисекунду, а не ожиданием получаса.
+ * В работе их всегда ставит вызов без аргументов.
+ */
+export function sweepIdleKernels(now: number = Date.now()): Promise<void> {
   if (idleSweep) return idleSweep
-  const attempt = sweepIdleKernelsOnce()
+  const attempt = sweepIdleKernelsOnce(now)
     .catch(() => {
       if (seldom('kernel-idle-sweep-census', 60_000)) {
         console.warn('[kernel] idle sweep postponed: runtime room census failed; will retry at the next sweep')
@@ -1738,8 +1758,51 @@ export function sweepIdleKernels(): Promise<void> {
   return attempt
 }
 
-async function sweepIdleKernelsOnce(): Promise<void> {
-  const now = Date.now()
+/**
+ * Личные ядра, которые ничего не делали дольше положенного, — по одному.
+ *
+ * Отдельный проход внутри общей уборки, а не второй таймер: повод один и тот
+ * же — «этим больше не пользуются», — и два расписания на один повод разошлись
+ * бы первым же изменением.
+ *
+ * Считается ПО ОБЛАСТИ, а не по комнате, и в этом вся разница с уборкой ядер
+ * занятия. Комната может быть полна людей и работы: лекция считает, семинар
+ * открыт, — а сорок черновиков, открытых утром, всё это время держат сорок
+ * питонов в одном контейнере. Занятость комнаты про них не говорит ничего.
+ *
+ * Гаснет только то, что и правда простаивает: ничего не выполняется, очередь
+ * пуста, попытки консилиума не идут. Тетрадь узнаёт об этом строкой в журнале
+ * ядра, и следующий Run поднимает ядро обычным путём — за секунды, потому что
+ * контейнер уже стоит. А когда в нём не остаётся ни одного ядра, уходит и он
+ * (`retireScope` → `dropOwnIfEmpty`).
+ */
+async function sweepIdleOwnScopes(now: number): Promise<void> {
+  const minutes = ownIdleMinutes()
+  if (minutes <= 0) return
+  const limit = minutes * 60_000
+  for (const runtime of allScopes()) {
+    if (runtime.role !== 'own' || runtime.retired) continue
+    // Ядра ещё нет — гасить нечего; область без ядра места не занимает.
+    if (!runtime.kernel) continue
+    if (runtime.currentCell !== null || runtime.queue.length > 0 || runtime.job) continue
+    const since = runtime.lastWorkAt
+    if (since === null || now - since < limit) continue
+    const doc = peekSessionDoc(runtime.sessionId)?.doc ?? null
+    const named = doc ? (bookList(doc).find((book) => book.root === runtime.root)?.path ?? null) : null
+    const note = tr('server.kernel.ownIdle', { p0: minutes })
+    console.log(`[kernel ${runtime.sessionId}/${runtime.root}] own kernel idle for ${minutes}m — stopped`)
+    try {
+      await retireScope(runtime, named ? `${named}: ${note}` : note)
+    } catch (err) {
+      console.error(`[kernel] idle sweep failed for ${runtime.sessionId}/${runtime.root}:`, errText(err))
+    }
+  }
+}
+
+async function sweepIdleKernelsOnce(now: number): Promise<void> {
+  // Сначала личные ядра поодиночке: занятие при этом продолжается, и комната
+  // ниже может оказаться занятой — на решение по ней это не влияет.
+  await sweepIdleOwnScopes(now)
   /*
    * Не только те, что поднял этот процесс, и не только живые.
    *
@@ -2279,6 +2342,7 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
     runtime.currentBatch = null
     runtime.currentRunById = null
     runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
+    runtime.lastWorkAt = Date.now()
     dropWriter(runtime)
     setCellState(runtime.sessionId, item.cellId, 'ok')
     finishExecution(runtime, item, 'completed', Math.max(0, Date.now() - startedAt))
@@ -2371,6 +2435,7 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
     // Чья это была пачка — помним ещё круг: «стоп» по этой ячейке может
     // доехать уже после того, как ядро взяло следующую.
     runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
+    runtime.lastWorkAt = Date.now()
     // The prompt belongs to a running cell. Whatever ended the run — an answer,
     // an interrupt, a dead kernel — it must not be left on screen asking.
     const target = findCell(doc, item.cellId)
@@ -2970,6 +3035,7 @@ function finishCouncil(runtime: Runtime, active: ActiveJob, state: 'ok' | 'error
   runtime.currentBatch = null
   runtime.currentRunById = null
   runtime.lastFinished = { cellId: active.item.cellId, batch: active.item.batch }
+  runtime.lastWorkAt = Date.now()
   tellJob(active.job, active.run)
   syncQueue(runtime)
 }
