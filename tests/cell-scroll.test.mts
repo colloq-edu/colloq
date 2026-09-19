@@ -221,3 +221,32 @@ test("nothing is decided from a hidden tab, running or not", () => {
   const hidden = { top: 0, bottom: 0, scrollTop: 0 };
   assert.equal(afterRun(hidden, { top: 300, bottom: 905, toolbar: BAR }), null);
 });
+
+/*
+ * За текстовой ячейкой лист идёт так же, как за ячейкой с кодом.
+ *
+ * За кодом его ведёт смена `runningCellId` у ядра; у заметки ядра нет, и пока
+ * она молчала, Shift+Enter вниз по тетради спотыкался на каждой текстовой
+ * ячейке: курсор шёл дальше, экран стоял (19.09.2026). Проверка — чтением
+ * исходников: заметка говорит сама, Notebook отвечает тем же `follow`.
+ */
+test("a text cell reports that it settled, and the notebook follows it like a code cell", async () => {
+  const { readFileSync } = await import("node:fs");
+  const cell = readFileSync(new URL("../web/src/components/notebook/CellView.svelte", import.meta.url), "utf8");
+  const book = readFileSync(new URL("../web/src/components/notebook/Notebook.svelte", import.meta.url), "utf8");
+  assert.match(
+    cell,
+    /commitMarkdown\(\)[\s\S]{0,900}?dispatchEvent\(new CustomEvent\('colloq:cell-settled', \{ detail: \{ cellId: id \} \}\)\)[\s\S]{0,40}?return true/,
+    "заметка отрисовалась молча — лист за ней не пойдёт",
+  );
+  assert.match(
+    book,
+    /addEventListener\('colloq:cell-settled', onSettled\)/,
+    "Notebook не слушает отрисовку заметки",
+  );
+  assert.match(
+    book,
+    /onSettled = [\s\S]{0,400}?ids\.current\.includes\(cellId\)[\s\S]{0,120}?tick\(\)\.then\(\(\) => follow\(cellId\)\)/,
+    "ход за заметкой обязан идти тем же follow и только в своей тетради",
+  );
+});

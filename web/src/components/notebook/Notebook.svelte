@@ -350,6 +350,23 @@
     void tick().then(() => follow(was))
   })
 
+  /*
+   * Заметка «выполнилась» — то есть отрисовалась (CellView · run). У неё нет
+   * ядра и нет `runningCellId`, так что эффект выше о ней не узнаёт; она
+   * говорит сама. Ход тот же и по тем же правилам: после `tick` — чтобы мерить
+   * уже отрисованный текст, а не исходник, который был на его месте.
+   */
+  $effect(() => {
+    const onSettled = (event: Event): void => {
+      const cellId = (event as CustomEvent<{ cellId?: string }>).detail?.cellId
+      // Событие оконное, а тетрадей на экране бывает две (вкладки): своя ли?
+      if (!cellId || !ids.current.includes(cellId)) return
+      void tick().then(() => follow(cellId))
+    }
+    window.addEventListener('colloq:cell-settled', onSettled)
+    return () => window.removeEventListener('colloq:cell-settled', onSettled)
+  })
+
   $effect(() => () => {
     if (pendingFrame) cancelAnimationFrame(pendingFrame)
   })
