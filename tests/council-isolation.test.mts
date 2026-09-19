@@ -26,7 +26,10 @@ import { setLocaleResolver } from '../shared/i18n.js'
 import {
   councilEnterRefusal,
   councilEnterSource,
+  councilLeftoverNotes,
+  councilMemoryNote,
   councilSkipNotes,
+  parseCouncilLeftovers,
   parseCouncilReport,
   sizeWords,
   COUNCIL_EXIT_SOURCE,
@@ -53,13 +56,37 @@ test('вход — два выражения, которые не связыва
     assert.doesNotMatch(line, /^[A-Za-z_][A-Za-z0-9_]*\s*=[^=]/, `вход связал имя: ${line.slice(0, 40)}`)
     assert.doesNotMatch(line, /^(import|from|def|class)\s/, `вход связал имя: ${line.slice(0, 40)}`)
   }
-  assert.match(lines[0], /^exec\(compile\(/)
+  /*
+   * Установка идёт через сверку версии, а не безусловно: исходник перевалил за
+   * двадцать килобайт, и `compile` на каждую попытку стоил бы полмиллисекунды
+   * ни за что. Версия — хеш самого исходника, поэтому новая сборка сервера
+   * переустановит модуль в уже живом ядре сама, без перезапуска комнаты.
+   */
+  assert.match(lines[0], /^if getattr\(__import__\('sys'\)\.modules\.get\(/)
+  assert.match(lines[0], /'version', None\) != "[0-9a-f]{12}": exec\(compile\(/)
   assert.ok(lines[0].includes(JSON.stringify(COUNCIL_MODULE)))
+  // Версия внутри исходника и версия в сверке — одна и та же строка, иначе
+  // модуль переустанавливался бы на каждой попытке и молча.
+  const stamp = /!= "([0-9a-f]{12})"/.exec(lines[0])![1]
+  assert.ok(lines[0].includes(`version = '${stamp}'`), 'версия в исходнике другая')
   // Бюджет уезжает числом в самый запрос: ядро о конфигурации сервера не знает.
-  assert.match(lines[1], /\.enter\(globals\(\), 1048576\)$/)
+  assert.match(lines[1], /\.enter\(globals\(\), 1048576, \{/)
   // Негодное число не превращается в NaN внутри Python: своё умолчание ближе.
-  assert.match(councilEnterSource(Number.NaN), /\.enter\(globals\(\), 536870912\)$/)
-  assert.match(councilEnterSource(-1), /\.enter\(globals\(\), 536870912\)$/)
+  assert.match(councilEnterSource(Number.NaN), /\.enter\(globals\(\), 536870912, \{/)
+  assert.match(councilEnterSource(-1), /\.enter\(globals\(\), 536870912, \{/)
+
+  /*
+   * Настройки — литералом в вызове, а не внутри исходника: текст отказа зависит
+   * от языка комнаты, а его меняют в панели посреди пары. Булево при этом —
+   * словом Python: `false` в ядре не значение, а NameError (наступали).
+   */
+  assert.match(lines[1], /'memory': False\}?/)
+  assert.match(councilEnterSource(1024, { memoryGuard: true }), /'memory': True/)
+  assert.doesNotMatch(lines[1], /\b(false|true|null)\b/)
+  setLocaleResolver(() => 'en')
+  assert.match(councilEnterSource(1024), /may not shut the kernel down/)
+  setLocaleResolver(() => 'ru')
+  assert.match(councilEnterSource(1024), /нельзя завершать ядро/)
 })
 
 test('выход переживает отсутствие модуля — возвращать тогда нечего', () => {
@@ -152,7 +179,20 @@ test('про оставшееся общим сказано по-человеч�
   assert.match(councilEnterRefusal(null), /Could not prepare personal copies/)
   assert.equal(sizeWords(2 * 1024 ** 3), '2 GB')
   assert.equal(sizeWords(512 * 1024), '512 kB')
+  assert.match(councilMemoryNote(2 * 1024 ** 3), /ran out of memory/)
   setLocaleResolver(() => 'ru')
+
+  /*
+   * MemoryError под нашим потолком — это спасённое занятие, и говорить о нём
+   * надо так, чтобы студент понял: упал он, а не комната. Число обязательно:
+   * без него совет «уменьшите объём» не на что опереть.
+   */
+  assert.match(councilMemoryNote(2 * 1024 ** 3), /не хватило памяти/)
+  assert.match(councilMemoryNote(2 * 1024 ** 3), /2 ГБ/)
+  assert.match(councilMemoryNote(2 * 1024 ** 3), /Ядро и данные остальных целы/)
+  // Потолка не было (не Linux, рядом CUDA) — та же мысль, но без выдуманного числа.
+  assert.doesNotMatch(councilMemoryNote(null), /\d/)
+  assert.match(councilMemoryNote(null), /Ядро и данные остальных целы/)
 })
 
 /* ------------------------------------------------- настоящий python3 */
@@ -182,8 +222,18 @@ interface Drive {
  * ячейку ровно так же, с `globals()`, равным ему. Исключение попытки ловится
  * и называется, но выход отрабатывает в любом случае — как и на сервере.
  */
-function drive(what: Drive): { report: any; after: any; failure: string | null; names: string[] } {
+interface Drove {
+  report: any
+  /** Отчёт выхода: что вернуть было нечем. `null` — хвостов не осталось. */
+  left: any
+  after: any
+  failure: string | null
+  names: string[]
+}
+
+function drive(what: Drive): Drove {
   const enterOnce = "exec(compile(ENTER, '<enter>', 'exec'), ns)"
+  const module = JSON.stringify(COUNCIL_MODULE)
   const script = [
     'import json, sys',
     `ENTER = ${JSON.stringify(councilEnterSource(what.budget ?? 512 * 1024 * 1024))}`,
@@ -191,7 +241,7 @@ function drive(what: Drive): { report: any; after: any; failure: string | null; 
     "ns = {'__builtins__': __builtins__, '__name__': '__main__'}",
     `exec(compile(${JSON.stringify(what.setup)}, '<setup>', 'exec'), ns)`,
     enterOnce,
-    `report = json.loads(repr(sys.modules[${JSON.stringify(COUNCIL_MODULE)}].report))`,
+    `report = json.loads(repr(sys.modules[${module}].report))`,
     'failure = None',
     'try:',
     `    exec(compile(${JSON.stringify(what.attempt)}, '<attempt>', 'exec'), ns)`,
@@ -199,8 +249,10 @@ function drive(what: Drive): { report: any; after: any; failure: string | null; 
     '    failure = type(err).__name__ + ": " + str(err)',
     ...(what.twice ? [enterOnce] : []),
     "exec(compile(EXIT, '<exit>', 'exec'), ns)",
+    `raw = sys.modules[${module}].leftovers`,
+    'left = json.loads(repr(raw)) if raw is not None else None',
     `after = eval(compile(${JSON.stringify(what.probe)}, '<probe>', 'eval'), ns)`,
-    "print('@@' + json.dumps({'report': report, 'after': after, 'failure': failure,"
+    "print('@@' + json.dumps({'report': report, 'after': after, 'failure': failure, 'left': left,"
       + " 'names': sorted(k for k in ns if k not in ('__builtins__', '__name__'))}))",
   ].join('\n')
   const run = spawnSync(python!, ['-'], { input: script, encoding: 'utf8' })
@@ -349,3 +401,245 @@ test('таблица и массив: dropna, inplace и запись по ин�
     // Модули не копируются: копия numpy стоила бы дорого и не значила бы ничего.
     assert.ok(out.names.includes('np') && out.names.includes('pd'))
   })
+
+/* --------------------------------------- разрушительные приёмы и процесс */
+
+/**
+ * «Кто-то сделает X, и всем конец» — список, собранный по живому семинару.
+ *
+ * Каждая строка здесь закрыта одним и тем же движением: снимок до попытки,
+ * возврат после. Ценность теста в том, что он гоняет НАСТОЯЩИЙ python3 —
+ * половина этих случаев ломает сам возврат, если написать его неаккуратно
+ * (подменённый `builtins.list` в своё время ронял выход целиком).
+ */
+test('del, globals().clear() и затенение встроенных не переживают попытку', { skip: noPython }, () => {
+  const out = drive({
+    setup: 'df = [1, 2, 3]\nkeep = {"a": 1}',
+    attempt: 'del df\nlist = "сломал"\nlen = None\nsecret = 1',
+    probe: "{'df': df, 'keep': keep}",
+  })
+  assert.deepEqual(out.after.df, [1, 2, 3], 'del df не вернулся')
+  assert.deepEqual(out.names, ['df', 'keep'], 'затенение встроенных или новое имя пережили попытку')
+
+  const wiped = drive({
+    setup: 'df = [1, 2, 3]\nkeep = {"a": 1}',
+    attempt: 'globals().clear()',
+    probe: "{'df': df, 'keep': keep}",
+  })
+  assert.deepEqual(wiped.after, { df: [1, 2, 3], keep: { a: 1 } }, 'globals().clear() унёс комнату')
+})
+
+test('подменённые builtins возвращаются — и не ломают сам возврат', { skip: noPython }, () => {
+  /*
+   * Здесь возврат чинит то, чем сам пользуется. Пока он звал `list(ns)` из
+   * builtins, попытка с `builtins.list = "сломал"` роняла выход на первой
+   * строке, состояние оставалось подменённым, а следующий вход запоминал
+   * чужие копии как исходники. Проверено — падало именно так.
+   */
+  const out = drive({
+    setup: 'df = [1, 2, 3]',
+    attempt: 'import builtins\nbuiltins.list = "сломал"\nbuiltins.len = None\nbuiltins.ПОДКИНУТО = 1',
+    probe: "{'list_ok': __import__('builtins').list is list, 'len_ok': __import__('builtins').len is len,"
+      + " 'no_new': not hasattr(__import__('builtins'), 'ПОДКИНУТО'), 'df': df}",
+  })
+  assert.equal(out.after.list_ok, true, 'builtins.list остался подменённым')
+  assert.equal(out.after.len_ok, true, 'builtins.len остался подменённым')
+  assert.equal(out.after.no_new, true, 'подкинутое имя осталось в builtins')
+  assert.deepEqual(out.after.df, [1, 2, 3], 'возврат имён не доработал после битых builtins')
+})
+
+test('exit() и quit() в попытке отказывают, а не гасят ядро комнате', { skip: noPython }, () => {
+  // В ipykernel это `shell.ask_exit()` — конец процесса и потеря переменных у
+  // ВСЕХ; воспроизведено на живом ядре. В голом python оболочки нет, поэтому
+  // здесь проверяются сами имена, а автовызов IPython — приёмкой на ядре.
+  const out = drive({
+    setup: 'df = [1]',
+    attempt: 'try:\n    exit()\nexcept BaseException as e:\n    caught = type(e).__name__\n'
+      + 'try:\n    quit()\nexcept BaseException as e:\n    caught2 = type(e).__name__\n'
+      + 'both = [caught, caught2]',
+    probe: "{'names': sorted(k for k in globals() if k in ('exit', 'quit')), 'df': df}",
+  })
+  assert.equal(out.failure, null, out.failure ?? '')
+  assert.deepEqual(out.after.names, [], 'exit/quit остались в пространстве после выхода')
+})
+
+test('состояние процесса возвращается: ГСЧ, потоки вывода, путь, окружение', { skip: noPython }, () => {
+  const out = drive({
+    setup: 'import random, sys, os, warnings, decimal\n'
+      + 'random.seed(1234)\n'
+      + 'was = [random.random() for _ in range(3)]\n'
+      + 'random.seed(1234)\n'
+      + 'path_was = list(sys.path)\n'
+      + 'os.environ["COLLOQ_KEEP"] = "да"\n'
+      + 'warnings.resetwarnings()\n'
+      + 'filters_was = len(warnings.filters)\n'
+      + 'limit_was = sys.getrecursionlimit()\n'
+      + 'prec_was = decimal.getcontext().prec',
+    attempt: 'import random, sys, os, io, warnings, decimal\n'
+      + 'random.seed(99)\n[random.random() for _ in range(5)]\n'
+      + 'sys.stdout = io.StringIO()\n'
+      + 'sys.path.insert(0, "/подкинуто")\n'
+      + 'os.environ["COLLOQ_NEW"] = "подкинуто"\n'
+      + 'os.environ["COLLOQ_KEEP"] = "испорчено"\n'
+      + 'warnings.filterwarnings("ignore")\n'
+      + 'sys.setrecursionlimit(100)\n'
+      + 'sys.settrace(lambda *a: None)\n'
+      + 'decimal.getcontext().prec = 3',
+    probe: "{'rng': [random.random() for _ in range(3)] == was,"
+      + " 'stdout': sys.stdout is sys.__stdout__,"
+      + " 'path': sys.path == path_was,"
+      + " 'env_keep': os.environ.get('COLLOQ_KEEP'),"
+      + " 'env_new': 'COLLOQ_NEW' in os.environ,"
+      + " 'filters': len(warnings.filters) == filters_was,"
+      + " 'reclimit': sys.getrecursionlimit() == limit_was,"
+      + " 'trace': sys.gettrace() is None,"
+      + " 'prec': decimal.getcontext().prec == prec_was}",
+  })
+  assert.equal(out.after.rng, true, 'поток случайных чисел сдвинут попыткой')
+  assert.equal(out.after.stdout, true, 'sys.stdout остался подменённым — вывод сломан у всех')
+  assert.equal(out.after.path, true, 'sys.path остался с чужой записью')
+  assert.equal(out.after.env_keep, 'да', 'os.environ испорчено')
+  assert.equal(out.after.env_new, false, 'подкинутая переменная окружения осталась')
+  assert.equal(out.after.filters, true, 'фильтры предупреждений остались чужими')
+  assert.equal(out.after.reclimit, true, 'предел рекурсии остался чужим')
+  assert.equal(out.after.trace, true, 'трассировщик попытки остался включённым')
+  assert.equal(out.after.prec, true, 'контекст decimal остался чужим')
+})
+
+test('поток, оставленный попыткой, посчитан выходом — остановить его нечем', { skip: noPython }, () => {
+  const out = drive({
+    setup: 'x = 1',
+    attempt: 'import threading\nev = threading.Event()\n'
+      + 'threading.Thread(target=lambda: ev.wait(20), daemon=True).start()',
+    probe: 'x',
+  })
+  assert.equal(out.left?.threads, 1, `отчёт выхода: ${JSON.stringify(out.left)}`)
+  // И ровно то же в словах, которые увидит преподаватель.
+  setLocaleResolver(() => 'ru')
+  const notes = councilLeftoverNotes(parseCouncilLeftovers(JSON.stringify(out.left)))
+  assert.equal(notes.length, 1)
+  assert.match(notes[0], /остался работать 1 поток/)
+
+  // А без хвостов приписки нет вовсе: пустой отчёт — это не новость.
+  const quiet = drive({ setup: 'x = 1', attempt: 'y = 2', probe: 'x' })
+  assert.equal(parseCouncilLeftovers(JSON.stringify(quiet.left)), null)
+})
+
+test('numpy, pandas и их генераторы возвращаются вместе с остальным',
+  { skip: hasPandas ? false : 'нет pandas/numpy' }, () => {
+    const out = drive({
+      setup: 'import numpy as np, pandas as pd\n'
+        + 'np.random.seed(7)\nwas = list(np.random.rand(3))\nnp.random.seed(7)\n'
+        + 'print_was = np.get_printoptions()["precision"]\n'
+        + 'width_was = pd.get_option("display.width")\n'
+        + 'rng = np.random.default_rng(5)\nfirst = list(rng.random(3))\n'
+        + 'rng = np.random.default_rng(5)',
+      attempt: 'import numpy as np, pandas as pd\n'
+        + 'np.random.seed(1)\nnp.random.rand(5)\n'
+        + 'np.set_printoptions(precision=1)\n'
+        + 'pd.set_option("display.width", 17)\n'
+        + 'mine = list(rng.random(3))',
+      probe: "{'rng': list(np.random.rand(3)) == was,"
+        + " 'print': np.get_printoptions()['precision'] == print_was,"
+        + " 'pandas': pd.get_option('display.width') == width_was,"
+        + " 'generator': list(rng.random(3)) == first}",
+    })
+    assert.equal(out.after.rng, true, 'numpy: поток случайных чисел сдвинут попыткой')
+    assert.equal(out.after.print, true, 'numpy printoptions остались чужими')
+    assert.equal(out.after.pandas, true, 'опции pandas остались чужими')
+    // Generator в переменной — тоже состояние: без личной копии одинаковые
+    // попытки давали бы разные числа в зависимости от очереди.
+    assert.equal(out.after.generator, true, 'np.random.Generator оказался общим')
+  })
+
+/* ------------------------------------------------ torch, если он есть */
+
+const hasTorch = python !== null &&
+  spawnSync(python, ['-c', 'import torch'], { encoding: 'utf8' }).status === 0
+
+test('тензоры, модель и оптимизатор — личные, и оптимизатор смотрит на свою модель',
+  { skip: hasTorch ? false : 'нет torch' }, () => {
+    for (const order of ['model', 'opt'] as const) {
+      const out = drive({
+        setup: 'import torch, torch.nn as nn\n'
+          + 't = torch.arange(5, dtype=torch.float32)\n'
+          + 'bag = [torch.zeros(4)]\n'
+          + 'shared = torch.ones(3)\na = shared\nb = shared\n'
+          + 'leaf = torch.zeros(2, requires_grad=True)\nnonleaf = leaf * 2\n'
+          + (order === 'model'
+            ? 'model = nn.Linear(4, 2)\nopt = torch.optim.SGD(model.parameters(), lr=1.0)\n'
+            : 'model0 = nn.Linear(4, 2)\nopt = torch.optim.SGD(model0.parameters(), lr=1.0)\nmodel = model0\ndel model0\n')
+          + 'was = float(model.weight[0][0])',
+        attempt: 'import torch\nt[0] = 7\nt.add_(1)\nbag[0][0] = 5\n'
+          + "assert a is b, 'тензоры разъехались'\na[0] = 9\n"
+          + 'out = model(torch.ones(1, 4)).sum()\nopt.zero_grad()\nout.backward()\nopt.step()\n'
+          + "assert opt.param_groups[0]['params'][0] is model.weight, 'оптимизатор смотрит не на свою модель'\n"
+          + 'moved = float(model.weight[0][0])',
+        probe: "{'t': float(t[0]), 'bag': float(bag[0][0]), 'shared': float(a[0]),"
+          + " 'same': a is b, 'weight': float(model.weight[0][0]), 'was': was}",
+      })
+      assert.equal(out.failure, null, `${order}: ${out.failure}`)
+      assert.equal(out.after.t, 0, `${order}: запись в тензор доехала до исходника`)
+      assert.equal(out.after.bag, 0, `${order}: тензор в списке испорчен`)
+      assert.equal(out.after.shared, 1, `${order}: общий тензор испорчен`)
+      assert.equal(out.after.same, true, `${order}: после выхода имена разъехались`)
+      assert.equal(out.after.weight, out.after.was, `${order}: шаг оптимизатора изменил общую модель`)
+      // Не-листовой тензор с историей градиента deepcopy не берёт — он
+      // остаётся общим и назван в отчёте, а не роняет вход.
+      assert.ok(out.report.failed.some((row: { name: string }) => row.name === 'nonleaf'),
+        JSON.stringify(out.report.failed))
+      assert.equal(out.report.ok, true)
+    }
+  })
+
+/* ------------------------------------- классы тетради и scipy.sparse */
+
+test('объект класса, объявленного в тетради, получает личную копию', { skip: noPython }, () => {
+  const out = drive({
+    setup: 'class Dataset:\n'
+      + '    def __init__(self):\n'
+      + '        self.rows = [1, 2, 3]\n'
+      + '        self.name = "исходник"\n'
+      + 'class Slotted:\n'
+      + "    __slots__ = ('items',)\n"
+      + '    def __init__(self):\n'
+      + '        self.items = [1, 2]\n'
+      + 'class WithGen:\n'
+      + '    def __init__(self):\n'
+      + '        self.gen = (i for i in range(3))\n'
+      + '        self.rows = [1, 2]\n'
+      + 'ds = Dataset()\nsl = Slotted()\nwg = WithGen()\n'
+      + 'import io\nbuf = io.StringIO("x")',
+    attempt: 'ds.rows.append(9)\nds.name = "испорчено"\nsl.items.append(3)\nwg.rows.append(9)',
+    probe: "{'rows': ds.rows, 'name': ds.name, 'slots': sl.items, 'gen': wg.rows}",
+  })
+  assert.deepEqual(out.after.rows, [1, 2, 3], 'список внутри объекта тетради испорчен')
+  assert.equal(out.after.name, 'исходник', 'поле объекта тетради испорчено')
+  assert.deepEqual(out.after.slots, [1, 2], '__slots__-объект не скопирован')
+  // Генератор внутри копировать нечем — объект остаётся общим и назван.
+  assert.deepEqual(out.after.gen, [1, 2, 9], 'объект с генератором вдруг скопировался')
+  const shared = out.report.failed.map((row: { name: string }) => row.name)
+  assert.ok(shared.includes('wg'), JSON.stringify(out.report.failed))
+  // Чужой (библиотечный) объект не копируется вовсе: там сокеты и окна.
+  assert.ok(!out.report.failed.some((row: { name: string }) => row.name === 'buf'))
+})
+
+const hasScipy = python !== null &&
+  spawnSync(python, ['-c', 'import scipy.sparse'], { encoding: 'utf8' }).status === 0
+
+test('разреженная матрица копируется и весит своими массивами', { skip: hasScipy ? false : 'нет scipy' }, () => {
+  const out = drive({
+    setup: 'import scipy.sparse as sp, numpy as np\n'
+      + 'm = sp.csr_matrix(np.array([[1.0, 0.0], [0.0, 2.0]]))\n'
+      + 'big = sp.random(300, 300, density=0.5, format="csr")',
+    attempt: 'm.data[:] = 0\nbig.data[:] = 0',
+    probe: "{'m': float(m.toarray()[0][0]), 'big': float(abs(big).sum())}",
+    budget: 1024,
+  })
+  assert.equal(out.after.m, 1, 'запись в data разреженной доехала до исходника')
+  // Большая не влезла в бюджет — и посчитана по настоящим массивам, а не по
+  // весу обёртки, иначе она прошла бы мимо бюджета молча.
+  const skipped = out.report.skipped.find((row: { name: string }) => row.name === 'big')
+  assert.ok(skipped, JSON.stringify(out.report.skipped))
+  assert.ok(skipped.bytes > 300 * 300 * 0.5 * 4, `вес разреженной: ${skipped.bytes}`)
+})

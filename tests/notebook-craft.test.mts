@@ -95,6 +95,9 @@ test('строка про общее ядро говорит и про личн�
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /по очереди/)
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /личные копии данных/)
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /удаляются после запуска/)
+  // Два способа кончить занятие всем сразу тем же входом и закрыты.
+  assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /ядро завершить нельзя/)
+  assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /память решения ограничена/)
   assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /Общими остаются файлы/)
 })
 

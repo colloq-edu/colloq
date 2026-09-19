@@ -2250,8 +2250,8 @@ export const serverMessages: MessageCatalog = {
     "en": "The class is over. This room is now read-only."
   },
   "server.councilSharedKernel": {
-    "ru": "Решения выполняются по очереди в общем ядре, но каждое получает личные копии данных: таблицы, массивы и списки после него остаются прежними. Новые переменные, созданные решением, удаляются после запуска. Общими остаются файлы, настройки модулей и то, что не удалось скопировать, — о последнем решение читает в своём выводе. Не используйте этот режим для задач, требующих изолированного выполнения.",
-    "en": "Solutions run one at a time in the shared kernel, but each one gets personal copies of the data: tables, arrays and lists are left as they were. New variables created by a solution are removed after execution. Files, module settings and anything that could not be copied stay shared — a solution is told about the last of these in its own output. Do not use this mode for tasks requiring isolated execution."
+    "ru": "Решения выполняются по очереди в общем ядре, но каждое получает личные копии данных: таблицы, массивы, тензоры и списки после него остаются прежними. Новые переменные, созданные решением, удаляются после запуска, ядро завершить нельзя, а память решения ограничена. Общими остаются файлы и то, что не удалось скопировать, — о последнем решение читает в своём выводе. Не используйте этот режим для задач, требующих изолированного выполнения.",
+    "en": "Solutions run one at a time in the shared kernel, but each one gets personal copies of the data: tables, arrays, tensors and lists are left as they were. New variables created by a solution are removed after execution, a solution cannot shut the kernel down, and its memory is capped. Files and anything that could not be copied stay shared — a solution is told about the last of these in its own output. Do not use this mode for tasks requiring isolated execution."
   },
   "server.defaultNotebook": {
     "ru": "Тетрадь.ipynb",
@@ -2483,6 +2483,42 @@ export const serverMessages: MessageCatalog = {
     "en": {
       "one": "[Colloq] …and {count} more variable like it.",
       "other": "[Colloq] …and {count} more variables like it."
+    }
+  },
+  "server.council.noExit": {
+    "ru": "В попытке нельзя завершать ядро: оно общее для всей комнаты. Уберите exit() или quit().",
+    "en": "An attempt may not shut the kernel down: the whole room shares it. Remove exit() or quit()."
+  },
+  "server.council.outOfMemory": {
+    "ru": "[Colloq] Попытке не хватило памяти: ей было отведено {p0}. Ядро и данные остальных целы — уменьшите объём или считайте по частям.",
+    "en": "[Colloq] The attempt ran out of memory: it was given {p0}. The kernel and everyone else's data are intact — use less or work in chunks."
+  },
+  "server.council.outOfMemoryPlain": {
+    "ru": "[Colloq] Попытке не хватило памяти. Ядро и данные остальных целы — уменьшите объём или считайте по частям.",
+    "en": "[Colloq] The attempt ran out of memory. The kernel and everyone else's data are intact — use less or work in chunks."
+  },
+  "server.council.threadsLeft": {
+    "ru": {
+      "one": "[Colloq] После попытки остался работать {count} поток — остановить его нечем, он продолжает считать в общем ядре.",
+      "few": "[Colloq] После попытки остались работать {count} потока — остановить их нечем, они продолжают считать в общем ядре.",
+      "many": "[Colloq] После попытки остались работать {count} потоков — остановить их нечем, они продолжают считать в общем ядре.",
+      "other": "[Colloq] После попытки остались работать {count} потока — остановить их нечем, они продолжают считать в общем ядре."
+    },
+    "en": {
+      "one": "[Colloq] {count} thread the attempt started is still running — nothing can stop it, and it keeps working in the shared kernel.",
+      "other": "[Colloq] {count} threads the attempt started are still running — nothing can stop them, and they keep working in the shared kernel."
+    }
+  },
+  "server.council.processesKilled": {
+    "ru": {
+      "one": "[Colloq] Дочерний процесс, оставшийся после попытки, остановлен.",
+      "few": "[Colloq] Дочерние процессы, оставшиеся после попытки ({count}), остановлены.",
+      "many": "[Colloq] Дочерние процессы, оставшиеся после попытки ({count}), остановлены.",
+      "other": "[Colloq] Дочерние процессы, оставшиеся после попытки ({count}), остановлены."
+    },
+    "en": {
+      "one": "[Colloq] A child process left over by the attempt was stopped.",
+      "other": "[Colloq] {count} child processes left over by the attempt were stopped."
     }
   },
   "server.council.sizeKb": {

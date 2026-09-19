@@ -57,10 +57,17 @@ let interrupts = 0
  * иначе ни одна проверка регламента до запуска бы не добралась.
  */
 let councilReport: Record<string, unknown> | null = {
-  ok: true, copied: 2, skipped: [], failed: [], bytes: 0, ms: 1,
+  ok: true, copied: 2, skipped: [], failed: [], bytes: 0, memory: null, ms: 1,
 }
 /** Сколько раз подделку просили выйти из изоляции — выход обязан быть всегда. */
 let isolationExits = 0
+/**
+ * Отчёт ВЫХОДА: что после попытки вернуть было нечем.
+ *
+ * `null` — обычный случай, хвостов нет. Отличается от входного тем, что его
+ * отсутствие ничего не решает: попытка уже посчитана, речь только о приписке.
+ */
+let councilLeftovers: Record<string, unknown> | null = null
 /** Всё, что доехало до ядра: по нему видно, запускали попытку или нет. */
 let seen: string[] = []
 
@@ -150,6 +157,13 @@ before(async () => {
         if (msg.header.msg_type !== 'execute_request') return
         const code = msg.content.code
         seen.push(code)
+        /*
+         * Метки ищутся только в коде ячейки: служебный запрос (`silent`) —
+         * это исходник изоляции, и в его комментариях встречаются любые
+         * слова. Соседняя сюита на этом уже попалась: «OOM-killer» в
+         * комментарии подделка прочла как «ячейка убила ядро».
+         */
+        const service = (msg.content as { silent?: boolean }).silent === true
         reply(ws, msg.header, 'status', { execution_state: 'busy' })
         reply(ws, msg.header, 'execute_input', { code, execution_count: 1 })
         /*
@@ -159,33 +173,54 @@ before(async () => {
          * попытки (council-isolation.ts), отвечает сразу — иначе очередь
          * встала бы ещё до запуска.
          */
-        if (code.includes('HANG')) {
+        if (!service && code.includes('HANG')) {
           reply(ws, msg.header, 'stream', { name: 'stdout', text: 'считаю…\n' })
           held.push({ socket: ws, parent: msg.header })
           return
         }
-        if (code.includes('PRINT')) {
+        if (!service && code.includes('PRINT')) {
           reply(ws, msg.header, 'stream', { name: 'stdout', text: 'готово\n' })
         }
         /*
-         * Вход изоляции отчитывается `user_expressions` — настоящее ядро
-         * отвечает ими даже на молчаливый запрос, и без этой ветки сервер
+         * REFUSE и STARVE — два исхода, которые настоящее ядро выдаёт из
+         * самой изоляции: отказ на `exit()` (он гасил бы ядро всей комнате) и
+         * `MemoryError` из-под потолка памяти, поставленного входом.
+         */
+        if (!service && code.includes('REFUSE')) {
+          reply(ws, msg.header, 'error', {
+            ename: 'ColloqRefused',
+            evalue: 'В попытке нельзя завершать ядро: оно общее для всей комнаты.',
+            traceback: ['Traceback (most recent call last)', 'File "<colloq-council>", line 1'],
+          })
+        }
+        if (!service && code.includes('STARVE')) {
+          reply(ws, msg.header, 'error', {
+            ename: 'MemoryError',
+            evalue: 'Unable to allocate 11.9 GiB',
+            traceback: ['Traceback (most recent call last)', 'MemoryError'],
+          })
+        }
+        /*
+         * Вход и выход изоляции отчитываются `user_expressions` — настоящее
+         * ядро отвечает ими даже на молчаливый запрос, и без этой ветки сервер
          * справедливо отказался бы запускать хоть одну попытку.
          */
         const expressions = (msg.content as { user_expressions?: Record<string, string> })
           .user_expressions
         const wantsReport = expressions !== undefined && Object.keys(expressions).length > 0
-        if (code.includes('.leave(globals())')) isolationExits += 1
+        const leaving = code.includes('.leave(globals())')
+        if (leaving) isolationExits += 1
+        const answer = leaving ? councilLeftovers : councilReport
         reply(ws, msg.header, 'execute_reply', {
-          status: 'ok',
+          status: !service && (code.includes('REFUSE') || code.includes('STARVE')) ? 'error' : 'ok',
           execution_count: 1,
           ...(wantsReport
             ? {
-                user_expressions: councilReport
+                user_expressions: answer
                   ? {
                       colloq: {
                         status: 'ok',
-                        data: { 'text/plain': JSON.stringify(councilReport) },
+                        data: { 'text/plain': JSON.stringify(answer) },
                         metadata: {},
                       },
                     }
@@ -218,7 +253,8 @@ afterEach(() => {
   interrupts = 0
   isolationExits = 0
   seen = []
-  councilReport = { ok: true, copied: 2, skipped: [], failed: [], bytes: 0, ms: 1 }
+  councilLeftovers = null
+  councilReport = { ok: true, copied: 2, skipped: [], failed: [], bytes: 0, memory: null, ms: 1 }
 })
 
 after(async () => {
@@ -786,6 +822,88 @@ test('переменная, не влезшая в бюджет копий, на
     outputs.some((o) => o.kind === 'stream' && /готово/.test((o as { text: string }).text)),
     'вывод попытки пропал за предупреждением',
   )
+
+  const { closeControlRoom } = await import('../server/src/control.js')
+  closeControlRoom(at.id)
+})
+
+/**
+ * `exit()` в попытке гасил бы ядро ВСЕЙ комнате — и об этом говорят словами.
+ *
+ * В ipykernel `exit`/`quit` идут в `shell.ask_exit()`, то есть в конец
+ * процесса; воспроизведено на живом ядре — после такой попытки `data` нет ни у
+ * кого. Изоляция подменяет `ask_exit` отказом, и на карточку он должен лечь
+ * одной человеческой строкой: кадры `<colloq-council>` — не код студента.
+ */
+test('отказ изоляции ложится на карточку одной строкой, без трейсбека', async () => {
+  const at = await room()
+  assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
+  assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'REFUSE' }), null)
+  assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
+  assert.ok(await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'error', 4000))
+
+  const outputs = (await runOf(at, at.petya))?.outputs ?? []
+  const failure = outputs.find((o) => o.kind === 'error') as
+    | { ename: string; evalue: string; traceback: string[] }
+    | undefined
+  assert.equal(failure?.ename, '', 'перед фразой про общее ядро осталось имя исключения')
+  assert.match(failure!.evalue, /нельзя завершать ядро/)
+  assert.deepEqual(failure!.traceback, [], 'кадры служебного модуля доехали до студента')
+
+  const { closeControlRoom } = await import('../server/src/control.js')
+  closeControlRoom(at.id)
+})
+
+/**
+ * MemoryError под потолком — это спасённое занятие, и сказать об этом надо
+ * числом: студент должен понять, что упал ОН, а не комната.
+ */
+test('нехватка памяти объясняется строкой с тем объёмом, который был отведён', async () => {
+  const at = await room()
+  assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
+  assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'STARVE' }), null)
+  councilReport = {
+    ok: true, copied: 1, skipped: [], failed: [], bytes: 0, ms: 1,
+    memory: 2 * 1024 * 1024 * 1024,
+  }
+  assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
+  assert.ok(await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'error', 4000))
+
+  const outputs = (await runOf(at, at.petya))?.outputs ?? []
+  // Трейсбек настоящей ошибки остаётся: в нём строка, на которой не хватило.
+  const failure = outputs.find((o) => o.kind === 'error') as { ename: string } | undefined
+  assert.equal(failure?.ename, 'MemoryError')
+  const note = outputs.at(-1) as { kind: string; name: string; text: string }
+  assert.equal(note.kind, 'stream')
+  assert.equal(note.name, 'stderr')
+  assert.match(note.text, /не хватило памяти/)
+  assert.match(note.text, /2 ГБ/)
+  assert.match(note.text, /Ядро и данные остальных целы/)
+
+  const { closeControlRoom } = await import('../server/src/control.js')
+  closeControlRoom(at.id)
+})
+
+/**
+ * Поток, оставленный попыткой, переживает её и продолжает считать в общем
+ * ядре. Остановить его в Python нечем — значит надо назвать.
+ */
+test('оставленные попыткой потоки названы в конце её вывода', async () => {
+  const at = await room()
+  assert.equal(await council(at, { studentRun: true, runLimitSec: null }), null)
+  assert.equal(await say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'PRINT' }), null)
+  councilLeftovers = { threads: 2, processes: 2 }
+  assert.equal(await say(at, at.petya, { t: 'council:run', cellId: at.cell }), null)
+  assert.ok(await until(async () => ((await runOf(at, at.petya))?.state ?? '') === 'ok', 4000))
+
+  const outputs = (await runOf(at, at.petya))?.outputs ?? []
+  const text = outputs.map((o) => (o.kind === 'stream' ? (o as { text: string }).text : '')).join('')
+  assert.match(text, /готово/, 'вывод попытки пропал за приписками')
+  assert.match(text, /остались работать 2 потока/)
+  assert.match(text, /Дочерние процессы/)
+  // Приписки — в хвосте, после вывода самой попытки.
+  const first = outputs[0] as { text: string }
+  assert.match(first.text, /готово/)
 
   const { closeControlRoom } = await import('../server/src/control.js')
   closeControlRoom(at.id)

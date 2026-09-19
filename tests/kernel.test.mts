@@ -234,6 +234,16 @@ before(async () => {
         const asked =
           Object.keys((msg.content as { user_expressions?: object }).user_expressions ?? {}).length >
           0
+        /*
+         * Метки ищутся только в КОДЕ ЯЧЕЙКИ, а не в служебных запросах.
+         *
+         * Служебное ядро считает молча (`silent: true`), и туда уезжает
+         * исходник изоляции консилиума — сотня строк с комментариями, в
+         * которых честно написано «OOM-killer». Подделка читала это как
+         * «ячейка убила ядро по памяти» и отвечала `restarting`: попытка
+         * не начиналась вовсе, а тест падал пятью секундами ожидания.
+         */
+        const service = msg.content.silent === true
         if (swallowExecutes) {
           reply(ws, msg.header, 'status', { execution_state: 'busy' })
           held.push({ socket: ws, parent: msg.header, asked })
@@ -257,13 +267,13 @@ before(async () => {
          * процесс за ними. Подделка этого не умела, и весь путь автоперезапуска
          * не был покрыт ничем.
          */
-        if (/OOM/.test(msg.content.code)) {
+        if (!service && /OOM/.test(msg.content.code)) {
           reply(ws, msg.header, 'status', { execution_state: 'restarting' })
           return
         }
         // A cell whose source says so fails, so a suite can build a notebook
         // that breaks in the middle without needing a real Python.
-        if (/RAISE/.test(msg.content.code)) {
+        if (!service && /RAISE/.test(msg.content.code)) {
           reply(ws, msg.header, 'error', {
             ename: 'ValueError',
             evalue: 'the exercise stops here',
@@ -282,7 +292,7 @@ before(async () => {
          * ячейка и оставалась пустой, пока сервер читал из этого сообщения
          * один только status. Подделка повторяет ту же форму.
          */
-        if (/\?$/.test(msg.content.code.trim())) {
+        if (!service && /\?$/.test(msg.content.code.trim())) {
           reply(ws, msg.header, 'execute_reply', {
             status: 'ok',
             execution_count: 1,
@@ -300,7 +310,7 @@ before(async () => {
         // Ячейка, которая ничего не печатает: `x = 1`, определение функции,
         // импорт. Настоящее ядро на такую отвечает ровно этим — реплаем и
         // idle, без единого iopub-вывода.
-        if (/SILENT/.test(msg.content.code)) {
+        if (!service && /SILENT/.test(msg.content.code)) {
           reply(ws, msg.header, 'execute_reply', { status: 'ok', execution_count: 1 })
           reply(ws, msg.header, 'status', { execution_state: 'idle' })
           return

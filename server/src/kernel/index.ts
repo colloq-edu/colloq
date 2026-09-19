@@ -70,12 +70,18 @@ import { CouncilOutputBuffer, type CouncilJob } from './council.js'
 import {
   councilEnterSource,
   councilEnterRefusal,
+  councilLeftoverNotes,
+  councilMemoryNote,
   councilSkipNotes,
+  parseCouncilLeftovers,
   parseCouncilReport,
   COUNCIL_EXIT_SOURCE,
+  COUNCIL_LEFTOVERS_EXPR,
+  COUNCIL_REFUSED,
   COUNCIL_REPORT_EXPR,
   COUNCIL_REPORT_KEY,
   type CouncilIsolationReport,
+  type CouncilLeftovers,
 } from './council-isolation.js'
 import { durationWords } from '@shared/text'
 import type { CouncilRun } from '@shared/protocol'
@@ -1835,22 +1841,59 @@ const COUNCIL_REPORT_MS = 400
  * Поэтому вокруг попытки теперь два других молчаливых запроса
  * (council-isolation.ts): вход подменяет привязки личными копиями и
  * отчитывается через `user_expressions`, выход возвращает каждую привязку,
- * снимает новые имена, откатывает cwd и rcParams. Изоляции пространства имён
+ * снимает новые имена, откатывает cwd и rcParams. Личную копию получают
+ * таблицы и ряды pandas, массивы numpy, встроенные контейнеры и кортежи,
+ * тензоры и модели torch вместе с их оптимизаторами (общий memo — чтобы
+ * оптимизатор указывал на параметры СВОЕЙ копии модели), разреженные матрицы
+ * scipy, оценщики sklearn, генераторы случайных чисел и объекты классов,
+ * объявленных в самой тетради. Изоляции пространства имён
  * (`exec` в свежем словаре) по-прежнему нет: она ломает и эхо последнего
  * выражения, и магии, и номера строк в трейсбеке — то есть всё, чем попытка
  * похожа на ячейку.
  *
+ * Копиями закрыты данные; тем же входом закрыто и то, чем одна попытка гасила
+ * занятие целиком (council-isolation.ts):
+ *   · `exit()` и `quit()` — в ipykernel это `shell.ask_exit()`, то есть конец
+ *     процесса и потеря переменных у ВСЕХ; проверено на живом ядре. На время
+ *     попытки они отвечают отказом одной строкой. `sys.exit()` ядро переживает
+ *     и без нас — его не трогаем;
+ *   · жадность: попытке ставится потолок адресного пространства от предела
+ *     контейнера (`COUNCIL_MEMORY_GUARD`), и `np.ones((40000, 40000))` теперь
+ *     кончается `MemoryError` у автора, а не OOM-killer'ом на всю комнату;
+ *   · состояние процесса, которое сдвигает результаты следующим: поток
+ *     случайных чисел (`random`, `numpy`, `torch`), `sys.stdout`/`stderr`,
+ *     `sys.path`, `os.environ`, `builtins`, фильтры предупреждений, предел
+ *     рекурсии, трассировщик, обработчик SIGINT, опции печати numpy и pandas,
+ *     `sklearn.set_config`, контекст `decimal`, `%pdb`, хуки IPython, фигуры
+ *     matplotlib, дочерние процессы.
+ *
  * Что остаётся общим — и о чём сказано вслух (COUNCIL_SHARED_KERNEL_NOTE,
  * README, docs/pages · council.html):
- *   · файлы на диске: `df.to_csv('out.csv')` пишет в общий каталог комнаты;
- *   · объекты вне списка копируемых типов — тензор torch, открытый файл,
- *     генератор, соединение с базой (council-isolation.ts · _plan);
- *   · объекты сверх бюджета `COUNCIL_COPY_MB` — эти названы в выводе попытки;
- *   · состояние модулей: `np.random.seed`, `pd.set_option`, `sys.path`,
- *     `warnings.filterwarnings`, счётчик выполнения ядра;
- *   · GPU: память карты и её контексты у комнаты одни.
+ *   · файлы на диске: `df.to_csv('out.csv')` пишет в общий каталог комнаты.
+ *     Чинить это не стали нарочно: chmod на время попытки ломает и редактор
+ *     файлов, и терминал, а перехват `open` — обычное «каждый пишет out.csv»;
+ *   · объекты вне списка копируемых типов — открытый файл, генератор, сокет,
+ *     соединение с базой, polars, PIL (council-isolation.ts · _plan);
+ *   · объекты сверх бюджета `COUNCIL_COPY_MB` и те, чью копию не удалось
+ *     сделать, — эти названы поимённо в выводе самой попытки;
+ *   · модули, которые попытка импортировала: они остаются в памяти ядра;
+ *   · потоки, которые попытка оставила работать: остановить их в Python
+ *     нечем, поэтому выход их считает и говорит о них в выводе;
+ *   · GPU: память карты и её контексты у комнаты одни;
+ *   · умысел: `os._exit`, `os.kill`, снос служебного модуля из `sys.modules`.
+ *     Консилиум — приём преподавания, а не экзаменационная песочница.
  */
-const COUNCIL_ENTER_SOURCE = councilEnterSource(config.councilCopyBytes)
+function councilEnterSourceNow(): string {
+  /*
+   * Собирается на КАЖДУЮ попытку, и это не расточительство: внутрь уезжает
+   * текст отказа на языке комнаты, а язык меняют в панели посреди пары.
+   * Дорогая часть — экранирование исходника — считается один раз и лежит в
+   * памяти модуля; здесь остаётся склейка двух строк.
+   */
+  return councilEnterSource(config.councilCopyBytes, {
+    memoryGuard: config.councilMemoryGuard,
+  })
+}
 
 /** Обработчики для служебного запроса, у которого нет ни вывода, ни зрителей. */
 const SILENT_HANDLERS: Parameters<JupyterKernel['execute']>[1] = {
@@ -1890,7 +1933,7 @@ async function enterCouncilIsolation(
   try {
     const status = await runOnKernel(
       runtime,
-      COUNCIL_ENTER_SOURCE,
+      councilEnterSourceNow(),
       {
         ...SILENT_HANDLERS,
         onError: (ename, evalue) => {
@@ -1916,6 +1959,36 @@ async function enterCouncilIsolation(
   }
   const report = parseCouncilReport(raw)
   return { report, reason: report?.error ?? reason }
+}
+
+/**
+ * Вернуть ядро к тому, что было, — и узнать, чего вернуть не удалось.
+ *
+ * В отличие от входа, молчание здесь ничего не решает: выход сам по себе
+ * работает, а отчёт нужен ради одной приписки в выводе попытки. Поэтому
+ * `quietly`-логика: ядро не ответило — и ладно.
+ */
+async function leaveCouncilIsolation(runtime: Runtime): Promise<CouncilLeftovers | null> {
+  let raw: unknown = null
+  try {
+    await runtime.kernel?.execute(
+      COUNCIL_EXIT_SOURCE,
+      {
+        ...SILENT_HANDLERS,
+        onUserExpressions: (values) => {
+          raw = values[COUNCIL_REPORT_KEY]
+        },
+      },
+      {
+        silent: true,
+        storeHistory: false,
+        userExpressions: { [COUNCIL_REPORT_KEY]: COUNCIL_LEFTOVERS_EXPR },
+      },
+    )
+  } catch {
+    /* ядро уже не отвечает — возвращать ему нечего и некому */
+  }
+  return parseCouncilLeftovers(raw)
 }
 
 /** Первый кадр запуска: он же заявка, и текст под ним — тот, что в задании. */
@@ -2348,8 +2421,9 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   armLimit(runtime, active)
   const { buffer } = active
   let state: 'ok' | 'error' = 'ok'
-  // Личные копии данных попытки. См. COUNCIL_ENTER_SOURCE.
+  // Личные копии данных попытки. См. councilEnterSourceNow.
   const { report, reason } = await enterCouncilIsolation(runtime)
+  let starved = false
   try {
     if (!report?.ok) {
       /*
@@ -2396,7 +2470,17 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
           touchJob(runtime, active)
         },
         onError: (ename, evalue, traceback) => {
-          buffer.error(ename, evalue, traceback)
+          /*
+           * Свой отказ — одной строкой, без трейсбека, как и остановка по
+           * пределу. Кадры `<colloq-council>` в нём — не код студента, и
+           * читать ему там нечего: там наш модуль объясняет, почему `exit()`
+           * в попытке гасил бы ядро всей комнате.
+           */
+          if (ename === COUNCIL_REFUSED) buffer.error('', evalue, [])
+          else buffer.error(ename, evalue, traceback)
+          // MemoryError под нашим потолком — это спасённое занятие, и сказать
+          // об этом надо после трейсбека, словами и с числом.
+          if (/MemoryError/.test(ename)) starved = true
           touchJob(runtime, active)
         },
         onClear: (wait) => {
@@ -2444,7 +2528,11 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
      * «вход не подтвердился» выходит из блока раньше, и иначе карточка
      * осталась бы «считается» навсегда.
      */
-    await quietly(runtime, COUNCIL_EXIT_SOURCE)
+    const leftovers = await leaveCouncilIsolation(runtime)
+    // Приписки в хвост вывода: почему не хватило памяти и что осталось
+    // работать. Обе — после кода попытки, потому что обе про его последствия.
+    if (starved) buffer.stream('stderr', councilMemoryNote(report?.memory ?? null))
+    for (const note of councilLeftoverNotes(leftovers)) buffer.stream('stderr', note)
     finishCouncil(runtime, active, state)
     // Попытка могла записать файл — панели файлов это так же интересно.
     notifyWorkspaceChanged(runtime.sessionId)

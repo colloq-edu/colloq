@@ -256,6 +256,21 @@ export const config = {
    */
   councilCopyBytes: Number(env('COUNCIL_COPY_MB', '512')) * 1024 * 1024,
 
+  /**
+   * Ставить ли попытке консилиума потолок адресного пространства.
+   *
+   * Без него `np.ones((40000, 40000))` или неудачное декартово соединение
+   * зовут OOM-killer, а тот убивает ядро ВСЕЙ комнаты: разбор преподавателя,
+   * данные каждого, кто уже сдал, и очередь заодно. Под потолком то же самое
+   * кончается `MemoryError` в одной попытке, и занятие продолжается.
+   *
+   * Потолок считается от предела контейнера за вычетом уже занятого и запаса
+   * ядру; ни Linux, ни cgroup, ни рядом CUDA — потолка нет вовсе (драйвер
+   * резервирует терабайты виртуальных адресов и под RLIMIT_AS не поднимается).
+   * Выключатель здесь на случай окружения, где этот расчёт врёт.
+   */
+  councilMemoryGuard: env('COUNCIL_MEMORY_GUARD', '1') !== '0',
+
   /** How often an idle-but-dirty document is written to disk. */
   snapshotIntervalMs: 1500,
   /** Coalescing window for kernel stdout/stderr before it hits the CRDT. */

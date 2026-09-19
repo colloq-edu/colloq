@@ -424,7 +424,7 @@ def main():
     elif args.command == 'config':
         allowed = {'UI_LANGUAGE', 'PUBLIC_URL', 'ADMIN_EMAIL', 'INSTITUTION', 'OPEN_SEMINAR_CREATION',
             'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'AI_PROVIDER', 'AI_REASONING',
-            'SESSION_SECRET', 'TZ', 'MAX_UPLOAD_MB', 'MAX_SESSION_MB', 'COUNCIL_COPY_MB'}
+            'SESSION_SECRET', 'TZ', 'MAX_UPLOAD_MB', 'MAX_SESSION_MB', 'COUNCIL_COPY_MB', 'COUNCIL_MEMORY_GUARD'}
         settings = {k: v for k, v in read_env(args.env_file).items() if k in allowed} if args.env_file else {}
         print(json.dumps(resource('Secret', 'colloq-app-config', type='Opaque', stringData=settings)))
     else:
