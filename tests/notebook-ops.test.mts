@@ -12,7 +12,6 @@ import * as Y from 'yjs'
 import { CELLS_KEY, cellOutputs, cellSource, createCell, getCells } from '../shared/notebook.js'
 import {
   deleteCell,
-  duplicateCell,
   hasPendingRun,
   insertCellAfter,
   setCellType,
@@ -136,15 +135,6 @@ test('сервер не гасит выполнение у ячейки, ост�
   assert.equal(cells.get(0).get('state'), 'ok')
 })
 
-test('a duplicate is a new cell, not the same one twice', () => {
-  const { doc, cells, ids } = notebook(['shared'])
-  const copyId = duplicateCell(doc, CELLS_KEY, ids[0])
-  assert.ok(copyId)
-  assert.notEqual(copyId, ids[0], 'the copy carries the original id')
-  assert.equal(cells.length, 2)
-  assert.equal(new Set(cells.toArray().map((c) => c.get('id'))).size, 2)
-})
-
 test('inserting after a cell puts it next, not at the end', () => {
   const { doc, cells, ids } = notebook(['one', 'two', 'three'])
   const id = insertCellAfter(doc, CELLS_KEY, ids[0], 'code')
@@ -157,7 +147,6 @@ test('an operation on a cell that is gone is a no-op, not a crash', () => {
   moveInCells(doc, 'c_never_existed', 1)
   deleteCell(doc, 'c_never_existed')
   setCellType(doc, 'c_never_existed', 'markdown')
-  assert.equal(duplicateCell(doc, CELLS_KEY, 'c_never_existed'), null)
   assert.deepEqual(order(cells), before)
 })
 

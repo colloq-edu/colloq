@@ -1259,10 +1259,6 @@ export const roomMessages: MessageCatalog = {
     "ru": "Переместить ячейку вниз",
     "en": "Move cell down"
   },
-  "room.ui.343": {
-    "ru": "Создать копию ячейки",
-    "en": "Duplicate cell"
-  },
   "room.ui.344": {
     "ru": "Попросить оракула изменить ячейку",
     "en": "Ask the oracle to change this cell"
@@ -3950,10 +3946,6 @@ export const roomMessages: MessageCatalog = {
   "room.extra.122": {
     "ru": "Вниз",
     "en": "Move down"
-  },
-  "room.extra.123": {
-    "ru": "Создать копию",
-    "en": "Duplicate"
   },
   "room.extra.124": {
     "ru": "Преобразовать в текст — M",

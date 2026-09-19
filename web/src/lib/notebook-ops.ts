@@ -4,8 +4,6 @@ import {
   allCellArrays,
   bookCells,
   cellId,
-  cellSource,
-  cellType,
   createCell,
   findCell,
   type CellType,
@@ -123,9 +121,3 @@ export function setCellType(doc: Y.Doc, id: string, type: CellType): void {
   doc.transact(() => found.cell.set('type', type))
 }
 
-export function duplicateCell(doc: Y.Doc, root: string, id: string): string | null {
-  const found = findCell(doc, id)
-  if (!found) return null
-  const source = cellSource(found.cell).toString()
-  return insertCell(doc, root, cellType(found.cell), found.index + 1, source)
-}

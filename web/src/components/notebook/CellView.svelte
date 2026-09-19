@@ -96,7 +96,6 @@
   import CodeLine from '@/components/ui/CodeLine.svelte'
   import {
     deleteCell,
-    duplicateCell,
     hasPendingRun,
     insertCellAfter,
     ONE_AT_A_TIME,
@@ -1198,10 +1197,8 @@
   const ytext = $derived(cell.current ? cellSource(cell.current) : null)
 
   /**
-   * Текст ячейки в буфер — для тех, кому копию в тетрадь не дают.
+   * Текст ячейки в буфер — единственное, что делает слот копирования в тулбаре.
    *
-   * Слот «Создать копию» в тулбаре у участника лекции и консилиума был просто
-   * погашен: правило структуры не пускает, а унести код к себе всё равно надо.
    * Отказ буфера (настройка браузера) молчит: текст остаётся выделяемым.
    */
   let copied = $state(false)
@@ -2561,35 +2558,26 @@
           <Icon name="chevron-down" size={13} />
         </button>
         <!--
-          Один слот — два действия, по праву.
+          Этот слот копирует текст ячейки в буфер — у всех и всегда.
 
-          Кому можно менять структуру, тот получает копию ячейки в тетрадь,
-          как и было. Остальным (лекция, консилиум) слот не гаснет, а копирует
-          текст ячейки в буфер: унести код к себе — ровно то, что студенту на
-          лекции и нужно, и для этого не надо ни писать в общую тетрадь, ни
-          спрашивать правило комнаты.
+          Раньше тем, кому можно добавлять ячейки, он создавал копию ячейки в
+          общей тетради, а значок у копии тот же, что у «скопировать». 19.09.2026
+          на занятии трое студентов, желая унести код к себе, нажали его по
+          шесть–девять раз: в общей тетради выросли стопки одинаковых ячеек с
+          импортами, и убирал их преподаватель руками посреди пары. Копия ячейки
+          — это «скопировать, добавить ячейку, вставить»; отдельной кнопки под
+          неё нет намеренно.
         -->
-        {#if may.add}
-          <button
-            type="button"
-            class={TOOL}
-            title={tr('room.extra.123')}
-            aria-label={tr('room.ui.343')}
-            onclick={() => duplicateCell(session.doc, bookRoot, id)}
-          >
-            <Icon name="duplicate" size={13} />
-          </button>
-        {:else}
-          <button
-            type="button"
-            class={TOOL}
-            title={copied ? tr('room.ui.1268') : tr('room.ui.1900')}
-            aria-label={tr('room.ui.1900')}
-            onclick={() => void copySource()}
-          >
-            <Icon name={copied ? 'check' : 'copy'} size={13} />
-          </button>
-        {/if}
+        <button
+          type="button"
+          class={TOOL}
+          title={copied ? tr('room.ui.1268') : tr('room.ui.1900')}
+          aria-label={tr('room.ui.1900')}
+          data-cell-copy
+          onclick={() => void copySource()}
+        >
+          <Icon name={copied ? 'check' : 'copy'} size={13} />
+        </button>
         <button
           type="button"
           class={TOOL}

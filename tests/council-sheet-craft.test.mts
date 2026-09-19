@@ -297,9 +297,11 @@ test('«переписать ячейку» закрыто там, где яче
   )
   assert.equal(translate('ru', 'room.ui.1267'), 'Скопировать')
 
-  // И в тулбаре ячейки: слот «Создать копию» у того, кому структуру не дают
-  // (лекция, консилиум), копирует текст ячейки в буфер — и не гаснет.
-  assert.match(CELL, /\{#if may\.add\}[\s\S]{0,600}?\{:else\}[\s\S]{0,400}?onclick=\{\(\) => void copySource\(\)\}/)
+  // И в тулбаре ячейки: слот копии копирует текст ячейки в буфер — у всех и
+  // не гаснет. Копии ячейки в тетрадь за этим значком больше нет: 19.09.2026
+  // студенты принимали его за «скопировать» и плодили ячейки в общей тетради.
+  assert.match(CELL, /data-cell-copy\s+onclick=\{\(\) => void copySource\(\)\}/)
+  assert.doesNotMatch(CELL, /duplicateCell/, 'копия ячейки в тетрадь вернулась в тулбар')
   assert.doesNotMatch(
     CELL.slice(CELL.indexOf('void copySource()') - 300, CELL.indexOf('void copySource()')),
     /disabled=/,
