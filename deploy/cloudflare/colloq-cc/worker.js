@@ -19,12 +19,14 @@
 // читают глазами и переписывают в адресную строку, и на зеркале он обязан
 // называть зеркало.
 //
-// Всё остальное остаётся как есть, и это решение, а не лень. В <head> лежат
-// <link rel=canonical>, og:url и hreflang, и все они обязаны и дальше
-// указывать на colloq.ru: поисковику полагается видеть ОДИН канонический
-// сайт, а не две одинаковые копии, конкурирующие друг с другом. Атрибуты
+// Всё остальное в теле остаётся как есть, и это решение, а не лень. Атрибуты
 // href не трогаются вовсе — ссылки либо от корня, либо абсолютные нарочно
 // (GitHub, PyPI, почта автора).
+//
+// В <head> правятся теги превью — og: и twitter:, и только на лендинге; см.
+// «превью ссылки» ниже. <title>, <meta name=description>, <link rel=canonical>
+// и hreflang не трогаются никогда: поисковику полагается видеть ОДИН
+// канонический сайт, а не две одинаковые копии, конкурирующие друг с другом.
 //
 // Единственное исключение — Location у редиректов. Pages отвечает на /docs
 // (без косой черты) буквально `location: https://colloq.ru/docs/`, и без
@@ -174,6 +176,167 @@ class VisibleDomain {
   }
 }
 
+// ------------------------------------------------------- превью ссылки
+//
+// Разворачиватель ссылок (Telegram, WhatsApp, Slack, iMessage, X, Discord,
+// Facebook) не исполняет JS. Автовыбор языка на лендинге сделан скриптом в
+// <head>, и до бота он не доезжает вовсе: бот забирает `/`, читает og: и
+// twitter: и показывает РУССКУЮ карточку — в том числе тому, кому дали
+// colloq.cc, имя как раз для тех, у кого русского нет.
+//
+// Поэтому на зеркале корень лендинга отдаёт теги превью своего английского
+// близнеца. Близнец ищется не по зашитому адресу, а по самой странице: в её
+// <head> стоит <link rel="alternate" hreflang="en" href="…">, и это ровно то
+// место, где живёт ответ на вопрос «а где английская версия». Переедет —
+// переедет и превью.
+//
+// Только ЛЕНДИНГ: корню подставляются теги близнеца, английской странице —
+// её собственные, ей нужны лишь своя картинка и свой адрес. У /docs/ и у
+// страниц курсов автовыбора языка нет, и английское превью привело бы там на
+// русскую страницу, то есть соврало бы; их голова не трогается ни тегом.
+//
+// Меняется содержимое тегов, а не разметка вокруг: <title> и description
+// остаются русскими — их читает поисковик, и ему полагается правда про
+// страницу, которую он сейчас качает.
+//
+// og:url — единственный тег, который разворачиватель может ПЕРЕЧИТАТЬ:
+// Facebook и всё, что построено на его схеме, считает адрес из og:url
+// каноническим и идёт за тегами уже туда. Оставленный colloq.ru он увёл бы
+// бота обратно на источник — и человек, приславший colloq.cc, получил бы
+// русскую карточку с чужим доменом в подписи. Поэтому на зеркале og:url
+// называет зеркало, причём ТОТ ЖЕ адрес, который открыли: перечитав его, бот
+// получит ровно эти же теги, и картинка не «переедет» со второго захода.
+// Канон при этом остаётся у colloq.ru — он в <link rel=canonical>, и это
+// именно тот сигнал, по которому поисковик склеивает копии.
+const LANDING_ROOT = new Set(['/', '/index.html'])
+const ENGLISH_LANDING = new Set(['/en/', '/en/index.html'])
+const PREVIEW_SELECTOR = 'head meta[property^="og:"], head meta[name^="twitter:"]'
+
+// Картинка превью: английская лежит на источнике, зеркальная — своя, с
+// подписью colloq.cc. Обе рисует scripts/site-og.mts.
+const IMAGE_ORIGIN = '/img/og-en.png'
+const IMAGE_MIRROR = '/img/og-cc.png'
+
+/**
+ * Адрес английского близнеца — из <link rel="alternate" hreflang="en">.
+ *
+ * null, когда ссылки нет: тогда подменять нечего и страница едет как есть.
+ * Порядок атрибутов не важен — их и пишут по-разному.
+ */
+export function twinHref(html) {
+  const head = html.slice(0, html.indexOf('</head>') + 1 || undefined)
+  for (const [tag] of head.matchAll(/<link\b[^>]*>/gi)) {
+    if (!/\srel=["']?alternate["']?/i.test(tag)) continue
+    if (!/\shreflang=["']?en["']?/i.test(tag)) continue
+    const href = /\shref="([^"]*)"/i.exec(tag) || /\shref='([^']*)'/i.exec(tag)
+    if (href) return href[1]
+  }
+  return null
+}
+
+/**
+ * Теги превью страницы: ключ (og:title, twitter:card) → содержимое.
+ *
+ * Читается только <head>: og-теги в теле — это чужая цитата или пример в
+ * документации, и им здесь делать нечего.
+ */
+export function previewTags(html) {
+  const head = html.slice(0, html.indexOf('</head>') + 1 || undefined)
+  const tags = new Map()
+  for (const [tag] of head.matchAll(/<meta\b[^>]*>/gi)) {
+    const key =
+      (/\sproperty="([^"]*)"/i.exec(tag) || /\sproperty='([^']*)'/i.exec(tag) || [])[1] ||
+      (/\sname="([^"]*)"/i.exec(tag) || /\sname='([^']*)'/i.exec(tag) || [])[1]
+    if (!key || !(key.startsWith('og:') || key.startsWith('twitter:'))) continue
+    const content = /\scontent="([^"]*)"/i.exec(tag) || /\scontent='([^']*)'/i.exec(tag)
+    if (content) tags.set(key, content[1])
+  }
+  return tags
+}
+
+/**
+ * Картинка превью на зеркале — или null, если менять нечего.
+ *
+ * Подменяется РОВНО английская картинка источника: пока owner не выложил
+ * og-en.png, теги близнеца зовут старый og.png, условие не срабатывает, и
+ * зеркало показывает то же, что источник. Так воркер можно поставить раньше
+ * картинок и не получить 404 в превью.
+ *
+ * Метка ?v= переносится как есть. Она обязана МЕНЯТЬСЯ вместе с картинкой, а
+ * обе рисует один скрипт в одном коммите — значит, метка английской годится и
+ * для зеркальной, и лишнего запроса к источнику за ней не нужно.
+ */
+export function mirrorPreviewImage(content) {
+  let target
+  try {
+    target = new URL(content, `https://${ORIGIN}/`)
+  } catch {
+    return null
+  }
+  if (target.hostname !== ORIGIN && target.hostname !== MIRROR) return null
+  if (target.pathname !== IMAGE_ORIGIN) return null
+  target.protocol = 'https:'
+  target.hostname = MIRROR
+  target.pathname = IMAGE_MIRROR
+  return target.toString()
+}
+
+/**
+ * Подменить содержимое одного тега превью. Чистая функция — ей и проверяется
+ * вся развилка: что берётся у близнеца, что у самой страницы, что у зеркала.
+ *
+ * `tags` — теги английского близнеца или null, когда страница уже английская.
+ * `ogUrl` — адрес этой же страницы на зеркале.
+ */
+export function previewContent(key, own, tags, ogUrl) {
+  if (key === 'og:url') return ogUrl
+  const value = tags && tags.has(key) ? tags.get(key) : own
+  if (value === null || value === undefined) return null
+  return mirrorPreviewImage(value) ?? value
+}
+
+/** Обработчик HTMLRewriter поверх previewContent. */
+class Preview {
+  constructor(tags, ogUrl) {
+    this.tags = tags
+    this.ogUrl = ogUrl
+  }
+
+  element(el) {
+    const key = el.getAttribute('property') ?? el.getAttribute('name')
+    if (!key) return
+    const own = el.getAttribute('content')
+    const value = previewContent(key, own, this.tags, this.ogUrl)
+    if (value !== null && value !== own) el.setAttribute('content', value)
+  }
+}
+
+/**
+ * Забрать теги превью у английского близнеца этой страницы.
+ *
+ * null при любой осечке — нет ссылки, не тот хост, источник не ответил,
+ * тегов не нашлось. Тогда страница отдаётся нетронутой: превью на чужом языке
+ * — беда, а страница без превью — та же страница.
+ */
+async function twinTags(html) {
+  try {
+    const href = twinHref(html)
+    if (!href) return null
+    const target = new URL(href, `https://${ORIGIN}/`)
+    // Только источник: hreflang в чужой разметке не должен превращаться в
+    // запрос воркера куда попало, а ссылка на само зеркало — в петлю.
+    if (target.hostname !== ORIGIN) return null
+    const answer = await fetch(target.toString(), {
+      cf: { cacheEverything: true, cacheTtlByStatus: { '200-299': TTL.page, '300-599': 0 } },
+    })
+    if (!answer.ok) return null
+    const tags = previewTags(await answer.text())
+    return tags.size ? tags : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * HSTS — на КАЖДЫЙ ответ, включая 405 и редирект с www.
  *
@@ -264,10 +427,22 @@ export default {
     // «это зеркало или мне подменили DNS».
     out.set('x-colloq-mirror', ORIGIN)
 
-    const body = NULL_BODY.has(response.status) ? null : response.body
+    let body = NULL_BODY.has(response.status) ? null : response.body
     // Разметку — через замену видимого домена, всё остальное (шрифты,
     // картинки, css, json) не пересобирается вовсе и течёт насквозь.
     const html = (out.get('content-type') || '').toLowerCase().startsWith('text/html')
+
+    // Теги превью правятся на лендинге и только на нём; корню вдобавок нужен
+    // английский близнец, а чтобы его найти, страницу приходится прочитать
+    // целиком. Это одна страница на весь сайт, и ради неё поток не жалко:
+    // всё остальное по-прежнему течёт насквозь.
+    const preview = body && html && response.status === 200
+    const root = preview && LANDING_ROOT.has(url.pathname)
+    let tags = null
+    if (root) {
+      body = await response.text()
+      tags = await twinTags(body)
+    }
 
     if (body && html) {
       // После пересборки заголовки о РАЗМЕРЕ и УПАКОВКЕ описывают уже не то
@@ -288,8 +463,16 @@ export default {
       }),
     )
 
-    return body && html
-      ? new HTMLRewriter().on(VISIBLE_DOMAIN_SELECTOR, new VisibleDomain()).transform(answer)
-      : answer
+    if (!body || !html) return answer
+
+    const rewriter = new HTMLRewriter().on(VISIBLE_DOMAIN_SELECTOR, new VisibleDomain())
+    // Корень — только когда близнец нашёлся: наполовину подменённая голова
+    // (русские теги с адресом зеркала в og:url) хуже нетронутой, потому что
+    // выглядит рабочей. Английская страница в близнеце не нуждается вовсе —
+    // она уже он, и ей нужна только своя картинка и свой адрес.
+    if ((root && tags) || (preview && ENGLISH_LANDING.has(url.pathname))) {
+      rewriter.on(PREVIEW_SELECTOR, new Preview(tags, `https://${MIRROR}${url.pathname}`))
+    }
+    return rewriter.transform(answer)
   },
 }

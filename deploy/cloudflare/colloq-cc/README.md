@@ -63,9 +63,14 @@ direction.
   GitHub) is left alone.
 - **Rewrites the domain where the page prints it as visible text**, and
   nothing else in the body — see *The visible domain* below.
-- **Leaves `<head>` alone.** `<link rel="canonical">`, `og:url` and `hreflang`
-  in `site/` all name `colloq.ru`, and they must keep naming it: search engines
-  should see one canonical site, not two competing copies.
+- **Serves English link previews**, and only on the landing page — see *Link
+  previews* below. `og:`/`twitter:` tags are the only part of `<head>` the
+  Worker touches.
+- **Leaves the rest of `<head>` alone.** `<title>`, `<meta name="description">`,
+  `<link rel="canonical">` and `hreflang` in `site/` all name `colloq.ru` and
+  describe the page the origin actually serves; they must keep doing that,
+  because search engines should see one canonical site, not two competing
+  copies.
 - **Leaves `href` alone.** In-site navigation is root-relative, and the
   absolute links (GitHub, PyPI, the author's `mailto:`) are absolute on
   purpose.
@@ -122,9 +127,73 @@ dropped from rewritten HTML responses; Cloudflare re-compresses at the edge.
 Non-HTML responses never enter the rewriter and keep their headers and bytes
 exactly as the origin sent them.
 
-The net effect, measured against the live origin: the mirrored landing page
-differs from `colloq.ru` by exactly one line, and the course page by exactly
-one line.
+The net effect, measured against the live origin: every mirrored page except
+the landing differs from `colloq.ru` by exactly one line, and the course page
+by exactly one line. The landing also carries the preview tags below.
+
+## Link previews
+
+**The problem.** Telegram, WhatsApp, Slack, iMessage, X, Discord and Facebook
+all expand a pasted link by fetching it and reading `og:`/`twitter:` meta tags.
+None of them runs JavaScript — and the landing page picks its language with a
+script in `<head>`. So a preview bot always got the Russian page, including on
+`colloq.cc`, which exists precisely for the audience that does not read
+Russian. The one preview image, `site/img/og.png`, was Russian too, and it is
+labelled `colloq.ru` in the bottom-left corner.
+
+**What the Worker does.** On the landing root (`/` and `/index.html`) it
+replaces the content of every `meta[property^="og:"]` and
+`meta[name^="twitter:"]` with the value of the same tag from the page's English
+twin. The twin is not hard-coded: it is read from the page's own
+`<link rel="alternate" hreflang="en" href="…">`, fetched from the origin, and
+cached at the edge for the same five minutes as any page. If the link is
+missing, points somewhere other than `colloq.ru`, or the fetch or the parse
+fails, **the page is served unchanged** — a page without a preview is still the
+page, while half-swapped tags look like they work.
+
+Only the landing root, and that is the point: `/docs/` and the published
+courses have no language auto-redirect, so an English preview there would
+promise an English page and deliver a Russian one.
+
+`<title>`, `<meta name="description">`, `<link rel="canonical">` and `hreflang`
+are never touched. Humans and search engines keep seeing the truth about the
+document the origin actually served; the preview tags are for the bots, which
+never render the page at all.
+
+**The image.** `scripts/site-og.mts` (`make site-og`) draws three 1200×630
+cards from one layout: `og.png` (Russian, labelled `colloq.ru`), `og-en.png`
+(English, `colloq.ru`) and `og-cc.png` (English, `colloq.cc`). On the mirror,
+any `og:image`/`twitter:image` whose path is `/img/og-en.png` becomes
+`https://colloq.cc/img/og-cc.png`, keeping the `?v=` marker — one script draws
+both pictures in one commit, so the English marker changes exactly when the
+mirror picture does. The rewrite is deliberately conditional on the tag already
+pointing at `og-en.png`: before the images ship, the twin still names the old
+`og.png` and the mirror shows that, instead of a 404 on a file the origin does
+not have yet. This applies to `/en/` as well, which otherwise keeps its own
+tags — it is already English.
+
+**`og:url` names the mirror.** This is the one tag a scraper follows:
+Facebook, LinkedIn and everything built on their scheme treat `og:url` as the
+canonical address and re-scrape *it*. Left as `https://colloq.ru/`, it would
+send the bot straight back to the origin, and someone who shared `colloq.cc`
+would get the Russian card with the wrong domain under it. So on the mirror
+`og:url` is the mirror's own URL of the page being served —
+`https://colloq.cc/` for the root, `https://colloq.cc/en/` for the English
+page. Re-scraping either one yields exactly the same tags, which is what makes
+the preview stable rather than different on the second look. Canonicalisation
+for search engines is unaffected: that is `<link rel="canonical">`, and it
+still says `colloq.ru`.
+
+**Refreshing a cached preview.** Messengers cache a card for days, and they key
+it on the URL, not on the image. After changing tags or pictures:
+
+- **Telegram** — send `https://colloq.cc/` to [@WebpageBot](https://t.me/WebpageBot)
+  and it re-fetches the page.
+- **Facebook / WhatsApp** — the Sharing Debugger,
+  <https://developers.facebook.com/tools/debug/>, *Scrape Again*.
+- **LinkedIn** — the Post Inspector, <https://www.linkedin.com/post-inspector/>.
+- **Slack, Discord, iMessage** — no manual flush; the `?v=` marker on the image
+  and a fresh `og:url` are what eventually move them.
 
 ## Deploying
 
@@ -208,11 +277,21 @@ curl -s https://colloq.cc/ | grep 'class="host"'           # -> colloq.cc
 curl -s https://colloq.cc/c/ml-strong/ | grep 'class="addr"'  # -> colloq.cc/c/...
 ```
 
-The sharpest check is a diff against the origin — it should come out at one
-line per page, and nothing else:
+The previews, as a bot sees them — English on the mirror, Russian on the
+origin, and the same tags twice in a row:
 
 ```sh
-curl -s --compressed https://colloq.ru/ -o /tmp/a && curl -s --compressed https://colloq.cc/ -o /tmp/b
+curl -s -A 'TelegramBot (like TwitterBot)' https://colloq.cc/   | grep -i 'og:\|twitter:'
+curl -s -A 'TelegramBot (like TwitterBot)' https://colloq.ru/   | grep -i 'og:\|twitter:'
+curl -s -A 'facebookexternalhit/1.1'       https://colloq.cc/en/ | grep -i 'og:image\|og:url'
+curl -sI https://colloq.cc/img/og-cc.png | head -1              # -> 200
+```
+
+The sharpest check for the rest is a diff against the origin — one line per
+page, and nothing else besides the landing's preview tags:
+
+```sh
+curl -s --compressed https://colloq.ru/docs/ -o /tmp/a && curl -s --compressed https://colloq.cc/docs/ -o /tmp/b
 diff /tmp/a /tmp/b
 ```
 

@@ -45,9 +45,25 @@ const mod = (await import(pathToFileURL(WORKER).href)) as {
   default: { fetch(request: Request): Promise<Response> }
   rewriteVisibleDomain(text: string): string
   VISIBLE_DOMAIN_SELECTOR: string
+  twinHref(html: string): string | null
+  previewTags(html: string): Map<string, string>
+  mirrorPreviewImage(content: string): string | null
+  previewContent(
+    key: string,
+    own: string | null,
+    tags: Map<string, string> | null,
+    ogUrl: string,
+  ): string | null
 }
 const worker = mod.default
-const { rewriteVisibleDomain, VISIBLE_DOMAIN_SELECTOR } = mod
+const {
+  rewriteVisibleDomain,
+  VISIBLE_DOMAIN_SELECTOR,
+  twinHref,
+  previewTags,
+  mirrorPreviewImage,
+  previewContent,
+} = mod
 
 type Call = { url: string; headers: Headers; method: string; cf: Record<string, unknown> }
 
@@ -99,6 +115,13 @@ const page = (body = '<html></html>', init: ResponseInit = {}) =>
  * Второе: текст приходит КУСКАМИ. Заглушка рубит его нарочно мелко, по четыре
  * символа, чтобы «colloq.ru» гарантированно оказался разорван границей. Так
  * накопитель в воркере проверяется, а не обходится.
+ *
+ * Третье (с появлением превью): обработчик element() ходит по ТЕГАМ, а не по
+ * тексту, и его селектор начинается с «head ». Заглушка разбирает ровно ту
+ * форму, что стоит в воркере — `head <тег>[<атрибут>^="<начало>"]`, — и
+ * применяет такие обработчики только к голове страницы. Селектор пошире она
+ * отвергает: область правки в <head> расширяется молча, а стоит это канона и
+ * hreflang.
  */
 type Chunk = {
   text: string
@@ -107,12 +130,38 @@ type Chunk = {
   remove(): void
 }
 
+type Element = {
+  getAttribute(name: string): string | null
+  setAttribute(name: string, value: string): void
+}
+
+type TextHandler = { text(chunk: Chunk): void }
+type ElementHandler = { element(el: Element): void }
+
 const everyFour = (s: string): string[] => s.match(/[\s\S]{1,4}/g) ?? ['']
 
-class ShimHTMLRewriter {
-  private handlers: Array<{ classes: string[]; handler: { text(chunk: Chunk): void } }> = []
+/** Разобранный селектор превью: тег и атрибут, с которого он начинается. */
+type Selector = { tag: string; attr: string; prefix: string }
 
-  on(selector: string, handler: { text(chunk: Chunk): void }): this {
+/** `head meta[property^="og:"]` → предикат «этот тег наш». */
+function parseElementSelector(one: string): Selector {
+  assert.ok(one.startsWith('head '), `селектор превью должен быть внутри head: ${one}`)
+  const parsed = /^head ([a-z]+)\[([a-z-]+)\^="([^"]*)"\]$/.exec(one)
+  assert.ok(parsed, `заглушка не понимает селектор: ${one}`)
+  return { tag: parsed[1], attr: parsed[2], prefix: parsed[3] }
+}
+
+class ShimHTMLRewriter {
+  private handlers: Array<{ classes: string[]; handler: TextHandler }> = []
+  private elements: Array<Selector & { handler: ElementHandler }> = []
+
+  on(selector: string, handler: TextHandler | ElementHandler): this {
+    if ('element' in handler) {
+      for (const part of selector.split(',')) {
+        this.elements.push({ ...parseElementSelector(part.trim()), handler })
+      }
+      return this
+    }
     const classes: string[] = []
     for (const part of selector.split(',')) {
       const one = part.trim()
@@ -127,14 +176,20 @@ class ShimHTMLRewriter {
 
   transform(response: Response): Response {
     const handlers = this.handlers
+    const elements = this.elements
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const html = await response.text()
-        // Замена — только внутри body, как и просит селектор.
+        // Замена — только внутри body, как и просит селектор; теги превью —
+        // только в голове.
         const at = html.indexOf('<body')
         const head = at === -1 ? '' : html.slice(0, at)
         const rest = at === -1 ? html : html.slice(at)
-        controller.enqueue(new TextEncoder().encode(head + ShimHTMLRewriter.apply(rest, handlers)))
+        controller.enqueue(
+          new TextEncoder().encode(
+            ShimHTMLRewriter.applyElements(head, elements) + ShimHTMLRewriter.apply(rest, handlers),
+          ),
+        )
         controller.close()
       },
     })
@@ -142,6 +197,36 @@ class ShimHTMLRewriter {
       status: response.status,
       statusText: response.statusText,
       headers: response.headers,
+    })
+  }
+
+  private static applyElements(
+    html: string,
+    elements: Array<Selector & { handler: ElementHandler }>,
+  ): string {
+    if (!elements.length) return html
+    const TAG = /<([a-z]+)\b([^>]*?)(\/?)>/gi
+    return html.replace(TAG, (whole, tag: string, attrs: string, slash: string) => {
+      let next = attrs
+      const read = (name: string): string | null => {
+        const found = new RegExp(`\\s${name}="([^"]*)"`, 'i').exec(next)
+        return found ? found[1] : null
+      }
+      const mine = elements.filter(
+        (one) => one.tag === tag.toLowerCase() && (read(one.attr) ?? '').startsWith(one.prefix),
+      )
+      if (!mine.length) return whole
+      const el: Element = {
+        getAttribute: read,
+        setAttribute(name, value) {
+          const at = new RegExp(`(\\s${name}=")([^"]*)(")`, 'i')
+          next = at.test(next)
+            ? next.replace(at, (_all, before: string, _old: string, after: string) => before + value + after)
+            : `${next} ${name}="${value}"`
+        },
+      }
+      for (const one of mine) one.handler.element(el)
+      return `<${tag}${next}${slash}>`
     })
   }
 
@@ -247,7 +332,10 @@ const LANDING = [
 ].join('\n')
 
 test('видимый домен становится зеркалом, а голова страницы — нет', async () => {
-  const { response } = await ask('https://colloq.cc/', () => page(LANDING))
+  // Спрашивается НЕ корень: у корня теперь подменяются теги превью, и это
+  // проверяется отдельно ниже. Здесь — про всё остальное: страница едет с
+  // источника байт в байт, кроме одной строки подвала.
+  const { response } = await ask('https://colloq.cc/docs/networking.html', () => page(LANDING))
   const out = await response.text()
 
   // Подпись в подвале — единственное, что поменялось.
@@ -324,6 +412,217 @@ test('замена не может дотянуться до головы стр
   for (const part of VISIBLE_DOMAIN_SELECTOR.split(',')) {
     assert.match(part.trim(), /^body \./, `селектор обязан начинаться с body: ${part}`)
   }
+})
+
+/*
+ * -------------------------------------------------------- превью ссылки
+ *
+ * Разворачиватель ссылок не исполняет JS, а автовыбор языка на лендинге —
+ * это скрипт. Бот, которому дали colloq.cc — имя как раз для тех, у кого
+ * русского нет, — забирал `/` и показывал РУССКУЮ карточку. Ниже проверяется
+ * вся развилка, потому что на живом воркере её не разглядеть: превью
+ * показывается один раз, кэшируется у мессенджера на дни и ошибку свою
+ * выглядит как «просто такая картинка».
+ *
+ * Головы страниц — те же теги и в том же порядке, что в site/: проверять
+ * пересказ разметки смысла нет.
+ */
+const RU_ROOT = [
+  '<html lang="ru"><head>',
+  '<title>Colloq — одна ссылка на всё занятие</title>',
+  '<meta name="description" content="Общий Python-ноутбук и лекции." />',
+  '<link rel="canonical" href="https://colloq.ru/" />',
+  '<link rel="alternate" hreflang="ru" href="https://colloq.ru/" />',
+  '<link rel="alternate" hreflang="en" href="https://colloq.ru/en/" />',
+  '<link rel="alternate" hreflang="x-default" href="https://colloq.ru/en/" />',
+  '<meta property="og:type" content="website" />',
+  '<meta property="og:locale" content="ru_RU" />',
+  '<meta property="og:site_name" content="Colloq" />',
+  '<meta property="og:title" content="Colloq — одна ссылка на всё занятие" />',
+  '<meta property="og:description" content="Проводите лекции и пишите код вместе." />',
+  '<meta property="og:url" content="https://colloq.ru/" />',
+  '<meta property="og:image" content="https://colloq.ru/img/og.png?v=e4fba370" />',
+  '<meta name="twitter:card" content="summary_large_image" />',
+  '</head><body><span class="host">colloq.ru</span></body></html>',
+].join('\n')
+
+const enTwin = (image: string): string =>
+  [
+    '<html lang="en"><head>',
+    '<title>Colloq — one link for the whole class</title>',
+    '<meta name="description" content="A shared Python notebook and lectures." />',
+    '<link rel="canonical" href="https://colloq.ru/en/" />',
+    '<link rel="alternate" hreflang="en" href="https://colloq.ru/en/" />',
+    '<meta property="og:type" content="website" />',
+    '<meta property="og:locale" content="en_US" />',
+    '<meta property="og:site_name" content="Colloq" />',
+    '<meta property="og:title" content="Colloq — one link for the whole class" />',
+    '<meta property="og:description" content="Give lectures and write code together." />',
+    '<meta property="og:url" content="https://colloq.ru/en/" />',
+    `<meta property="og:image" content="${image}" />`,
+    '<meta name="twitter:card" content="summary_large_image" />',
+    '</head><body><span class="host">colloq.ru</span></body></html>',
+  ].join('\n')
+
+const EN_TWIN = enTwin('https://colloq.ru/img/og-en.png?v=29ecbee2')
+/** До пуша владельца английской картинки на источнике ещё нет. */
+const EN_TWIN_BEFORE = enTwin('https://colloq.ru/img/og.png?v=e4fba370')
+
+/** Источник, отвечающий лендингом на `/` и близнецом на `/en/`. */
+const landing =
+  (twin: string | null) =>
+  (url: URL): Response => {
+    if (url.pathname === '/en/') return twin === null ? page('nope', { status: 404 }) : page(twin)
+    return page(RU_ROOT)
+  }
+
+test('корень зеркала показывает превью английского близнеца', async () => {
+  const { response, calls } = await ask('https://colloq.cc/', landing(EN_TWIN))
+  const out = await response.text()
+  const head = out.slice(0, out.indexOf('<body'))
+
+  // Близнец найден по самой странице, а не по зашитому адресу: переедет
+  // английская версия — переедет и превью.
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].url, 'https://colloq.ru/en/')
+
+  // Всё, что увидит бот, — английское.
+  assert.ok(head.includes('property="og:title" content="Colloq — one link for the whole class"'))
+  assert.ok(
+    head.includes('property="og:description" content="Give lectures and write code together."'),
+  )
+  assert.ok(head.includes('property="og:locale" content="en_US"'))
+  assert.ok(head.includes('property="og:type" content="website"'))
+  assert.ok(head.includes('name="twitter:card" content="summary_large_image"'))
+
+  // Картинка — зеркальная, с подписью colloq.cc, и метка версии та же:
+  // обе картинки рисует один скрипт в одном коммите.
+  assert.ok(
+    head.includes('property="og:image" content="https://colloq.cc/img/og-cc.png?v=29ecbee2"'),
+    `картинка осталась чужой: ${head}`,
+  )
+
+  // og:url зовёт ЭТОТ ЖЕ адрес на зеркале: Facebook и всё, что на его схеме,
+  // перечитывает теги по og:url, и адрес источника увёл бы бота обратно на
+  // русскую страницу.
+  assert.ok(head.includes('property="og:url" content="https://colloq.cc/"'))
+
+  // А человеку и поисковику — правда: страница-то русская.
+  assert.ok(head.includes('<title>Colloq — одна ссылка на всё занятие</title>'))
+  assert.ok(head.includes('<meta name="description" content="Общий Python-ноутбук и лекции." />'))
+  assert.ok(head.includes('<link rel="canonical" href="https://colloq.ru/" />'))
+  assert.ok(head.includes('hreflang="en" href="https://colloq.ru/en/"'))
+  assert.ok(head.includes('hreflang="x-default" href="https://colloq.ru/en/"'))
+
+  // Подвал по-прежнему зовёт зеркало.
+  assert.ok(out.includes('<span class="host">colloq.cc</span>'))
+})
+
+test('пока английской картинки нет на источнике, зеркало берёт картинку близнеца', async () => {
+  // Воркер выкладывается раньше, чем владелец запушит site/img/og-en.png.
+  // В этот промежуток теги близнеца зовут старый og.png — и зеркало обязано
+  // показать именно его, а не 404 на собственном og-cc.png.
+  const { response } = await ask('https://colloq.cc/', landing(EN_TWIN_BEFORE))
+  const head = (await response.text()).split('<body')[0]
+  assert.ok(head.includes('property="og:image" content="https://colloq.ru/img/og.png?v=e4fba370"'))
+  // Текст при этом уже английский — половина дела работает и до пуша.
+  assert.ok(head.includes('content="Colloq — one link for the whole class"'))
+})
+
+test('близнец не ответил — страница едет как была', async () => {
+  // Наполовину подменённая голова — русские теги с адресом зеркала в og:url —
+  // хуже нетронутой: она выглядит рабочей. Поэтому при осечке не меняется
+  // ничего, и голова обязана совпасть с источником построчно.
+  const { response } = await ask('https://colloq.cc/', landing(null))
+  const out = await response.text()
+  assert.equal(out.split('<body')[0], RU_ROOT.split('<body')[0])
+  assert.ok(out.includes('<span class="host">colloq.cc</span>'), 'подвал живёт своей жизнью')
+})
+
+test('нет hreflang — за близнецом никто не ходит', async () => {
+  const { response, calls } = await ask('https://colloq.cc/', () =>
+    page('<html><head><meta property="og:title" content="Тут" /></head><body></body></html>'))
+  assert.equal(calls.length, 1, 'лишний запрос к источнику на каждой выдаче корня')
+  assert.ok((await response.text()).includes('content="Тут"'))
+})
+
+test('английская страница зеркала оставляет свои теги, но картинку берёт зеркальную', async () => {
+  const { response, calls } = await ask('https://colloq.cc/en/', () => page(EN_TWIN))
+  const head = (await response.text()).split('<body')[0]
+  assert.equal(calls.length, 1, 'английская страница в близнеце не нуждается — она уже он')
+  assert.ok(head.includes('property="og:title" content="Colloq — one link for the whole class"'))
+  assert.ok(
+    head.includes('property="og:image" content="https://colloq.cc/img/og-cc.png?v=29ecbee2"'),
+  )
+  assert.ok(head.includes('property="og:url" content="https://colloq.cc/en/"'))
+  assert.ok(head.includes('<link rel="canonical" href="https://colloq.ru/en/" />'))
+})
+
+test('страницы документации превью не меняют вовсе', async () => {
+  // У /docs/ автовыбора языка нет: английская карточка привела бы на русскую
+  // страницу, то есть соврала бы. И за близнецом туда ходить незачем.
+  const docs = [
+    '<html lang="ru"><head>',
+    '<link rel="alternate" hreflang="en" href="https://colloq.ru/docs/en/" />',
+    '<meta property="og:url" content="https://colloq.ru/docs/" />',
+    '<meta property="og:title" content="Документация Colloq" />',
+    '<meta property="og:image" content="https://colloq.ru/img/og-en.png?v=29ecbee2" />',
+    '</head><body></body></html>',
+  ].join('\n')
+  const { response, calls } = await ask('https://colloq.cc/docs/', () => page(docs))
+  assert.equal(calls.length, 1)
+  assert.equal(await response.text(), docs, 'документацию трогать нельзя ни одним тегом')
+})
+
+test('адрес близнеца читается из разметки, а не угадывается', () => {
+  assert.equal(twinHref(RU_ROOT), 'https://colloq.ru/en/')
+  // Порядок атрибутов бывает любым, и это не повод потерять ссылку.
+  assert.equal(
+    twinHref('<head><link hreflang="en" href="/en/" rel="alternate"></head>'),
+    '/en/',
+  )
+  // Ни ссылки, ни головы — нечего и подменять.
+  assert.equal(twinHref('<html><body><a hreflang="en" href="/en/">EN</a></body></html>'), null)
+  assert.equal(twinHref('<head><link rel="alternate" hreflang="de" href="/de/"></head>'), null)
+})
+
+test('из головы вынимаются только теги превью', () => {
+  const tags = previewTags(EN_TWIN)
+  assert.equal(tags.get('og:locale'), 'en_US')
+  assert.equal(tags.get('twitter:card'), 'summary_large_image')
+  // description и title — не превью: они остаются от самой страницы.
+  assert.equal(tags.has('description'), false)
+  assert.equal(tags.size, 8)
+})
+
+test('на картинку зеркала заменяется только английская картинка источника', () => {
+  assert.equal(
+    mirrorPreviewImage('https://colloq.ru/img/og-en.png?v=29ecbee2'),
+    'https://colloq.cc/img/og-cc.png?v=29ecbee2',
+  )
+  // Относительный адрес считается от источника — у него та же судьба.
+  assert.equal(mirrorPreviewImage('/img/og-en.png'), 'https://colloq.cc/img/og-cc.png')
+  // Русская картинка остаётся русской: на зеркале её показывают до пуша.
+  assert.equal(mirrorPreviewImage('https://colloq.ru/img/og.png?v=e4fba370'), null)
+  // Чужая картинка — чужая.
+  assert.equal(mirrorPreviewImage('https://example.com/img/og-en.png'), null)
+  assert.equal(mirrorPreviewImage('не адрес вовсе'), null)
+})
+
+test('развилка одного тега: что у близнеца, что своё, что у зеркала', () => {
+  const twin = previewTags(EN_TWIN)
+  const url = 'https://colloq.cc/'
+  // Есть у близнеца — берётся у него.
+  assert.equal(previewContent('og:locale', 'ru_RU', twin, url), 'en_US')
+  // Нет у близнеца — остаётся своё.
+  assert.equal(previewContent('og:image:width', '1200', twin, url), '1200')
+  // og:url — всегда адрес зеркала, даже когда у близнеца он свой.
+  assert.equal(previewContent('og:url', 'https://colloq.ru/', twin, url), url)
+  // Английская страница зеркала: близнеца нет, но картинка зеркальная.
+  assert.equal(
+    previewContent('og:image', 'https://colloq.ru/img/og-en.png?v=1', null, url),
+    'https://colloq.cc/img/og-cc.png?v=1',
+  )
 })
 
 test('всё, что не разметка, течёт насквозь байт в байт', async () => {

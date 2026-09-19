@@ -58,7 +58,7 @@ OFF  := \033[0m
 # страниц, ни коммита, ни пуша, — отчитываясь при этом успехом.
 .PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell activity \
         service-install service-restart service-stop service-status service-logs \
-        host host-direct relay-setup relay-page tunnel-setup site mirror readme-art site-icons ui sync load course \
+        host host-direct relay-setup relay-page tunnel-setup site mirror readme-art site-icons site-og ui sync load course \
         vast-up vast-status vast-sync vast-logs vast-down vast-adopt \
         env-list env-show env-new env-use env-build env-freeze \
         backup restore test check pack wheel version bump
@@ -478,6 +478,13 @@ mirror: ## Обновить зеркало colloq.cc (тот же сайт дл�
 
 site-icons: ## Перерисовать значки сайта из site/favicon.svg (favicon.ico, PNG 48/96/192, apple-touch, icon-512)
 	@node --import tsx scripts/site-icons.mts
+
+site-og: ## Перерисовать карточки ссылок лендинга (og.png, og-en.png, og-cc.png)
+	@# Три картинки 1200×630 под превью в мессенджерах: русская, английская и
+	@# та же английская с подписью colloq.cc для зеркала. Перерисовав, поправьте
+	@# метки ?v= у og:image в site/index.html и site/en/index.html — их сверяет
+	@# tests/site.test.mts, иначе чат покажет старую картинку из своего кэша.
+	@node --import tsx scripts/site-og.mts
 
 readme-art: ## Перерисовать анимации сцен (.github/assets/readme и site/img/scenes)
 	@# Двадцать файлов: пять сцен × два языка × две темы. Каталога два, потому
