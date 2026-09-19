@@ -36,6 +36,7 @@ import { withQueuePosition } from './council-queue'
 import { CouncilState } from './council.svelte'
 import { reopenRefusedFiles } from './filedoc.svelte'
 import { countsAsUnread } from './notes'
+import { forgetHelp } from './signature-help'
 import {
   forgetIdentity,
   verdictOf,
@@ -1330,6 +1331,17 @@ export class SessionState {
   }
 
   send(message: ControlClientMessage) {
+    /*
+     * Всё, что сейчас посчитают, стирает память справки.
+     *
+     * Ответ ядра про имя помнится минуту (lib/signature-help.ts), и это
+     * правильно ровно до того мгновения, когда в ядре что-то выполнили:
+     * `df` стал другим, функция переопределена, импорт наконец прошёл.
+     * Место выбрано одно и самое узкое: запуск ячейки, консилиума и
+     * перезапуск ядра уходят отсюда, кто бы их ни нажал — ячейка, тетрадь,
+     * пульт или командный режим.
+     */
+    if (message.t === 'run' || message.t === 'restart' || message.t === 'council:run') forgetHelp()
     if (this.#control?.readyState === WebSocket.OPEN) {
       this.#control.send(JSON.stringify(message))
     } else if (!DISCARDED_OFFLINE.has(message.t)) {

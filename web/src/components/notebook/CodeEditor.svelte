@@ -77,6 +77,7 @@
             hoverTooltip,
             keymap,
             placeholder,
+            showTooltip,
             ViewPlugin,
           }) => ({
             closeHoverTooltips,
@@ -86,6 +87,7 @@
             hoverTooltip,
             keymap,
             placeholder,
+            showTooltip,
             ViewPlugin,
           }),
         ),
@@ -111,9 +113,24 @@
   import type { Awareness } from 'y-protocols/awareness'
   import type { Completion, CompletionContext, CompletionResult } from '@codemirror/autocomplete'
   import type { Compartment } from '@codemirror/state'
-  import type { Decoration as Deco, DecorationSet, EditorView, ViewUpdate } from '@codemirror/view'
+  import type {
+    Decoration as Deco,
+    DecorationSet,
+    EditorView,
+    Tooltip,
+    ViewUpdate,
+  } from '@codemirror/view'
+  import type { InspectMiss } from '@shared/protocol'
   import { questionAt, type Question } from '@shared/python-defs'
   import { INDENT, tabKey } from '@/lib/indent'
+  import {
+    helpIsEmpty,
+    helpKey,
+    parseSignatureHelp,
+    rememberHelp,
+    rememberedHelp,
+    type SignatureHelp,
+  } from '@/lib/signature-help'
   import { isJumpClick } from '@/lib/utils'
   import { backspaceRemovesCell } from './cell-keys'
   import { changeFits } from './cell-paste'
@@ -133,9 +150,18 @@
     end: number
   }
 
+  /**
+   * Что ответило ядро на «что это такое». Та же форма, что у `inspect:reply`.
+   *
+   * `reason` — почему справки нет: ядро ещё поднимается, ядро занято, имя не
+   * найдено (protocol.ts · `InspectMiss`). Поле необязательное, потому что
+   * необязательно оно и на проводе: старый сервер его не шлёт, и тогда отказ
+   * молчит, как молчал.
+   */
   interface KernelSignature {
     found: boolean
     text?: string
+    reason?: InspectMiss
   }
 
   interface Props {
@@ -380,8 +406,6 @@
     keyword: 'keyword',
   }
 
-  /** Сколько строк справки показываем: сигнатура и начало docstring. */
-  const SIGNATURE_LINES = 6
   /**
    * Сколько указатель должен постоять на имени, прежде чем спросить ядро.
    *
@@ -408,11 +432,97 @@
    */
   const PAST_LINE = 6
 
-  /** Шапка справки: сигнатура и начало docstring, без пустых строк сверху. */
-  function signatureHead(text: string): string {
-    const lines = text.replace(/\r/g, '').split('\n')
-    while (lines.length > 0 && lines[0].trim() === '') lines.shift()
-    return lines.slice(0, SIGNATURE_LINES).join('\n').trimEnd()
+  /**
+   * Окно справки — сигнатура сверху, документация под ней, одна прокрутка на обе.
+   *
+   * ОДНА, и это несущее решение. Разложить их по двум отсекам было бы красивее
+   * на макете и хуже в жизни: у `sns.lmplot` сорок с лишним параметров, то есть
+   * сигнатура сама по себе длиннее всего окна, и собственный скролл сделал бы
+   * документацию недосягаемой — чтобы до неё добраться, пришлось бы сперва
+   * докрутить сигнатуру, а потом найти вторую полосу. Общая прокрутка
+   * превращает справку в то, чем она и является: один текст сверху вниз.
+   *
+   * `<pre>` у сигнатуры — с переносом (`pre-wrap` в cm-theme.ts): длинная
+   * строка у pandas шире монитора, и горизонтальная полоса тут была бы второй
+   * прокруткой, которой мы только что избежали.
+   *
+   * Градиент внизу — единственная подсказка о том, что текст не кончился.
+   * Полосы прокрутки в macOS не видно, пока её не трогают, и без этой тени
+   * окно выглядело бы законченным ровно там, где его обрезали.
+   */
+  function signatureDom(help: SignatureHelp): HTMLElement {
+    const root = document.createElement('div')
+    root.className = 'cm-signature'
+    const body = document.createElement('div')
+    body.className = 'cm-signature-body'
+    if (help.raw !== '') {
+      const pre = document.createElement('pre')
+      pre.className = 'cm-signature-sig'
+      pre.textContent = help.raw
+      body.appendChild(pre)
+    } else {
+      if (help.signature !== '') {
+        const pre = document.createElement('pre')
+        pre.className = 'cm-signature-sig'
+        pre.textContent = help.signature
+        body.appendChild(pre)
+      }
+      const notes = [help.type, help.length === '' ? '' : `len ${help.length}`, help.form]
+        .filter((note) => note !== '')
+        .join(' · ')
+      if (notes !== '') {
+        const row = document.createElement('div')
+        row.className = 'cm-signature-note'
+        row.textContent = notes
+        body.appendChild(row)
+      }
+      if (help.doc !== '') {
+        const pre = document.createElement('pre')
+        pre.className = 'cm-signature-doc'
+        pre.textContent = help.doc
+        body.appendChild(pre)
+      }
+    }
+    root.appendChild(body)
+    const more = document.createElement('div')
+    more.className = 'cm-signature-more'
+    root.appendChild(more)
+    /*
+     * Признак «есть ещё» живёт на самом узле, а не в состоянии редактора:
+     * прокрутка внутри подсказки — не изменение документа, и будить ею
+     * CodeMirror (а с ним и чужие каретки) было бы дорого и незачем.
+     */
+    const mark = () => {
+      const left = body.scrollHeight - body.scrollTop - body.clientHeight
+      root.classList.toggle('cm-signature-cut', left > 2)
+    }
+    body.addEventListener('scroll', mark)
+    // Высота узнаётся только после того, как его вставили в документ.
+    requestAnimationFrame(mark)
+    return root
+  }
+
+  /**
+   * Почему справки нет — одной приглушённой строкой.
+   *
+   * Молчание тут не работает: наведение — жест осознанный, и ответ «ничего»
+   * читается как поломка. Три из четырёх причин временные («сейчас
+   * поднимется», «сейчас досчитает»), и человеку важно знать, что ждать имеет
+   * смысл. `refused` — единственная, о которой не говорят: там, где сервер
+   * отказал по ведру вопросов, жест был правильный и объяснять нечего.
+   */
+  function signatureMiss(reason: InspectMiss | undefined): HTMLElement | null {
+    if (!reason || reason === 'refused') return null
+    const words: Record<Exclude<InspectMiss, 'refused'>, string> = {
+      'no-kernel': tr('room.signature.noKernel'),
+      starting: tr('room.signature.starting'),
+      busy: tr('room.signature.busy'),
+      unknown: tr('room.signature.unknown'),
+    }
+    const dom = document.createElement('div')
+    dom.className = 'cm-signature cm-signature-miss'
+    dom.textContent = words[reason]
+    return dom
   }
 
   /**
@@ -439,6 +549,30 @@
     const chain = /[A-Za-z_][A-Za-z0-9_.]*$/.exec(line.slice(0, to))
     if (!chain) return null
     return { from: chain.index, to }
+  }
+
+  /**
+   * О чём спрашивает Shift+Tab у каретки — или `null`, и тогда он отступ.
+   *
+   * Два места, и оба взяты у Jupyter, потому что оттуда и привычка:
+   *   · каретка НА имени (или сразу после него) — справка об этом имени;
+   *   · каретка сразу за `(` — справка о том, что вызывают: `sns.lmplot(|` —
+   *     ровно то положение, в котором человек и вспоминает про параметры.
+   *
+   * Всё остальное — `null`, и нажатие достаётся тому, кто занял Shift+Tab
+   * раньше (lib/indent.ts · снятие отступа). Это и есть цена привычки: клавишу
+   * пришлось делить, и делится она по тому, есть ли под кареткой имя. В пустой
+   * строке, в середине отступа и на выделении Shift+Tab работает как работал.
+   */
+  function signatureSpot(line: string, at: number): { from: number; to: number } | null {
+    const direct = nameAround(line, at)
+    if (direct) return direct
+    // Позади скобка (и, может быть, пробелы после неё) — спрашиваем о том, что
+    // перед скобкой стоит.
+    let back = at
+    while (back > 0 && (line[back - 1] === ' ' || line[back - 1] === '\t')) back--
+    if (back === 0 || line[back - 1] !== '(') return null
+    return nameAround(line, back - 1)
   }
 
   /**
@@ -680,7 +814,127 @@
       return { from, options, validFor: /^[\w]*$/ }
     }
 
-    /* -------------------------------------- справка по наведению мыши */
+    /* -------------------------------------- справка о том, что под указателем */
+
+    /**
+     * Спросить ядро об одном имени — и собрать то, что покажем.
+     *
+     * Одна дорога на оба жеста: наведение мышью и Shift+Tab у каретки. Второй
+     * такой же функции здесь быть не должно — разойдясь, они дали бы разный
+     * ответ на один и тот же вопрос, и объяснить это было бы нечем.
+     *
+     * Память (lib/signature-help.ts) стоит ПЕРЕД вопросом: второе наведение на
+     * то же имя обязано открываться мгновенно, а не ходить в общее ядро за
+     * тем, что уже знает. Помнится только найденное; причины отказа не
+     * помнятся никогда — они живут секунду, и вчерашнее «ядро запускается»
+     * было бы враньём ровно тогда, когда ответ наконец есть.
+     */
+    async function askSignature(view: EditorView, at: number, name: string): Promise<HTMLElement | null> {
+      const ask = handlers.inspect
+      if (!ask) return null
+      const key = helpKey(cellId, name)
+      const kept = rememberedHelp(key)
+      if (kept !== null) {
+        const help = parseSignatureHelp(kept)
+        return helpIsEmpty(help) ? null : signatureDom(help)
+      }
+      /*
+       * Каретка для ядра ставится в КОНЕЦ имени: `inspect_request` отвечает
+       * о том, что стоит перед ней. Посреди слова он ответил бы о `he`.
+       */
+      const answer = await ask(view.state.doc.toString(), at)
+      // `null` — сокет закрыт или три секунды вышли: сказать нечего, и это
+      // единственный случай, когда справка по-прежнему молчит.
+      if (!answer) return null
+      if (!answer.found || !answer.text) return signatureMiss(answer.reason)
+      const help = parseSignatureHelp(answer.text)
+      if (helpIsEmpty(help)) return signatureMiss('unknown')
+      rememberHelp(key, answer.text)
+      return signatureDom(help)
+    }
+
+    /**
+     * Где висеть окну справки — правило, общее для обоих жестов.
+     *
+     * ПОД строкой, а не над ней. Над строкой висит тулбар ячейки —
+     * «запустить», «остановить», «форматировать», — и подсказка, выехавшая
+     * вверх, закрывала его собой ровно тогда, когда человек тянется к кнопке.
+     * Стопка слоёв доводит то же правило до конца: у подсказки z-index ниже
+     * тулбарного, так что даже снизу она не может его перекрыть (см.
+     * cm-theme.ts · .cm-tooltip.cm-signature).
+     */
+    function signatureTooltip(from: number, to: number, dom: HTMLElement): Tooltip {
+      return {
+        pos: from,
+        end: to,
+        above: false,
+        create: (view) => {
+          /*
+           * Escape закрывает справку и тогда, когда в редакторе уже не печатают.
+           *
+           * Выделив мышью строку ВНУТРИ окна, человек уводит фокус из ячейки —
+           * и с ним уходит набор клавиш редактора, то есть Escape перестаёт
+           * доходить куда бы то ни было. Замерено на стенде: окно оставалось
+           * висеть, пока не увести указатель.
+           *
+           * Только когда фокуса в редакторе НЕТ: пока он там, Escape разбирает
+           * свой порядок — список дополнения, потом справка, потом командный
+           * режим, — и вмешиваться в него отсюда значило бы этот порядок
+           * сломать.
+           */
+          const onKey = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape' || view.hasFocus) return
+            closeSignature(view)
+          }
+          document.addEventListener('keydown', onKey, true)
+          return { dom, destroy: () => document.removeEventListener('keydown', onKey, true) }
+        },
+      }
+    }
+
+    /** Убрать справку — обе разом, какая бы сейчас ни висела. */
+    function closeSignature(view: EditorView): void {
+      view.dispatch({ effects: [cm.view.closeHoverTooltips, pinned.of(null)] })
+    }
+
+    /**
+     * Та же справка, вызванная Shift+Tab, — и она не гаснет, пока не уйдут.
+     *
+     * Клавиша та же, что в Jupyter, и это единственный довод в её пользу: люди
+     * приходят в тетрадь с уже готовой привычкой. Но Shift+Tab в этом
+     * редакторе занят — он снимает отступ, — поэтому справка отвечает на него
+     * ТОЛЬКО там, где отступ снимать не о чем: каретка стоит на имени или
+     * сразу за открывающей скобкой, выделения нет (см. `signatureSpot`). Во
+     * всех прочих случаях нажатие идёт дальше и снимает отступ, как снимало.
+     *
+     * Своё поле, а не `hoverTooltip`: у наведения окно живёт, пока над ним
+     * мышь, а у клавиши мыши нет вовсе. Закрепление снимают три вещи — Escape,
+     * уехавшая каретка и любая правка текста: после каждой из них справка
+     * рассказывает про место, где человека уже нет.
+     */
+    const pinned = cm.state.StateEffect.define<Tooltip | null>()
+    const pinnedField = cm.state.StateField.define<Tooltip | null>({
+      create: () => null,
+      update(value, tr) {
+        for (const effect of tr.effects) if (effect.is(pinned)) return effect.value
+        if (value && (tr.docChanged || tr.selection)) return null
+        return value
+      },
+      provide: (field) => cm.view.showTooltip.from(field),
+    })
+
+    async function openPinned(view: EditorView, spot: { from: number; to: number }): Promise<void> {
+      const head = view.state.selection.main.head
+      const dom = await askSignature(view, spot.to, view.state.sliceDoc(spot.from, spot.to))
+      // Пока ходили к ядру, каретка могла уехать — тогда закреплять нечего:
+      // окно встало бы у имени, на которое человек уже не смотрит.
+      if (!dom || view.state.selection.main.head !== head) return
+      // И заодно убираем ту, что уже выехала по наведению: пока мы ходили к
+      // ядру, указатель стоял на том же имени и успел позвать свою.
+      view.dispatch({
+        effects: [cm.view.closeHoverTooltips, pinned.of(signatureTooltip(spot.from, spot.to, dom))],
+      })
+    }
 
     /**
      * Навёл на имя — увидел сигнатуру. И ничего на нажатие клавиши.
@@ -692,8 +946,9 @@
      * делают намеренно.
      *
      * `hoverTime` — та самая треть секунды, которая отличает «смотрю сюда» от
-     * «веду мышь мимо»; закрывает подсказку сам CodeMirror, как только
-     * указатель ушёл.
+     * «веду мышь мимо». Закрывает подсказку сам CodeMirror, когда указатель
+     * ушёл И с имени, и с окна: пока мышь над окном, оно живо, и справку можно
+     * крутить колесом и выделять — это и значит «досягаемая».
      */
     const signatureHover = cm.view.hoverTooltip(
       async (view, pos) => {
@@ -702,40 +957,24 @@
         // замком и закончившееся занятие — это чтение, и читать через них
         // состояние общего ядра нельзя (то же правило, что у дополнения).
         if (!ask || view.state.readOnly) return null
+        /*
+         * Одна справка на экран.
+         *
+         * Пока висит закреплённая (Shift+Tab), наведение молчит. Иначе
+         * получалось две: нажав Shift+Tab, человек не убирает руку с мыши, и
+         * через треть секунды под закреплённым окном выезжало второе — с тем
+         * же текстом, но своим. Снято со стенда, не придумано. Закреплённая
+         * уходит по Escape, по уехавшей каретке и по первой же правке, и
+         * наведение тут же работает снова.
+         */
+        if (view.state.field(pinnedField, false)) return null
         const line = view.state.doc.lineAt(pos)
         const found = nameAround(line.text, pos - line.from)
         if (!found) return null
         const from = line.from + found.from
         const to = line.from + found.to
-        /*
-         * Каретка для ядра ставится в КОНЕЦ имени: `inspect_request` отвечает
-         * о том, что стоит перед ней. Посреди слова он ответил бы о `he`.
-         */
-        const answer = await ask(view.state.doc.toString(), to)
-        if (!answer?.found || !answer.text) return null
-        const text = signatureHead(answer.text)
-        if (text === '') return null
-        return {
-          pos: from,
-          end: to,
-          /*
-           * ПОД строкой, а не над ней.
-           *
-           * Над строкой висит тулбар ячейки — «запустить», «остановить»,
-           * «форматировать», — и подсказка, выехавшая вверх, закрывала его
-           * собой ровно тогда, когда человек тянется к кнопке. Стопка слоёв
-           * доводит то же правило до конца: у подсказки z-index ниже
-           * тулбарного, так что даже снизу она не может его перекрыть (см.
-           * cm-theme.ts · .cm-tooltip.cm-signature).
-           */
-          above: false,
-          create: () => {
-            const dom = document.createElement('div')
-            dom.className = 'cm-signature'
-            dom.textContent = text
-            return { dom }
-          },
-        }
+        const dom = await askSignature(view, to, line.text.slice(found.from, found.to))
+        return dom ? signatureTooltip(from, to, dom) : null
       },
       { hoverTime: HOVER_MS },
     )
@@ -853,10 +1092,35 @@
              * только сам узел. Ошибиться тут нечем — узел наш и назван нами.
              */
             if (view.dom.querySelector('.cm-signature')) {
-              view.dispatch({ effects: cm.view.closeHoverTooltips })
+              // Оба вида разом: по наведению и закреплённая Shift+Tab. Какая из
+              // них сейчас на экране, Escape не разбирает — он убирает лишнее.
+              closeSignature(view)
               return true
             }
             return fire(handlers.onescape)
+          },
+        },
+        {
+          /*
+           * Shift+Tab — справка у каретки. Или отступ, если справки тут нет.
+           *
+           * Отказ здесь (`false`) — не отказ от жеста, а пропуск нажатия
+           * дальше: ниже по старшинству стоит снятие отступа (lib/indent.ts), и
+           * ровно оно и должно срабатывать в строке, где под кареткой не имя.
+           * Правило и его цена — у `signatureSpot`.
+           */
+          key: 'Shift-Tab',
+          run: (view) => {
+            if (!handlers.inspect || view.state.readOnly) return false
+            const range = view.state.selection.main
+            // Выделение — это про строки целиком: там Shift+Tab сдвигает их, и
+            // отнимать у него этот случай нельзя.
+            if (!range.empty) return false
+            const line = view.state.doc.lineAt(range.head)
+            const spot = signatureSpot(line.text, range.head - line.from)
+            if (!spot) return false
+            void openPinned(view, { from: line.from + spot.from, to: line.from + spot.to })
+            return true
           },
         },
         {
@@ -901,6 +1165,9 @@
                   icons: false,
                 }),
                 signatureHover,
+                // Закреплённая справка (Shift+Tab) — своим полем, рядом: см.
+                // `pinnedField`.
+                pinnedField,
                 /*
                  * Переход к определению — только в коде. В заметке определений
                  * нет вовсе, а подчёркивать слова в прозе значит обещать жест,
