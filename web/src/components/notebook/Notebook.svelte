@@ -1291,7 +1291,7 @@
 
   /** Сколько плашек висит справа: ядро не в порядке, очередь не пуста, или и то и другое. */
   const chipCount = $derived(
-    (kernel === 'dead' || kernel === 'starting' || kernel === 'restarting' ? 1 : 0) +
+    (kernel === 'dead' || kernel === 'off' || kernel === 'starting' || kernel === 'restarting' ? 1 : 0) +
       (queued > 0 ? 1 : 0),
   )
 
@@ -1663,6 +1663,13 @@
               onclick={() => session.send({ t: 'restart', book })}
             > {tr('room.ui.448')} </button>
           {/if}
+        </span>
+      {:else if kernel === 'off'}
+        <!-- Ядро поднимается лениво, и «не запущено» — это не беда, а факт:
+             ни пульса, ни цвета тревоги. Подсказка говорит, чем его поднять. -->
+        <span class={cn(PILL, 'border-line text-faint')} title={tr('room.kernel.state.offWhy')}>
+          <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-faint/60"></span>
+          <span class="truncate">{tr('room.kernel.state.off')}</span>
         </span>
       {:else if kernel === 'starting' || kernel === 'restarting'}
         <!-- Opacity, not a background sweep: the same information for one

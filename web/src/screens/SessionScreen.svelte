@@ -542,7 +542,22 @@
    * the word informs — which is also why a dead kernel gets a plate rather than
    * red type.
    */
-  const KERNEL: Record<KernelStatus, { label: string; dot: string; alarm: boolean }> = {
+  const KERNEL: Record<KernelStatus, { label: string; dot: string; alarm: boolean; why?: string }> = {
+    /*
+     * «НЕ ЗАПУЩЕНО» — не тревога и не обещание.
+     *
+     * Ядро поднимается лениво: у комнаты, которую только открыли, его нет, и
+     * никто его не поднимает. До 20.09 это состояние показывалось как «ЗАПУСК»
+     * — плашка часами обещала то, чего не происходило. Точка глуше остальных,
+     * рамки нет, а `title` говорит, что делать: запустить ячейку или навести на
+     * имя за справкой — оба жеста ядро и поднимают.
+     */
+    off: {
+      get label() { return tr('room.kernel.state.off') },
+      dot: 'bg-white/25',
+      alarm: false,
+      get why() { return tr('room.kernel.state.offWhy') },
+    },
     starting: { get label() { return tr('room.kernel.state.starting') }, dot: 'bg-white/35', alarm: false },
     restarting: { get label() { return tr('room.kernel.state.restarting') }, dot: 'bg-white/35', alarm: false },
     idle: { get label() { return tr('room.kernel.state.idle') }, dot: 'bg-white/50', alarm: false },
@@ -2295,7 +2310,7 @@
           kernel.alarm && 'bg-danger/20 px-2.5 ring-1 ring-inset ring-danger',
           !session.connected && 'opacity-50',
         )}
-        title={session.connected ? undefined : tr('room.extra.405')}
+        title={session.connected ? kernel.why : tr('room.extra.405')}
         role="status"
       >
         <span class={cn('h-1.5 w-1.5 shrink-0 rounded-full', kernel.dot)} aria-hidden="true"></span>

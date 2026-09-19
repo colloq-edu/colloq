@@ -46,6 +46,7 @@ export const roomMessages: MessageCatalog = {
   "room.signature.noKernel": {"ru": "Ядро не запущено, а запускать его в этой комнате может только преподаватель", "en": "The kernel is not running, and only the teacher can start it in this room"},
   "room.signature.starting": {"ru": "Ядро запускается — справка появится через несколько секунд", "en": "The kernel is starting — the help will be here in a few seconds"},
   "room.signature.busy": {"ru": "Ядро занято — справка появится, когда ячейка досчитает", "en": "The kernel is busy — the help will be here once the cell finishes"},
+  "room.signature.thinking": {"ru": "Разбираю библиотеку — это бывает долго только в первый раз", "en": "Reading the library — slow only the first time"},
   "room.signature.unknown": {"ru": "Про это имя сказать нечего: выполните ячейку, в которой оно появляется", "en": "Nothing to say about this name: run the cell where it comes from"},
   "room.goto.unknown": {"ru": "Не нашлось, где определено «{name}» — ни в тетрадях комнаты, ни в файлах занятия", "en": "No definition for “{name}” — not in the room’s notebooks, not in the class files"},
   "room.goto.outsideModule": {"ru": "Модуль {module} лежит не в папке занятия, а в библиотеках — открыть его нечем", "en": "Module {module} lives in the libraries, not in the class folder — there is nothing to open"},
@@ -4577,6 +4578,14 @@ export const roomMessages: MessageCatalog = {
   "room.kernel.restarting": {
     "ru": "перезапускается…",
     "en": "restarting…"
+  },
+  "room.kernel.state.off": {
+    "ru": "НЕ ЗАПУЩЕНО",
+    "en": "NOT RUNNING"
+  },
+  "room.kernel.state.offWhy": {
+    "ru": "Ядро этой тетради поднимется при первом запуске ячейки — или когда вы наведёте на имя за справкой",
+    "en": "This notebook’s kernel starts with the first cell you run — or when you hover a name for help"
   },
   "room.kernel.state.starting": {
     "ru": "ЗАПУСК",

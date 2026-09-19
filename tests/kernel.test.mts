@@ -2138,6 +2138,53 @@ test('занятому ядру справка не задаётся вовсе 
   }
 })
 
+/*
+ * Плашка ядра обязана пройти путь «не запущено → запуск → готово» БЕЗ единого
+ * Run — на одном наведении за справкой.
+ *
+ * С занятия 20.09: «навожу — пишет, что ядро запускается, справка появляется,
+ * а статус ядра всё ещё в запуске». Ядро при этом поднималось и отвечало;
+ * врала именно плашка. Здесь закреплена серверная половина: подъём наведением
+ * доводит состояние ОБЛАСТИ до idle. (Вторая половина была на клиенте —
+ * коробки состояния, заведённые внутри производной; она закреплена чтением в
+ * kernel-books-craft.)
+ */
+test('справка поднимает ядро и доводит его состояние до «готово» без Run', async () => {
+  const { inspectIn } = await import('../server/src/kernel/index.js')
+  const { bookKernel, CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const state = () => bookKernel(room.doc, CELLS_KEY).status
+
+  // Комната только открыта: ядра нет и никто его не поднимает.
+  assert.equal(state(), 'off', `свежая комната показывает ${state()}`)
+
+  // Первое наведение поднимает ядро и честно говорит, что ответа пока нет.
+  const first = await inspectIn(room.id, 'df.head', 7, CELLS_KEY, { mayWake: true })
+  assert.equal(first.found, false)
+  assert.equal(first.reason, 'starting')
+
+  // И доводит состояние до конца — само, без единого запуска ячейки.
+  assert.ok(await until(() => state() === 'idle'), `состояние застряло на ${state()}`)
+  const second = await inspectIn(room.id, 'df.head', 7, CELLS_KEY, { mayWake: true })
+  assert.equal(second.found, true, `второй вопрос не ответил: ${second.reason}`)
+  assert.equal(room.state(), 'idle', 'ячейка чего-то насчитала, хотя Run не нажимали')
+})
+
+test('без права запускать справка ядро не поднимает', async () => {
+  const { inspectIn } = await import('../server/src/kernel/index.js')
+  const { bookKernel, CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  /*
+   * Право будить — это право нажать Run, и оно уже проверено дверью
+   * (control.ts · mayWake): сюда приезжает готовое «да» или «нет». Здесь
+   * закреплено следствие: на «нет» ядра не появляется. Словами про это
+   * отвечает control-complete — там же, где считается право.
+   */
+  await inspectIn(room.id, 'df.head', 7, CELLS_KEY, { mayWake: false })
+  await wait(300)
+  assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'off', 'ядро подняли без права')
+})
+
 test('справка второй тетради идёт к ЕЁ ядру и не ждёт занятой первой', async () => {
   const { ensureKernel, inspectIn, requestRun } = await import('../server/src/kernel/index.js')
   const { CELLS_KEY } = await import('../shared/notebook.js')
@@ -2474,7 +2521,8 @@ test('убранная тетрадь уносит своё ядро, а сос�
 
   removeBook(room.doc, other.path)
   syncBookKernels(room.id)
-  assert.ok(await until(() => bookKernel(room.doc, other.root).status === 'starting'))
+  // Тетради больше нет — и её ядра тоже: `off` (см. довод у уборки простоя).
+  assert.ok(await until(() => bookKernel(room.doc, other.root).status === 'off'))
   // Соседняя тетрадь живёт своей жизнью: её ядро никто не трогал.
   assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'idle')
 })
@@ -2577,7 +2625,7 @@ test('личное ядро гаснет по простою, а ядро зан
 
   // Полчаса ещё не прошло — не трогаем ничего.
   await sweepIdleKernels(LATER(29))
-  assert.notEqual(bookKernel(room.doc, mine.root).status, 'starting')
+  assert.equal(bookKernel(room.doc, mine.root).status, 'idle')
 
   /*
    * Прошло — гаснет ОДНО ядро, личное. Занятие при этом идёт дальше: его
@@ -2585,7 +2633,15 @@ test('личное ядро гаснет по простою, а ядро зан
    * путать эти два — значит гасить лекцию посреди пары.
    */
   await sweepIdleKernels(LATER(31))
-  assert.equal(bookKernel(room.doc, mine.root).status, 'starting', 'личное ядро не погасло')
+  /*
+   * `off`, а не `starting` и не `dead`. Уборка по простою — штатное засыпание:
+   * ядра нет и никто его не поднимает, пока не нажмут Run. До 20.09 запись
+   * тетради здесь просто удалялась, и комната читала пустоту как «запускается»
+   * — плашка обещала подъём, которого не было (а тетрадь комнаты сползала на
+   * «ГОТОВО», обещая живой Python). Красная «ЯДРО ОСТАНОВЛЕНО» тут тоже была
+   * бы ложной тревогой: она про OOM и падение.
+   */
+  assert.equal(bookKernel(room.doc, mine.root).status, 'off', 'личное ядро не погасло')
   assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'idle', 'ядро занятия погасло вместе с личным')
   assert.ok(
     room.notes().some((line) => /Аким\.ipynb/.test(line) && /30/.test(line)),

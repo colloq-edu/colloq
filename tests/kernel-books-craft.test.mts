@@ -114,8 +114,21 @@ test('состояние ядер в браузере читается по те
   const lib = code(YREACTIVE)
   assert.match(lib, /export function watchBookKernel/)
   assert.match(lib, /export function watchBookBusy/)
-  // Коробка на тетрадь: иначе смена состояния одной будила бы читателей всех.
-  assert.match(lib, /#books = new Map<string, BookKernelBoxes>\(\)/)
+  /*
+   * Коробка на ПОЛЕ, внутри — карта «корень → значение», и все четыре заведены
+   * конструктором. Коробки на тетрадь, заводившиеся по первому спросу, стоили
+   * 20.09 целой жалобы: первый спрос приходит из `$derived` шапки, состояние,
+   * созданное внутри реакции, этой реакцией и владеется, и последующие записи
+   * её не будят — плашка ядра показывала «ЗАПУСК» у поднявшегося ядра вечно.
+   * Довод целиком — у `bookView`.
+   */
+  assert.match(lib, /readonly bookStatus = box<Record<string, KernelStatus>>\(\{\}\)/)
+  assert.match(lib, /#views = new Map<string, BookKernelView>\(\)/)
+  assert.doesNotMatch(lib, /BookKernelBoxes/, 'вернулись коробки на тетрадь')
+  // Прочитать заранее просит тот, кто может, — из тела компонента.
+  assert.match(lib, /fields\.prime\(root\(\)\)/)
+  // А отложенное чтение не пишет в состояние во время счёта производной.
+  assert.match(lib, /queueMicrotask\(\(\) => this\.#readBooks\(root\)\)/)
   /*
    * Запасной ответ для тетради комнаты — по прежним ключам: комната со старым
    * снимком и вкладка, пришедшая раньше первого запуска, обязаны показать

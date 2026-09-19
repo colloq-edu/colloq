@@ -56,16 +56,20 @@ export const INSPECT_REPORT_EXPR = `__import__('sys').modules['${INSPECT_MODULE}
 /**
  * Сколько секунд jedi разрешено думать.
  *
- * Полторы, и число замерено, а не выбрано. На холодном контейнере первый
- * разбор pandas стоит ~1,5 с (jedi разбирает исходники библиотеки и кладёт
- * разбор в свой кеш), второй — 0,5 с, третий и дальше — единицы миллисекунд;
- * seaborn после прогретого pandas — 0,57 с. То есть потолок режет ровно один
- * случай на комнату: самое первое наведение на самую тяжёлую библиотеку. Оно
- * отвечает «не нашлось», а следующее — уже сигнатурой, и это лучший размен,
- * какой тут есть: ядро комнаты одно, и держать его занятым дольше ради
- * подсказки нельзя.
+ * Две с половиной, и число замерено, а не выбрано. На холодном контейнере
+ * первый разбор pandas стоит ~1,5 с (jedi разбирает исходники библиотеки и
+ * кладёт разбор в свой кеш), второй — 0,5 с, третий и дальше — единицы
+ * миллисекунд; seaborn после прогретого pandas — 0,57 с. Прежние полторы
+ * секунды резали ровно первое наведение на самую тяжёлую библиотеку — и
+ * человек получал «сказать нечего» там, где ответ был в полушаге.
+ *
+ * Почему не больше: на это время занят shell ядра, то есть Run, нажатый в ту
+ * же секунду, ждёт. Три секунды ожидания перед началом счёта — это уже
+ * заметно, две с половиной — ещё нет. А не успевший разбор больше не врёт: он
+ * отвечает «ещё думаю» (`thinking`), клиент переспрашивает сам, и к следующему
+ * разу jedi прогрет.
  */
-export const INSPECT_BUDGET_SEC = 1.5
+export const INSPECT_BUDGET_SEC = 2.5
 
 /** Потолок ответа: docstring бывает в сотни килобайт, а сокет у комнаты общий. */
 export const INSPECT_LIMIT_BYTES = 20 * 1024
@@ -287,12 +291,17 @@ def _wrap(display, sig):
 
 
 def _render(found, display, limit):
-    """Первое найденное, разложенное по заголовкам IPython.
+    """Лучшее из найденного, разложенное по заголовкам IPython.
 
     Те же заголовки, что у inspect_request, — и это условие всей затеи: разбор
     на клиенте один (web/src/lib/signature-help.ts), и два ответа на один
     вопрос обязаны выглядеть одинаково.
+
+    ЛУЧШЕЕ, а не первое: у pd.read_csv jedi отдаёт пять перегрузок из .pyi, и
+    документация есть не у каждой. Берём ту, у которой есть и сигнатура, и
+    документация; нет такой — ту, у которой есть хоть что-то.
     """
+    best = None
     for d in found:
         try:
             sigs = d.get_signatures()
@@ -304,26 +313,46 @@ def _render(found, display, limit):
         except Exception:
             doc = ''
         doc = doc.strip('\\n')
-        if not sig and not doc.strip():
-            continue
-        parts = []
-        if sig:
-            # У класса сигнатуры нет — есть сигнатура его __init__, и IPython
-            # называет её именно так.
-            head = 'Init signature' if getattr(d, 'type', '') == 'class' else 'Signature'
-            parts.append(head + ':\\n' + sig)
-        kind = getattr(d, 'type', '') or ''
-        if kind:
-            parts.append('Type: ' + kind)
-        if doc.strip():
-            parts.append('Docstring:\\n' + doc)
-        text = '\\n'.join(parts)
-        if len(text) > limit:
-            # Обрыв виден: молча укороченная документация читается как
-            # документация, которая так и кончается.
-            text = text[:limit] + '\\n…'
-        return text
-    return ''
+        rank = 2 if (sig and doc.strip()) else 1 if (sig or doc.strip()) else 0
+        if best is None or rank > best[0]:
+            best = (rank, d, sig, doc)
+        if rank == 2:
+            break
+    if best is None:
+        return ''
+    rank, d, sig, doc = best
+    kind = getattr(d, 'type', '') or ''
+    parts = []
+    if sig:
+        # У класса сигнатуры нет — есть сигнатура его __init__, и IPython
+        # называет её именно так.
+        head = 'Init signature' if kind == 'class' else 'Signature'
+        parts.append(head + ':\\n' + sig)
+    if kind:
+        parts.append('Type: ' + kind)
+    if doc.strip():
+        parts.append('Docstring:\\n' + doc)
+    elif not sig:
+        # Ни сигнатуры, ни документации — но сказать всё равно есть что.
+        #
+        # Самый частый такой случай — модуль: у pandas в __init__.py строки
+        # документации нет вовсе, и до 20.09 наведение на pd отвечало «сказать
+        # нечего», тогда как соседний np (у numpy docstring есть) отвечал целой
+        # страницей. Разница, которой человек объяснить не может. Показываем
+        # хотя бы то, ЧТО это и откуда, — тем же полем, каким это показывает
+        # сам IPython.
+        full = getattr(d, 'full_name', '') or getattr(d, 'name', '') or ''
+        if not full and not kind:
+            return ''
+        parts.append('String form: <' + (kind or 'object') + ' ' + (full or '?') + '>')
+    if not parts:
+        return ''
+    text = '\\n'.join(parts)
+    if len(text) > limit:
+        # Обрыв виден: молча укороченная документация читается как
+        # документация, которая так и кончается.
+        text = text[:limit] + '\\n…'
+    return text
 
 
 def look(code, line, column, display, budget, limit):

@@ -59,6 +59,7 @@ import {
   KERNELS_KEY,
   KERNEL_QUEUE_FIELD,
   KERNEL_RUNNING_FIELD,
+  legacyKernelStatus,
   KERNEL_STATUS_FIELD,
   type CellState,
   type KernelStatus,
@@ -544,10 +545,16 @@ function setStatus(runtime: Runtime, status: KernelStatus): void {
   const mirrored = runtime.root === CELLS_KEY
   const entry = kernelsMap(doc)?.get(runtime.root)
   const known = entry instanceof Y.Map ? entry.get(KERNEL_STATUS_FIELD) : undefined
-  if (known === status && (!mirrored || meta.get('kernelStatus') === status)) return
+  /*
+   * В прежний ключ — совместимое слово: `off` вкладка, открытая до 20.09, не
+   * знает вовсе, и её плашка осталась бы пустой (shared/notebook.ts ·
+   * `legacyKernelStatus`). Правда целиком лежит в карте, которую читают новые.
+   */
+  const legacy = legacyKernelStatus(status)
+  if (known === status && (!mirrored || meta.get('kernelStatus') === legacy)) return
   doc.transact(() => {
     kernelEntry(doc, runtime.root).set(KERNEL_STATUS_FIELD, status)
-    if (mirrored) meta.set('kernelStatus', status)
+    if (mirrored) meta.set('kernelStatus', legacy)
   }, ORIGIN)
 }
 
@@ -1631,12 +1638,29 @@ function clearScopeMirror(sessionId: string, root: string): void {
   const map = kernelsMap(doc)
   const meta = getMeta(doc)
   doc.transact(() => {
-    if (map?.has(root)) map.delete(root)
+    /*
+     * Запись не удаляется, а переводится в `off`, и это правка 20.09.
+     *
+     * Удалённая запись означала «о ядре этой тетради ничего не известно», и
+     * комната читала это по-разному: тетрадь комнаты сползала на прежний ключ
+     * (там стояло «ГОТОВО» — обещание живого Python, которого нет), а
+     * остальные получали умолчание «ЗАПУСК». Ни то ни другое не описывает то,
+     * что произошло: ядро убрали — штатно, по простою или по концу занятия, —
+     * и поднимется оно при следующем запуске.
+     */
+    if (map?.has(root)) kernelEntry(doc, root).set(KERNEL_STATUS_FIELD, 'off' as KernelStatus)
+    const slot = map?.get(root)
+    if (slot instanceof Y.Map) {
+      const waiting = slot.get(KERNEL_QUEUE_FIELD)
+      if (waiting instanceof Y.Array && waiting.length > 0) waiting.delete(0, waiting.length)
+      if (slot.get(KERNEL_RUNNING_FIELD) != null) slot.set(KERNEL_RUNNING_FIELD, null)
+      if (slot.has(KERNEL_PROBLEM_KEY)) slot.delete(KERNEL_PROBLEM_KEY)
+    }
     if (root !== CELLS_KEY) return
     const queue = meta.get('queue')
     if (queue instanceof Y.Array && queue.length > 0) queue.delete(0, queue.length)
     if (meta.get('runningCell') != null) meta.set('runningCell', null)
-    meta.set('kernelStatus', 'idle' as KernelStatus)
+    meta.set('kernelStatus', legacyKernelStatus('off'))
     if (meta.has(KERNEL_PROBLEM_KEY)) meta.delete(KERNEL_PROBLEM_KEY)
   }, ORIGIN)
 }
@@ -3622,13 +3646,17 @@ export async function inspectIn(
   /*
    * Заготовленный ответ тестового бэкенда — вместо ядра, которого там нет.
    *
-   * И только вместо него: пока живого ядра нет, отвечает заготовка, а как
-   * только оно появилось (подделка Jupyter в tests/kernel.test.mts), работает
-   * настоящая дорога — с причинами отказа и со статическим разбором. Иначе
-   * проверить их было бы нечем: под тестовым бэкендом всё кончалось первой же
-   * строкой этой функции.
+   * И только вместо него. Живое ядро есть (подделка Jupyter в
+   * tests/kernel.test.mts) — работает настоящая дорога, с причинами отказа и
+   * со статическим разбором. Ядра нет, но спросивший МОЖЕТ его поднять —
+   * тоже настоящая: он получит «запускается», ядро поднимется, и следующий
+   * вопрос ответит по-честному. Заготовка остаётся тем, чем была, — ответом
+   * там, где ядру взяться неоткуда: чужой лист консилиума, читатель,
+   * закончившееся занятие.
    */
-  if (kernelBackend() === 'test' && !kernel) return cannedInspect(code, cursor)
+  if (kernelBackend() === 'test' && !kernel && help.mayWake !== true) {
+    return cannedInspect(code, cursor)
+  }
   if (!kernel) {
     const phase = runtime?.kernel?.phase ?? null
     // Уже поднимается — своим ли вопросом, чужим ли Run: ответ будет, но не
@@ -3720,13 +3748,23 @@ async function inspectStatically(
         timer.unref?.()
       }),
     ])
-    if (status !== 'ok') return miss('unknown')
+    // Ядро не ответило в отведённое время — ждать его дальше клиенту, а не нам.
+    if (status !== 'ok') return miss('thinking')
   } catch {
     return miss('unknown')
   }
   const answer = parseStaticInspect(raw)
   if (answer?.found && answer.text !== null) return { found: true, text: answer.text, reason: null }
-  return miss('unknown')
+  /*
+   * Не успел — это не «не знаю».
+   *
+   * Первый разбор тяжёлой библиотеки на холодном контейнере стоит секунды
+   * (pandas ~1,5 с), а второй — миллисекунды: jedi кладёт разбор в свой кеш.
+   * Отвечать на это «сказать нечего» значило врать ровно там, где ответ был в
+   * полушаге, — с этим и пришли 20.09. Говорим «ещё думаю», клиент
+   * переспрашивает сам (protocol.ts · InspectMiss.thinking).
+   */
+  return miss(answer?.why === 'timeout' ? 'thinking' : 'unknown')
 }
 
 /** Дополнение тестового бэкенда: несколько имён pandas и ничего больше. */

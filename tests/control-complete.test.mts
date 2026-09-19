@@ -132,13 +132,21 @@ test('преподавателю той же комнаты ядро отвеч�
     [3, 3],
   )
 
-  const help = await ask(ws, said, id, 'host', { t: 'inspect', id: 8, code: 'df.head', cursor: 7 })
-  assert.equal(help.t, 'inspect:reply')
-  assert.equal((help as Extract<ControlServerMessage, { t: 'inspect:reply' }>).found, true)
-  assert.match(
-    (help as Extract<ControlServerMessage, { t: 'inspect:reply' }>).text ?? '',
-    /Signature: df\.head/,
-  )
+  /*
+   * А справка тому же преподавателю отвечает «ядро запускается» — и это тоже
+   * право, только другое: наведясь за справкой, он ПОДНИМАЕТ ядро, как поднял
+   * бы его кнопкой Run (control.ts · mayWake). Ядра у сюиты нет, так что
+   * дальше «запускается» дело не идёт; что подъём доходит до конца, проверено
+   * на подделке Jupyter (kernel.test.mts · «справка поднимает ядро»).
+   */
+  const help = (await ask(ws, said, id, 'host', {
+    t: 'inspect',
+    id: 8,
+    code: 'df.head',
+    cursor: 7,
+  })) as Extract<ControlServerMessage, { t: 'inspect:reply' }>
+  assert.equal(help.found, false)
+  assert.equal(help.reason, 'starting')
 })
 
 test('в открытой комнате дополнение даётся всем, а начатое слово фильтруется ядром', async () => {
@@ -325,14 +333,21 @@ test('справка по наведению в листе консилиума 
  * а слова к ней подбирает клиент на языке комнаты.
  */
 test('на имя, о котором сказать нечего, отвечают причиной, а не молчанием', async () => {
-  const id = room()
+  /*
+   * Лист консилиума в лекционной комнате: спрашивать студенту можно, а
+   * поднимать комнате ядро — нет. Ровно та пара прав, при которой заготовка
+   * тестового бэкенда и отвечает вместо ядра; под указателем пробел, имени
+   * нет, и ответом будет причина.
+   */
+  const id = room(LECTURE_ROOM)
+  const council = cell(id, 'council')
   const { ws, said } = socket()
-  // Под указателем пробел: имени нет, и ядро честно отвечает «не нашлось».
-  const help = (await ask(ws, said, id, 'host', {
+  const help = (await ask(ws, said, id, 'participant', {
     t: 'inspect',
     id: 31,
     code: 'x = ',
     cursor: 4,
+    cellId: council,
   })) as Extract<ControlServerMessage, { t: 'inspect:reply' }>
   assert.equal(help.found, false)
   assert.equal(help.reason, 'unknown')

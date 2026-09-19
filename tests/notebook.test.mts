@@ -8,6 +8,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 import {
+  addBook,
+  bookKernel,
+  CELLS_KEY,
   cellId,
   cellOutputs,
   cellSource,
@@ -19,6 +22,9 @@ import {
   chatAnswer,
   ensureInitialNotebook,
   findCell,
+  kernelEntry,
+  KERNEL_STATUS_FIELD,
+  legacyKernelStatus,
   findChatEntry,
   getCells,
   getChat,
@@ -305,6 +311,65 @@ test('свежая ячейка заводится без секундомера
   })
   assert.equal(readCell(old).startedAt, null)
   assert.equal(readCell(old).ranMs, null)
+})
+
+/*
+ * «ЗАПУСК python3» у комнаты, в которой ничего не запускается.
+ *
+ * Ядро поднимается лениво — первым Run или первым наведением за справкой, — то
+ * есть у только что заведённой комнаты и у комнаты после перезапуска сервера
+ * его нет и никто его не поднимает. Пока такое состояние называлось
+ * `starting`, шапка часами обещала подъём, которого не было; жалоба с занятия
+ * 20.09 звучала так: «это всё-таки не запуск, потому что он ничего не
+ * запускает, просто висит».
+ */
+test('у комнаты без ядра состояние «не запущено», а не «запускается»', () => {
+  const doc = blank()
+  ensureInitialNotebook(doc, 'ZZ')
+  // Новая вкладка читает карту тетрадей; записи там ещё нет вовсе.
+  assert.equal(bookKernel(doc, CELLS_KEY).status, 'off')
+  // Прежний ключ не засевается вовсе: пусто читается как «не запущено», а
+  // старая вкладка видит своё прежнее умолчание и ничего не теряет.
+  assert.equal(getMeta(doc).has('kernelStatus'), false)
+  // А когда сервер напишет `off`, в прежний ключ уедет слово из словаря
+  // старой вкладки — иначе её плашка осталась бы пустой.
+  assert.equal(legacyKernelStatus('off'), 'idle')
+  // Остальные состояния через зеркало проходят как есть.
+  for (const status of ['starting', 'idle', 'busy', 'restarting', 'dead'] as const) {
+    assert.equal(legacyKernelStatus(status), status)
+  }
+})
+
+test('перезапуск сервера гасит и состояние ядра: процесса нет ни у одной тетради', () => {
+  const doc = blank()
+  ensureInitialNotebook(doc, 'ZZ')
+  const second = addBook(doc, 'Семинар.ipynb')
+  doc.transact(() => {
+    // Так документ выглядит на диске после падения: лекция считала, семинар
+    // был готов, а смерть ядра — факт, который перезапуск не отменяет.
+    kernelEntry(doc, CELLS_KEY).set(KERNEL_STATUS_FIELD, 'busy')
+    kernelEntry(doc, second.root).set(KERNEL_STATUS_FIELD, 'idle')
+    getMeta(doc).set('kernelStatus', 'busy')
+  })
+
+  clearStaleExecution(doc)
+
+  assert.equal(bookKernel(doc, CELLS_KEY).status, 'off')
+  assert.equal(bookKernel(doc, second.root).status, 'off', 'вторая тетрадь осталась «готовой» без ядра')
+  assert.equal(getMeta(doc).get('kernelStatus'), 'idle', 'старой вкладке уехало незнакомое слово')
+})
+
+test('настоящая смерть ядра перезапуск сервера не стирает', () => {
+  const doc = blank()
+  ensureInitialNotebook(doc, 'ZZ')
+  doc.transact(() => kernelEntry(doc, CELLS_KEY).set(KERNEL_STATUS_FIELD, 'dead'))
+  clearStaleExecution(doc)
+  /*
+   * `dead` — это OOM, падение или «не поднялось», и у него своя красная плашка
+   * с кнопкой и свой совет преподавателю. Перекрасить его в «не запущено»
+   * значило бы спрятать причину, ради которой этот статус и заведён.
+   */
+  assert.equal(bookKernel(doc, CELLS_KEY).status, 'dead')
 })
 
 test('перезапуск сервера гасит секундомер, но не стирает измеренное время', () => {

@@ -448,6 +448,39 @@
   const PARAM_NOWRAP = 72
 
   /**
+   * Причины, на которых подсказка НЕ успокаивается, — и как часто переспрашивает.
+   *
+   * Все три временные: ядро поднимается, ядро занято чужой ячейкой, jedi не
+   * успел разобрать библиотеку в свой бюджет. Ответ по ним будет — вопрос
+   * только когда, — и заставлять человека отводить и снова наводить мышь ради
+   * этого стыдно: он уже сделал жест и смотрит на окно. Поэтому спрашивает
+   * сама подсказка и заменяет строку-причину справкой на месте.
+   *
+   * Секунда у подъёма и у разбора, две у занятого ядра: занятая ячейка считается
+   * секундами и минутами, и частить к ней незачем — тем более что каждый вопрос
+   * к занятому ядру всё равно отвечает отказом сразу. Ведру на сервере (десять
+   * вопросов в секунду на сокет) один вопрос в секунду не мешает.
+   */
+  const WAITING = new Map<InspectMiss, number>([
+    ['starting', 1000],
+    ['thinking', 1000],
+    ['busy', 2000],
+  ])
+
+  /**
+   * Сколько всего ждать, прежде чем оставить строку-причину как есть.
+   *
+   * У подъёма ядра — полторы минуты: столько стоит холодный контейнер, и это
+   * измеренное число, а не круглое (server/src/kernel/index.ts · подъём
+   * окружения). У остальных двадцать секунд: занятая ячейка может считаться
+   * час, и окно, переспрашивающее час, — это уже не подсказка, а фоновая
+   * работа, о которой никто не просил. Отчаявшись, подсказка просто перестаёт
+   * спрашивать; наведите снова — начнёт заново.
+   */
+  const WAIT_CEILING_MS: Record<string, number> = { starting: 90_000 }
+  const WAIT_CEILING_DEFAULT_MS = 20_000
+
+  /**
    * Сигнатура потоком: параметры через запятую, перенос только МЕЖДУ ними.
    *
    * IPython печатает длинную сигнатуру столбиком, по параметру на строку. У
@@ -592,11 +625,29 @@
       'no-kernel': tr('room.signature.noKernel'),
       starting: tr('room.signature.starting'),
       busy: tr('room.signature.busy'),
+      thinking: tr('room.signature.thinking'),
       unknown: tr('room.signature.unknown'),
     }
     const dom = document.createElement('div')
     dom.className = 'cm-signature cm-signature-miss'
-    dom.textContent = words[reason]
+    dom.append(document.createTextNode(words[reason]))
+    /*
+     * У временной причины — признак ожидания, у окончательной его нет.
+     *
+     * Три точки, и они дышат прозрачностью: остановленный указатель — ложь о
+     * системе (та же политика, что у спиннеров продукта, index.css), а
+     * прозрачность — ровно то, что правило `prefers-reduced-motion` этого
+     * продукта оставляет нетронутым: убираются ПЕРЕЕЗДЫ, не цвет и не
+     * прозрачность. Точки и есть обещание: «вернусь с ответом, ждать имеет
+     * смысл».
+     */
+    if (WAITING.has(reason)) {
+      const wait = document.createElement('span')
+      wait.className = 'cm-signature-wait'
+      wait.setAttribute('aria-hidden', 'true')
+      for (let i = 0; i < 3; i++) wait.appendChild(document.createElement('i'))
+      dom.appendChild(wait)
+    }
     return dom
   }
 
@@ -921,11 +972,97 @@
       // `null` — сокет закрыт или три секунды вышли: сказать нечего, и это
       // единственный случай, когда справка по-прежнему молчит.
       if (!answer) return null
-      if (!answer.found || !answer.text) return signatureMiss(answer.reason)
+      if (!answer.found || !answer.text) {
+        const dom = signatureMiss(answer.reason)
+        // Причина временная — ждём ответа сами, не отправляя человека водить
+        // мышью туда-обратно (см. `keepAsking`).
+        if (dom && answer.reason && WAITING.has(answer.reason)) {
+          keepAsking(view, at, key, dom, answer.reason)
+        }
+        return dom
+      }
       const help = parseSignatureHelp(answer.text)
       if (helpIsEmpty(help)) return signatureMiss('unknown')
       rememberHelp(key, answer.text)
       return signatureDom(help)
+    }
+
+    /**
+     * Переспрашивать, пока окно открыто, и заменить причину справкой на месте.
+     *
+     * «Неясно, зачем мне отводить и снова наводить курсор, чтобы появилась
+     * сигнатура» — жалоба с занятия 20.09, и она справедлива: ответ «ядро
+     * запускается» человек прочитал, ядро через две секунды поднялось, а окно
+     * продолжало показывать вчерашнюю новость, потому что спрашивает его
+     * только наведение.
+     *
+     * Останавливается по трём признакам, и все три значат «окна больше нет или
+     * оно уже не про это место»: узел отцепили (мышь ушла, Escape, каретка
+     * уехала с закреплённой), текст ячейки изменился (спрашивали про другое),
+     * вышел потолок ожидания. Никаких таймеров при этом не остаётся: следующий
+     * такт заводится только из предыдущего и только после проверок.
+     *
+     * Ответ вставляется В ТОТ ЖЕ узел, а не рядом: он принадлежит CodeMirror
+     * (`create: () => ({ dom })`), и подменить его значило бы оставить
+     * подсказку без содержимого. Меняются класс и дети — и CodeMirror просят
+     * перемерить: окно из одной строки превращается в шестисотпиксельное, и
+     * без пересчёта оно осталось бы стоять по старому размеру, залезая на
+     * строку или вися в воздухе.
+     */
+    function keepAsking(
+      view: EditorView,
+      at: number,
+      key: string,
+      dom: HTMLElement,
+      first: InspectMiss,
+    ): void {
+      const ask = handlers.inspect
+      if (!ask) return
+      const doc = view.state.doc
+      const until = Date.now() + (WAIT_CEILING_MS[first] ?? WAIT_CEILING_DEFAULT_MS)
+      let reason: InspectMiss = first
+      const again = () => {
+        const wait = WAITING.get(reason)
+        if (wait === undefined) return
+        const timer = setTimeout(tick, wait)
+        // Вопрос о подсказке не имеет права держать вкладку живой.
+        ;(timer as unknown as { unref?: () => void }).unref?.()
+      }
+      const tick = async () => {
+        if (!dom.isConnected || view.state.doc !== doc || Date.now() > until) return
+        const answer = await ask(view.state.doc.toString(), at)
+        // Пока ходили, окно могли закрыть или текст переписать.
+        if (!dom.isConnected || view.state.doc !== doc) return
+        if (!answer) return
+        if (!answer.found || !answer.text) {
+          const next = answer.reason
+          if (!next || !WAITING.has(next)) {
+            // Причина стала окончательной («не нашлось»): говорим её и молчим.
+            const said = signatureMiss(next)
+            if (said) {
+              dom.className = said.className
+              dom.replaceChildren(...said.childNodes)
+              view.requestMeasure()
+            }
+            return
+          }
+          if (next !== reason) {
+            const said = signatureMiss(next)
+            if (said) dom.replaceChildren(...said.childNodes)
+            reason = next
+          }
+          again()
+          return
+        }
+        const help = parseSignatureHelp(answer.text)
+        if (helpIsEmpty(help)) return
+        rememberHelp(key, answer.text)
+        const built = signatureDom(help)
+        dom.className = built.className
+        dom.replaceChildren(...built.childNodes)
+        view.requestMeasure()
+      }
+      again()
     }
 
     /**

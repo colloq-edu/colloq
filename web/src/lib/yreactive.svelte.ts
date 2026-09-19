@@ -701,14 +701,6 @@ export interface BookKernelView {
   runningCellId: string | null
 }
 
-interface BookKernelBoxes {
-  status: Box<KernelStatus>
-  problem: Box<KernelProblem | null>
-  queue: Box<string[]>
-  running: Box<string | null>
-  view: BookKernelView
-}
-
 /**
  * Document-level state, split one field per source.
  *
@@ -721,16 +713,25 @@ interface BookKernelBoxes {
  */
 class MetaRegistry {
   readonly title = box('')
-  readonly kernelStatus = box<KernelStatus>('starting')
+  readonly kernelStatus = box<KernelStatus>('off')
   readonly kernelProblem = box<KernelProblem | null>(null)
   readonly queue = box<string[]>(EMPTY_IDS)
   readonly runningCellId = box<string | null>(null)
+  /*
+   * Состояние ядер по тетрадям — четыре карты «корень → значение», и все
+   * четыре коробки заведены ЗДЕСЬ, в конструкторе. Почему не по коробке на
+   * тетрадь — довод целиком у `bookView`.
+   */
+  readonly bookStatus = box<Record<string, KernelStatus>>({})
+  readonly bookProblem = box<Record<string, KernelProblem | null>>({})
+  readonly bookQueue = box<Record<string, string[]>>({})
+  readonly bookRunning = box<Record<string, string | null>>({})
   readonly view: NotebookMeta
 
   readonly #meta: Y.Map<any>
   readonly #doc: Y.Doc
-  /** Коробки по тетрадям: корень → состояние её ядра. Заводятся по первому спросу. */
-  readonly #books = new Map<string, BookKernelBoxes>()
+  /** Готовые наборы геттеров по корням — без собственного состояния. */
+  readonly #views = new Map<string, BookKernelView>()
 
   constructor(doc: Y.Doc) {
     this.#doc = doc
@@ -761,54 +762,135 @@ class MetaRegistry {
   }
 
   /**
-   * Состояние ядра одной тетради — заводя ей коробки при первом спросе.
+   * Состояние ядра одной тетради — готовым набором геттеров.
    *
-   * Читается сразу, а не ждёт следующего события: вкладку открывают посреди
-   * уже идущего счёта, и плашка обязана показать правду в тот же кадр.
+   * Сами ЗНАЧЕНИЯ лежат не здесь, а в четырёх коробках реестра (по коробке на
+   * поле, внутри — карта «корень → значение»). Здесь заводится только объект
+   * с геттерами, и в нём нет ни одного рунического состояния — это и есть
+   * правка 20.09.
+   *
+   * Почему так, а не коробка на тетрадь. Коробки заводились ПО ПЕРВОМУ СПРОСУ,
+   * а первый спрос приходит из `$derived` в шапке комнаты. Состояние, созданное
+   * внутри реакции, этой реакцией и владеет: последующие записи в него извне
+   * реакцию НЕ будят. Плашка ядра поэтому показывала первое прочитанное
+   * значение вечно — «ЗАПУСК» у поднявшегося ядра, — хотя коробка исправно
+   * получала правду (замерено на стенде 20.09: `box= idle`, на экране
+   * «ЗАПУСК»). `untrack` вокруг создания не помогает: владение ставится не по
+   * активной зависимости. Те же грабли лежали под очередью, «Прервать» и
+   * советом о неподнявшемся ядре — это одни и те же коробки.
+   *
+   * Цена: правка очереди ОДНОЙ тетради будит читателей очереди всех открытых.
+   * Их единицы (открытых тетрадей 1–3), значение при этом не меняется, а
+   * `sameIds` сохраняет тождество массива — то есть производные дальше не
+   * идут. Поля разные коробки: счёт очереди не будит плашку состояния.
    */
   bookView(root: string): BookKernelView {
-    let found = this.#books.get(root)
-    if (!found) {
-      const status = box<KernelStatus>('starting')
-      const problem = box<KernelProblem | null>(null)
-      const queue = box<string[]>(EMPTY_IDS)
-      const running = box<string | null>(null)
-      found = {
-        status,
-        problem,
-        queue,
-        running,
-        view: {
-          get kernelStatus() {
-            return status.value
-          },
-          get kernelProblem() {
-            return problem.value
-          },
-          get queue() {
-            return queue.value
-          },
-          get runningCellId() {
-            return running.value
-          },
-        },
-      }
-      this.#books.set(root, found)
-      this.#readBook(root, found)
+    let view = this.#views.get(root)
+    if (view) return view
+    const fields = this
+    view = {
+      get kernelStatus() {
+        return fields.bookStatus.value[root] ?? 'off'
+      },
+      get kernelProblem() {
+        return fields.bookProblem.value[root] ?? null
+      },
+      get queue() {
+        return fields.bookQueue.value[root] ?? EMPTY_IDS
+      },
+      get runningCellId() {
+        return fields.bookRunning.value[root] ?? null
+      },
     }
-    return found.view
+    this.#views.set(root, view)
+    /*
+     * Прочитать тетрадь надо, но не ОТСЮДА.
+     *
+     * Первый спрос приходит из `$derived` в шапке, а запись в состояние во
+     * время счёта производной Svelte запрещает (`state_unsafe_mutation`) — и
+     * правильно делает. Микрозадача успевает до отрисовки: значение приезжает
+     * тем же кадром, просто следующим проходом планировщика. Того, кто может
+     * прочитать заранее, мы и просим об этом заранее — см. `prime` ниже.
+     */
+    if (!(root in this.bookStatus.value)) queueMicrotask(() => this.#readBooks(root))
+    return view
   }
 
-  #readBook(root: string, boxes: BookKernelBoxes): void {
-    const state = bookKernel(this.#doc, root)
-    if (state.status !== boxes.status.value) boxes.status.value = state.status
-    if (state.runningCell !== boxes.running.value) boxes.running.value = state.runningCell
-    if (!sameIds(state.queue, boxes.queue.value)) boxes.queue.value = state.queue
-    /*
-     * Совет про неподнявшееся ядро лежит там же, где состояние: в записи своей
-     * тетради, а у тетради комнаты ещё и в прежнем ключе. Читаем по тому же
-     * правилу, что и всё остальное (shared/notebook.ts · bookKernel).
-     */
+  /**
+   * Завести тетради место в картах ЗАРАНЕЕ — из инициализации компонента.
+   *
+   * Зовётся из `watchBookKernel`, то есть из тела компонента, где реакции нет
+   * и писать в состояние можно. Благодаря этому плашка открытой тетради верна
+   * с первого же кадра, а микрозадача выше остаётся страховкой для тетрадей,
+   * о которых спросили позже (переключение вкладок).
+   */
+  prime(root: string): void {
+    this.bookView(root)
+    if (!(root in this.bookStatus.value)) this.#readBooks(root)
+  }
+
+  /**
+   * Перечитать состояние тетрадей в четыре карты — и заменить только то, что
+   * изменилось.
+   *
+   * Читаются все корни, о которых кто-то спрашивал, плюс названный. Меньше
+   * нельзя: карта ядер появляется в документе позже вкладки, и тетрадь, чьей
+   * записи при первом чтении не было, иначе осталась бы с умолчанием навсегда.
+   */
+  #readBooks(extra?: string): void {
+    const roots = new Set(this.#views.keys())
+    if (extra) roots.add(extra)
+    if (roots.size === 0) return
+    const status: Record<string, KernelStatus> = {}
+    const problem: Record<string, KernelProblem | null> = {}
+    const queue: Record<string, string[]> = {}
+    const running: Record<string, string | null> = {}
+    let sameStatus = true
+    let sameProblem = true
+    let sameQueue = true
+    let sameRunning = true
+    const wasStatus = this.bookStatus.value
+    const wasProblem = this.bookProblem.value
+    const wasQueue = this.bookQueue.value
+    const wasRunning = this.bookRunning.value
+    for (const root of roots) {
+      const state = bookKernel(this.#doc, root)
+      status[root] = state.status
+      if (wasStatus[root] !== state.status) sameStatus = false
+      running[root] = state.runningCell
+      if (wasRunning[root] !== state.runningCell) sameRunning = false
+      /*
+       * Тождество массива сохраняется, пока список тот же: производные ниже
+       * сравнивают по ссылке, и новый массив с тем же содержимым перерисовал
+       * бы счётчик очереди у каждой ячейки.
+       */
+      const before = wasQueue[root]
+      if (before && sameIds(before, state.queue)) queue[root] = before
+      else {
+        queue[root] = state.queue
+        sameQueue = false
+      }
+      const raw = this.#problemOf(root)
+      const kept = wasProblem[root] ?? null
+      if (JSON.stringify(kept) === JSON.stringify(raw)) problem[root] = kept
+      else {
+        problem[root] = raw
+        sameProblem = false
+      }
+    }
+    // Исчезнувший корень — тоже перемена: тетрадь закрыли, запись ушла.
+    if (Object.keys(wasStatus).length !== roots.size) sameStatus = false
+    if (Object.keys(wasQueue).length !== roots.size) sameQueue = false
+    if (Object.keys(wasRunning).length !== roots.size) sameRunning = false
+    if (Object.keys(wasProblem).length !== roots.size) sameProblem = false
+    if (!sameStatus) this.bookStatus.value = status
+    if (!sameProblem) this.bookProblem.value = problem
+    if (!sameQueue) this.bookQueue.value = queue
+    if (!sameRunning) this.bookRunning.value = running
+  }
+
+  /** Совет про неподнявшееся ядро лежит там же, где состояние. */
+  #problemOf(root: string): KernelProblem | null {
     const entry = kernelsMap(this.#doc)?.get(root)
     const raw =
       entry instanceof Y.Map
@@ -816,13 +898,7 @@ class MetaRegistry {
         : root === CELLS_KEY
           ? this.#meta.get(KERNEL_PROBLEM_KEY)
           : null
-    const problem = readKernelProblem(raw)
-    if (JSON.stringify(problem) !== JSON.stringify(boxes.problem.value))
-      boxes.problem.value = problem
-  }
-
-  #readBooks(): void {
-    for (const [root, boxes] of this.#books) this.#readBook(root, boxes)
+    return readKernelProblem(raw)
   }
 
   #onEvents = (events: Y.YEvent<any>[]) => {
@@ -854,14 +930,20 @@ class MetaRegistry {
      * которая молча не обновляется. Читатели будятся только на настоящей смене
      * значения — это делают коробки.
      */
-    if (this.#books.size > 0) this.#readBooks()
+    if (this.#views.size > 0) this.#readBooks()
   }
 
   #readScalars(): void {
     const title = (this.#meta.get('title') as string) ?? ''
     if (title !== this.title.value) this.title.value = title
 
-    const status = (this.#meta.get('kernelStatus') as KernelStatus) ?? 'starting'
+    /*
+     * Прежнее поле комнаты читается по КАРТЕ тетради `cells`, а не по прежнему
+     * ключу: в ключе с 20.09 лежит слово для старых вкладок, где `off`
+     * заменено на `idle` (shared/notebook.ts · legacyKernelStatus). Читателю в
+     * этой вкладке нужна правда — «ядро не запущено», а не «свободно».
+     */
+    const status = bookKernel(this.#doc, CELLS_KEY).status
     if (status !== this.kernelStatus.value) this.kernelStatus.value = status
 
     // Значение — обычный объект, и каждое чтение даёт новый: сравниваем по
@@ -931,6 +1013,8 @@ export function watchBookBusy(doc: Y.Doc): { busy: (root: string) => boolean } {
  */
 export function watchBookKernel(doc: Y.Doc, root: () => string): Reactive<BookKernelView> {
   const fields = registryFor(doc)
+  // Из тела компонента, до всякой производной: см. `MetaRegistry.prime`.
+  fields.prime(root())
   return {
     get current() {
       return fields.bookView(root())

@@ -414,12 +414,43 @@ const theme = EditorView.theme({
    * Ширина здесь своя: «Ядро запускается» занимает треть строки, и растянуть
    * под это шестисотпиксельное окно значило бы сказать шёпотом в мегафон.
    */
+  /*
+   * Три точки у временной причины: «жду ответа, он будет».
+   *
+   * Дышат прозрачностью, и это не украшение, а обещание. Остановленный
+   * указатель — ложь о системе (политика продукта у спиннеров, index.css), а
+   * правило `prefers-reduced-motion` этого продукта убирает ПЕРЕЕЗДЫ и прямо
+   * оставляет цвет и прозрачность: здесь не двигается ничего, только гаснет и
+   * загорается. Сдвиг фаз — чтобы читалось как счёт, а не как мигание.
+   */
+  '.cm-signature-wait': {
+    display: 'inline-flex',
+    gap: '3px',
+    marginLeft: '6px',
+    verticalAlign: 'baseline',
+  },
+  '.cm-signature-wait i': {
+    width: '3px',
+    height: '3px',
+    borderRadius: '50%',
+    backgroundColor: 'rgb(var(--faint))',
+    animation: 'colloq-signature-wait 1200ms ease-in-out infinite',
+  },
+  '.cm-signature-wait i:nth-child(2)': { animationDelay: '160ms' },
+  '.cm-signature-wait i:nth-child(3)': { animationDelay: '320ms' },
+  '@keyframes colloq-signature-wait': {
+    '0%, 100%': { opacity: '0.25' },
+    '50%': { opacity: '1' },
+  },
   '.cm-signature-miss': {
     width: 'auto',
     maxWidth: 'min(420px, 88vw)',
     padding: '5px 10px',
     fontSize: '12px',
     color: 'rgb(var(--muted))',
+    /* Строка и точки на одной линии: точки — часть фразы, а не значок сбоку. */
+    display: 'flex',
+    alignItems: 'center',
   },
 
   /*

@@ -425,6 +425,69 @@ test('Escape закрывает оба вида справки — и тогда
   assert.match(EDITOR, /destroy: \(\) => document\.removeEventListener\('keydown', onKey, true\)/)
 })
 
+/* ------------------------------------------------ подсказка дожидается сама */
+
+/**
+ * «Неясно, зачем мне отводить и снова наводить курсор, чтобы появилась
+ * сигнатура» — жалоба с занятия 20.09.
+ *
+ * Причина была в том, что спрашивает подсказку только наведение: ответ «ядро
+ * запускается» человек прочитал, через две секунды ядро поднялось, а окно
+ * продолжало показывать вчерашнюю новость. Теперь окно переспрашивает само,
+ * пока открыто, и заменяет причину справкой на месте.
+ */
+test('на временную причину подсказка переспрашивает, на окончательную — нет', () => {
+  // Три временные причины и их такт; `unknown` и `no-kernel` в список не
+  // входят — по ним ответа не будет, сколько ни спрашивай.
+  assert.match(EDITOR, /\['starting', 1000\]/)
+  assert.match(EDITOR, /\['thinking', 1000\]/)
+  assert.match(EDITOR, /\['busy', 2000\]/)
+  assert.doesNotMatch(EDITOR, /\['unknown', \d/)
+  assert.doesNotMatch(EDITOR, /\['no-kernel', \d/)
+  // Потолок ожидания: полторы минуты у подъёма ядра, двадцать секунд у прочих.
+  assert.match(EDITOR, /WAIT_CEILING_MS: Record<string, number> = \{ starting: 90_000 \}/)
+  assert.match(EDITOR, /WAIT_CEILING_DEFAULT_MS = 20_000/)
+})
+
+test('переспрос останавливается, когда окна больше нет или текст изменился', () => {
+  // Три признака, и все три значат «окно уже не про это место».
+  assert.match(EDITOR, /if \(!dom\.isConnected \|\| view\.state\.doc !== doc \|\| Date\.now\(\) > until\) return/)
+  // И та же проверка ПОСЛЕ похода к ядру: пока ходили, могли закрыть.
+  assert.match(EDITOR, /if \(!dom\.isConnected \|\| view\.state\.doc !== doc\) return/)
+})
+
+test('ответ заменяет причину в том же узле, и окно перемеряется', () => {
+  /*
+   * Узел принадлежит CodeMirror (`create: () => ({ dom })`): подменить его
+   * значило бы оставить подсказку без содержимого. Меняются класс и дети — а
+   * окно из одной строки превращается в шестисотпиксельное, и без пересчёта
+   * оно осталось бы стоять по старому размеру.
+   */
+  assert.match(EDITOR, /dom\.className = built\.className/)
+  assert.match(EDITOR, /dom\.replaceChildren\(\.\.\.built\.childNodes\)/)
+  assert.match(EDITOR, /view\.requestMeasure\(\)/)
+})
+
+test('у временной причины есть признак ожидания, у окончательной — нет', () => {
+  assert.match(EDITOR, /if \(WAITING\.has\(reason\)\)/)
+  assert.match(EDITOR, /wait\.className = 'cm-signature-wait'/)
+  // Точки дышат прозрачностью: ничего не двигается, и правило продукта про
+  // prefers-reduced-motion (index.css) такое трогать не просит.
+  assert.match(THEME, /'\.cm-signature-wait i': \{[\s\S]*?animation: 'colloq-signature-wait/)
+  assert.match(THEME, /'@keyframes colloq-signature-wait': \{\s*'0%, 100%': \{ opacity: '0\.25' \}/)
+  assert.doesNotMatch(THEME, /colloq-signature-wait[\s\S]{0,200}translate/)
+})
+
+test('справке отпущен свой срок, длиннее серверного потолка разбора', () => {
+  /*
+   * Статический разбор внутри ядра — 2,5 с плюс дорога; прежние три секунды
+   * на клиенте означали, что он бросает трубку раньше ответа, и первое
+   * наведение на pandas не показывало ничего вовсе.
+   */
+  assert.match(SESSION, /const INSPECT_TIMEOUT_MS = 4000/)
+  assert.match(SESSION, /kind === 'inspect' \? INSPECT_TIMEOUT_MS : ASK_TIMEOUT_MS/)
+})
+
 test('запуск ячейки стирает память справки — одним местом на все кнопки', () => {
   assert.match(SESSION, /message\.t === 'run' \|\| message\.t === 'restart'/)
   assert.match(SESSION, /forgetHelp\(\)/)

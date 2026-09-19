@@ -23,6 +23,7 @@ import type { TerminalStatus } from './protocol.js'
 
 /** Ядро — оно: «ядро python · считает». */
 export const KERNEL_WORD: Record<KernelStatus, string> = {
+  get off() { return tr('server.kernel_word.off') },
   get starting() { return tr('server.kernel_word.starting') },
   get restarting() { return tr('server.kernel_word.restarting') },
   get idle() { return tr('server.kernel_word.idle') },

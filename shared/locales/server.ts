@@ -2309,6 +2309,10 @@ export const serverMessages: MessageCatalog = {
     "ru": "# Добро пожаловать\n\nЭта тетрадь общая для всей группы. Преподаватель определяет, кто может редактировать её и запускать код.",
     "en": "# Welcome\n\nThis notebook is shared with the group. Your teacher controls who can edit and run code."
   },
+  "server.kernel_word.off": {
+    "ru": "не запущено",
+    "en": "not running"
+  },
   "server.kernel_word.starting": {
     "ru": "запускается",
     "en": "starting"

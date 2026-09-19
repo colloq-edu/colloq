@@ -155,6 +155,18 @@ export type DefineReply = Extract<ControlServerMessage, { t: 'define:reply' }>
  */
 const ASK_TIMEOUT_MS = 3000
 
+/**
+ * Справке — свой срок, и он длиннее.
+ *
+ * У неё две дороги: живое ядро (те же 2,5 с) и статический разбор jedi ВНУТРИ
+ * ядра, которому с 20.09 отпущено 2,5 с плюс дорога (server/src/kernel/index.ts
+ * · STATIC_INSPECT_WAIT_MS = 3,5 с). Прежние три секунды здесь означали, что
+ * клиент бросает трубку раньше, чем сервер успевает ответить: первое наведение
+ * на pandas не показывало НИЧЕГО — ни справки, ни причины, — потому что ответ
+ * приезжал в закрытую дверь. Полсекунды сверх серверного потолка — на дорогу.
+ */
+const INSPECT_TIMEOUT_MS = 4000
+
 /** Тот же потолок, что у сервера (control.ts · MAX_COMPLETE_CHARS). */
 const MAX_ASK_CHARS = 24 * 1024
 
@@ -1447,10 +1459,13 @@ export class SessionState {
     const sent = kind === 'define' ? windowAroundCursor(code, at) : headBeforeCursor(code, at)
     const id = ++this.#askId
     return new Promise<ControlServerMessage | null>((resolve) => {
-      const timer = window.setTimeout(() => {
-        this.#asked.delete(id)
-        resolve(null)
-      }, ASK_TIMEOUT_MS)
+      const timer = window.setTimeout(
+        () => {
+          this.#asked.delete(id)
+          resolve(null)
+        },
+        kind === 'inspect' ? INSPECT_TIMEOUT_MS : ASK_TIMEOUT_MS,
+      )
       this.#asked.set(id, { settle: resolve, timer })
       try {
         /*

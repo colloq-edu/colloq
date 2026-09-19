@@ -290,7 +290,38 @@ export function removeBook(doc: Y.Doc, path: string): void {
 
 export type CellType = 'code' | 'markdown'
 export type CellState = 'idle' | 'queued' | 'running' | 'ok' | 'error'
-export type KernelStatus = 'starting' | 'idle' | 'busy' | 'restarting' | 'dead'
+/**
+ * Что с ядром тетради — глазами комнаты.
+ *
+ * `off` — ядра НЕТ и никто его не поднимает: комнату только открыли, сервер
+ * перезапустили, ядро убрали по простою, занятие кончилось. Заведено 20.09,
+ * потому что до этого такое состояние показывалось как `starting`: свежая
+ * комната писала «ЗАПУСК python3» и висела так часами, ничего не запуская.
+ * Ядро поднимается лениво — первым Run (и, с 19.09, первым наведением за
+ * справкой), — и честное слово об этом стоит ровно столько же, сколько
+ * неверное.
+ *
+ * `starting` осталось тем, чем должно быть: подъём ИДЁТ прямо сейчас.
+ * `dead` — настоящая смерть (OOM, падение, не поднялось), у неё своя красная
+ * плашка и кнопка; штатное засыпание по простою красной тревогой быть не
+ * должно.
+ */
+export type KernelStatus = 'off' | 'starting' | 'idle' | 'busy' | 'restarting' | 'dead'
+
+/**
+ * Что показать старой вкладке вместо нового слова.
+ *
+ * Вкладка, открытая до 20.09, читает только прежний ключ `meta.kernelStatus` и
+ * рисует состояние по таблице, в которой `off` нет: незнакомое значение дало
+ * бы ей `undefined` и пустую плашку (а в шапке — ошибку на `kernel.label`).
+ * Поэтому в ПРЕЖНИЙ ключ вместо `off` едет `idle`: старая вкладка покажет
+ * «ГОТОВО», и это не ложь в её словаре — Run в такой комнате работает и
+ * поднимает ядро сам. Правда целиком лежит в новом ключе
+ * (`meta.kernels[root].status`), который старая вкладка не читает.
+ */
+export function legacyKernelStatus(status: KernelStatus): Exclude<KernelStatus, 'off'> {
+  return status === 'off' ? 'idle' : status
+}
 export type StreamName = 'stdout' | 'stderr'
 
 /* ------------------------------------------------------------ ядра тетрадей */
@@ -365,16 +396,17 @@ export function bookKernel(doc: Y.Doc, root: string): BookKernel {
   if (entry instanceof Y.Map) {
     const queue = entry.get(KERNEL_QUEUE_FIELD)
     return {
-      status: (entry.get(KERNEL_STATUS_FIELD) as KernelStatus) ?? 'starting',
+      status: (entry.get(KERNEL_STATUS_FIELD) as KernelStatus) ?? 'off',
       runningCell: (entry.get(KERNEL_RUNNING_FIELD) as string | null) ?? null,
       queue: queue instanceof Y.Array ? (queue.toArray() as string[]) : [],
     }
   }
-  if (root !== CELLS_KEY) return { status: 'starting', runningCell: null, queue: [] }
+  // Записи нет вовсе — ядра этой тетради не поднимали: `off`, а не «запускается».
+  if (root !== CELLS_KEY) return { status: 'off', runningCell: null, queue: [] }
   const meta = getMeta(doc)
   const queue = meta.get('queue')
   return {
-    status: (meta.get('kernelStatus') as KernelStatus) ?? 'starting',
+    status: (meta.get('kernelStatus') as KernelStatus) ?? 'off',
     runningCell: (meta.get('runningCell') as string | null) ?? null,
     queue: queue instanceof Y.Array ? (queue.toArray() as string[]) : [],
   }
@@ -1562,9 +1594,19 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
     if (queue instanceof Y.Array && queue.length > 0) queue.delete(0, queue.length)
     if (meta.get('runningCell') != null) meta.set('runningCell', null)
 
+    /*
+     * Процесса нет — значит `off`, а не `idle` и не «запускается».
+     *
+     * Эта функция проходит при подъёме комнаты в память, то есть после
+     * перезапуска сервера: в документе лежит то, что было записано ДО него, а
+     * ядер у нового процесса нет ни одного. `idle` («ГОТОВО») и `starting`
+     * («ЗАПУСК») тут одинаково неправда — первое обещает живой Python, второе
+     * обещает, что он вот-вот будет. В прежний ключ уезжает совместимое слово
+     * (см. `legacyKernelStatus`).
+     */
     const status = meta.get('kernelStatus')
-    if (status === 'busy' || status === 'restarting')
-      meta.set('kernelStatus', 'idle' as KernelStatus)
+    if (status !== undefined && status !== 'dead')
+      meta.set('kernelStatus', legacyKernelStatus('off'))
 
     /*
      * И то же самое по тетрадям.
@@ -1583,8 +1625,8 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
         if (waiting instanceof Y.Array && waiting.length > 0) waiting.delete(0, waiting.length)
         if (entry.get(KERNEL_RUNNING_FIELD) != null) entry.set(KERNEL_RUNNING_FIELD, null)
         const state = entry.get(KERNEL_STATUS_FIELD)
-        if (state === 'busy' || state === 'restarting')
-          entry.set(KERNEL_STATUS_FIELD, 'idle' as KernelStatus)
+        if (state !== undefined && state !== 'dead')
+          entry.set(KERNEL_STATUS_FIELD, 'off' as KernelStatus)
       }
     }
 
@@ -1671,7 +1713,15 @@ export function ensureInitialNotebook(doc: Y.Doc, title?: string): boolean {
      * которого вкладка выходит только когда хост допечатает имя.
      */
     if (title && !meta.has('title')) meta.set('title', title)
-    if (!meta.has('kernelStatus')) meta.set('kernelStatus', 'starting' as KernelStatus)
+    /*
+     * Состояние ядра здесь НЕ засевается вовсе, и это правка 20.09.
+     *
+     * Стояло `starting`, и это было «ЗАПУСК python3» в шапке свежей комнаты —
+     * навсегда, до первого Run: ядро поднимается лениво, то есть у комнаты,
+     * которую только открыли, его нет и никто его не поднимает. Ровно та
+     * жалоба, с которой пришли. Пустой ключ читается как `off` («не
+     * запущено») — и это правда; первое же слово сервера его перепишет.
+     */
     /*
      * Список тетрадей — первым делом, и он же миграция.
      *

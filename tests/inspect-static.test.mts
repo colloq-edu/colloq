@@ -125,8 +125,29 @@ test('у разбора есть будильник и потолок ответ
   // Обрывать надо ИЗНУТРИ: сервер, переставший ждать, ядро не освобождает.
   assert.match(source, /signal\.setitimer\(signal\.ITIMER_REAL, budget\)/)
   assert.match(source, /signal\.setitimer\(signal\.ITIMER_REAL, 0\)/)
-  // Полторы секунды — замер, а не round number: см. INSPECT_BUDGET_SEC.
-  assert.ok(INSPECT_BUDGET_SEC > 0 && INSPECT_BUDGET_SEC <= 2)
+  /*
+   * Две с половиной секунды — замеренный потолок, а не круглое число: первый
+   * разбор pandas на холодном контейнере стоит ~1,5 с, и прежние полторы
+   * секунды резали ровно его (замер 20.09: pd.DataFrame — 1946 мс). Больше
+   * трёх нельзя: на это время занят shell ядра, и Run ждёт.
+   */
+  assert.ok(INSPECT_BUDGET_SEC >= 2 && INSPECT_BUDGET_SEC <= 3)
+})
+
+test('у модуля без документации показывается хотя бы то, ЧТО это', () => {
+  const source = inspectStaticSource({ code: 'pd', cursor: 2 })
+  /*
+   * У pandas в `__init__.py` строки документации нет вовсе, а у numpy есть — и
+   * до 20.09 это означало, что наведение на `np` отвечает страницей, а на
+   * соседний `pd` — «сказать нечего». Разница, которой человек объяснить не
+   * может. Теперь у такого имени показывается его род и полное имя, тем же
+   * полем, каким это показывает сам IPython.
+   */
+  assert.match(source, /String form: </)
+  assert.match(source, /full_name/)
+  // И выбирается лучшее из найденного: у pd.read_csv jedi отдаёт пять
+  // перегрузок из .pyi, и документация есть не у каждой.
+  assert.match(source, /rank = 2 if \(sig and doc\.strip\(\)\)/)
 })
 
 test('свои значения бюджета и потолка доезжают как есть', () => {
