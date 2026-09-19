@@ -52,7 +52,7 @@ import {
   publicationOf,
   stepCount,
 } from '../publish/store.js'
-import { environmentOf, shutdownSession } from '../kernel/index.js'
+import { environmentOf, shutdownSession, syncBookKernels } from '../kernel/index.js'
 import { applyCpuLimit, applyMemoryLimit } from '../kernel/pool.js'
 import {
   cpuBounds,
@@ -547,6 +547,9 @@ export function adminInstanceRoutes(): Router {
         return invalid(res, tr("server.rulesMustBeAnObject.c2a9d1"))
       }
       setRules(row.id, readRules({ ...storedRules(row.id), ...(body.rules as object) }))
+      // Доступ тетради решает, в каком контейнере её ядро; сменился — ядро
+      // гасится. Тот же довод, что в routes/sessions.ts.
+      syncBookKernels(row.id)
       // The room finds out now, not on its next reload: the panel greys its
       // controls from this, and a rule nobody was told about is a rule that
       // looks like a bug when a button stops working.

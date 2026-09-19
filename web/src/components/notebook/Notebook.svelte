@@ -26,7 +26,7 @@
     type HeightChange,
   } from '@/lib/cell-scroll'
   import { cn, isJumpClick, modKey, prefersReducedMotion } from '@/lib/utils'
-  import { watchBooks, watchCellIds, watchNotebookMeta } from '@/lib/yreactive.svelte'
+  import { watchBookKernel, watchBooks, watchCellIds } from '@/lib/yreactive.svelte'
   import CellView from './CellView.svelte'
   import { nextBuiltCells } from './first-mount'
 
@@ -57,7 +57,15 @@
   const books = watchBooks(session.doc)
   const root = $derived(books.current.find((entry) => entry.path === book)?.root ?? '')
   const ids = watchCellIds(session.doc, () => root)
-  const notebook = watchNotebookMeta(session.doc)
+  /*
+   * Ядро — ЭТОЙ тетради, а не комнаты.
+   *
+   * У каждой тетради свой Python и своя очередь (server/src/kernel/index.ts),
+   * и полоса говорит про ту, что открыта: лекция может считать полторы минуты,
+   * пока семинар свободен, и одна плашка на двоих врала бы обоим. Корень
+   * функцией: список тетрадей приезжает документом, и до его приезда он пуст.
+   */
+  const notebook = watchBookKernel(session.doc, () => root)
 
   /*
    * $derived, not a plain const: the control socket reports the role the server
@@ -102,10 +110,13 @@
    * ячейку. У преподавателя нажатие остаётся безымянным — тем и отличается
    * комнатная кнопка от кнопки на ячейке.
    */
-  function interruptMessage(): { t: 'interrupt'; cellId?: string } {
+  function interruptMessage(): { t: 'interrupt'; cellId?: string; book?: string } {
     const running = notebook.current.runningCellId
-    if (isHost || !running) return { t: 'interrupt' }
-    return { t: 'interrupt', cellId: running }
+    // Лист называется всегда: без него сервер понял бы нажатие как «тетрадь
+    // комнаты» и разобрал бы чужую очередь — соседнюю, до которой этой кнопке
+    // дела нет.
+    if (isHost || !running) return { t: 'interrupt', book }
+    return { t: 'interrupt', cellId: running, book }
   }
 
   /* --------------------------------------------------------- navigation */
@@ -1146,7 +1157,8 @@
 
   function fireRestart(el: HTMLElement): void {
     holdAnim = null
-    session.send({ t: 'restart' })
+    // Перезапуск уносит переменные ТОЙ тетради, в чьей полосе нажали.
+    session.send({ t: 'restart', book })
     // The send is the one moment in this interaction that must read, and a bar
     // that simply sits full until the finger lifts hides it. The overlay
     // leaves; the `restarting…` pill at the end of this bar takes it from here.
@@ -1625,7 +1637,7 @@
                      disabled:pointer-events-none disabled:opacity-40"
               disabled={controlDisabled(session.connected)}
               title={controlTitle(session.connected, tr('room.extra.184'))}
-              onclick={() => session.send({ t: 'restart' })}
+              onclick={() => session.send({ t: 'restart', book })}
             > {tr('room.ui.448')} </button>
           {/if}
         </span>

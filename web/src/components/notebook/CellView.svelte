@@ -112,7 +112,7 @@
     watchCell,
     watchCellMeta,
     watchCellPeers,
-    watchNotebookMeta,
+    watchBookKernel,
     watchOutputs,
     watchOracleBusy,
     watchPatchFor,
@@ -1209,7 +1209,9 @@
 
   const outputs = watchOutputs(() => cell.current)
   const peersHere = watchCellPeers(session.awareness, () => id)
-  const notebook = watchNotebookMeta(session.doc)
+  // Очередь — СВОЕЙ тетради: у каждой своё ядро и своя очередь, и «третий в
+  // очереди» из соседнего листа не имеет к этой ячейке никакого отношения.
+  const notebook = watchBookKernel(session.doc, () => bookRoot)
 
   const ytext = $derived(cell.current ? cellSource(cell.current) : null)
 

@@ -27,12 +27,15 @@ import { tr, formatNumber } from '@shared/i18n'
  * преподаватель», не может разрешать то же самое строкой ниже. При умолчании
  * (`run: 'room'`) это по-прежнему открыто всем.
  */
+import type * as Y from 'yjs'
 import { WebSocket, type RawData } from 'ws'
 import {
   acceptPatch,
   allCellArrays,
   bookAt,
+  bookKernel,
   bookList,
+  CELLS_KEY,
   cellId,
   cellLock,
   cellsAt,
@@ -47,6 +50,7 @@ import {
   getCells,
   getMeta,
   isCellOpen,
+  KERNELS_KEY,
   mainRoot,
   MAX_ATTEMPT_CHARS,
   openValueFor,
@@ -80,6 +84,7 @@ import {
 import { moveInCells } from './collab/ops.js'
 import { defineIn } from './definitions.js'
 import { LINE_LENGTH } from './kernel/format.js'
+import { kernelBackend } from './kernel/runtime-client.js'
 import {
   actsAfterClass,
   allows,
@@ -124,6 +129,7 @@ import {
   requestRun,
   restartSession,
   sweepOrphanRuns,
+  syncBookKernels,
   cancelRun,
   cancelCouncilRun,
   purgeCouncilRunsOf,
@@ -1061,7 +1067,17 @@ onFileSaved((sessionId, _path, origin) => {
  * Без этого файл тетради появлялся бы в дереве только после чьей-нибудь
  * загрузки: проекция пишется сама, а сказать об этом некому.
  */
-onBooksWritten((sessionId) => scheduleFiles(sessionId))
+onBooksWritten((sessionId) => {
+  scheduleFiles(sessionId)
+  /*
+   * Тетрадь убрали из комнаты — её ядро больше ничьё.
+   *
+   * Тот же повод, что у смены доступа: место ядра перестало существовать.
+   * Оставить его значило бы держать процесс, который пишет вывод в лист,
+   * которого в комнате нет, — и занимать им очередь и память до конца пары.
+   */
+  syncBookKernels(sessionId)
+})
 
 /*
  * Сервер поменял правила сам — комната узнаёт об этом сейчас же.
@@ -1821,12 +1837,30 @@ onTerminalPhase((sessionId, status) => broadcast(sessionId, { t: 'terminal', sta
 
 /* ----------------------------------------------------------------- doc */
 
-function kernelStatus(sessionId: string): KernelStatus {
+/**
+ * Состояние ядра одной тетради — по её записи в карте `meta.kernels`.
+ *
+ * Без корня — тетрадь комнаты: так читает вкладка, открытая до того, как ядер
+ * стало несколько, и так же отвечает первый кадр `ready`.
+ */
+function kernelStatus(sessionId: string, root: string = CELLS_KEY): KernelStatus {
   try {
-    const status = getMeta(getSessionDoc(sessionId).doc).get('kernelStatus')
-    return typeof status === 'string' ? (status as KernelStatus) : 'starting'
+    return bookKernel(getSessionDoc(sessionId).doc, root).status
   } catch {
     return 'starting'
+  }
+}
+
+/** Состояние ядер по тетрадям — то, что едет в первом кадре сокета. */
+function kernelStatuses(sessionId: string): Array<{ book: string; status: KernelStatus }> {
+  try {
+    const { doc } = getSessionDoc(sessionId)
+    return bookList(doc).map((book) => ({
+      book: book.path,
+      status: bookKernel(doc, book.root).status,
+    }))
+  } catch {
+    return []
   }
 }
 
@@ -1844,13 +1878,42 @@ function kernelStatus(sessionId: string): KernelStatus {
  * правку (а это самый частый сдвиг) карта наружу не показывает.
  */
 function watchRoomMeta(sessionId: string): () => void {
-  const meta = getMeta(getSessionDoc(sessionId).doc)
-  let last = meta.get('kernelStatus') as KernelStatus | undefined
-  const onChange = () => {
-    const status = meta.get('kernelStatus') as KernelStatus | undefined
-    if (status && status !== last) {
-      last = status
-      broadcast(sessionId, { t: 'kernel', status })
+  const { doc } = getSessionDoc(sessionId)
+  const meta = getMeta(doc)
+  /*
+   * Прежнее состояние — ПО ТЕТРАДЯМ.
+   *
+   * Одно поле `last` на комнату означало бы, что вторая тетрадь, ставшая
+   * `busy` следом за первой, кадра не получает вовсе: значение то же. Кадр при
+   * этом называет свой лист, и старая вкладка читает его как прежде — поле
+   * `book` она просто не знает.
+   */
+  const last = new Map<string, KernelStatus>()
+  /*
+   * Список тетрадей обходится ТОЛЬКО когда изменилась карта ядер.
+   *
+   * `observeDeep` будит нас на каждый сдвиг очереди — два раза на ячейку, а при
+   * Run All на сорок ячеек это восемьдесят раз подряд, всей комнате. Пока полей
+   * было два, обход стоил двух чтений; теперь это проход по списку тетрадей с
+   * чтением записи каждой. Путь события от `meta` и говорит, куда писали:
+   * `['kernels', <корень>, …]` — в карту, пустой путь с ключом `kernels` — её
+   * только что завели.
+   */
+  const touchesKernels = (events: Y.YEvent<any>[]): boolean =>
+    events.some(
+      (event) =>
+        event.path[0] === KERNELS_KEY ||
+        (event.path.length === 0 &&
+          (event as Y.YMapEvent<any>).keysChanged?.has(KERNELS_KEY) === true),
+    )
+  const onChange = (events: Y.YEvent<any>[]) => {
+    if (touchesKernels(events)) {
+      for (const book of bookList(doc)) {
+        const status = bookKernel(doc, book.root).status
+        if (last.get(book.root) === status) continue
+        last.set(book.root, status)
+        broadcast(sessionId, { t: 'kernel', status, book: book.path })
+      }
     }
     nudgeQueue(sessionId)
   }
@@ -2028,6 +2091,24 @@ function rootOf(sessionId: string, cellId: string): string | null {
  * названа тетрадь, которой в комнате нет; зовущий отвечает на это своим
  * NO_SUCH_BOOK, а не молча правилами комнаты.
  */
+/**
+ * В какой лист СОБРАН этот список ячеек — по первой из них.
+ *
+ * Отдельно от `rootOfBook`, и это не педантизм. Без имени листа права
+ * спрашиваются у `mainRoot` (первой тетради по порядку), а ячейки собирает
+ * `codeCellIds` из корня `cells` — и у комнаты, где тетрадь комнаты убрали, эти
+ * два ответа расходятся. Очередь при этом принимает только ячейки СВОЕЙ тетради
+ * (kernel/index.ts · requestRun), так что разойдясь, они дали бы Run All,
+ * который молча не делает ничего. Очередь спрашивает у самих ячеек.
+ */
+function rootOfCells(sessionId: string, ids: string[]): string {
+  for (const id of ids) {
+    const root = rootOf(sessionId, id)
+    if (root) return root
+  }
+  return CELLS_KEY
+}
+
 function rootOfBook(sessionId: string, book: string | undefined): string | null {
   const doc = getSessionDoc(sessionId).doc
   return book ? (bookAt(doc, book)?.root ?? null) : mainRoot(doc)
@@ -2242,8 +2323,20 @@ function atTheRemote(sessionId: string, payload: TokenPayload): boolean {
  * Потолок берётся из правила: «по одной» — одна ячейка на человека
  * одновременно. Это и делает правило границей, а не счётчиком нажатий:
  * скриптовый цикл получает одну ячейку в очереди и одну фразу.
+ *
+ * `root` — в чью очередь. Очередей теперь столько, сколько тетрадей, и потолок
+ * считается по каждой отдельно: «по одной» значит «по одной в тетради», иначе
+ * ячейка, считающаяся в лекции, запирала бы человеку его собственный черновик.
+ * Правило при этом комнатное (`getRules`, а не `rulesIn`) и таким остаётся:
+ * потолок очереди — не право доступа к тетради.
  */
-function queue(ws: WebSocket, sessionId: string, payload: TokenPayload, ids: string[]): void {
+function queue(
+  ws: WebSocket,
+  sessionId: string,
+  payload: TokenPayload,
+  ids: string[],
+  root: string = CELLS_KEY,
+): void {
   if (ids.length === 0) return
   const refused = requestRun(
     sessionId,
@@ -2251,6 +2344,7 @@ function queue(ws: WebSocket, sessionId: string, payload: TokenPayload, ids: str
     displayName(sessionId, payload.participantId),
     payload.participantId,
     runQueueCap(getRules(sessionId).run, payload.role),
+    root,
   )
   if (refused > 0) {
     send(ws, {
@@ -2478,7 +2572,7 @@ function trimToCursor(code: string, cursor: number): { code: string; cursor: num
  * Право на подсказку — то же самое, что право запустить ячейку.
  *
  * И это не осторожность ради осторожности. `complete_request` спрашивает
- * ЖИВОЕ ядро комнаты: по `df.` видно, какие у преподавателя переменные, по
+ * ЖИВОЕ ядро тетради: по `df.` видно, какие у преподавателя переменные, по
  * `_` — что он считал последним, а `__builtins__.` вместе со справкой читается
  * как оглавление чужого сеанса. Комната, где запускает преподаватель, — это
  * комната, где состояние ядра принадлежит ему; читать его через подсказку
@@ -2492,7 +2586,7 @@ function trimToCursor(code: string, cursor: number): { code: string; cursor: num
  * консилиум и открывают. В лекционной комнате (`run: 'host'`) прежнее правило
  * отказывало в нём каждому, и отказывало молча: имена приезжали из слов самой
  * ячейки, а столбцы настоящего `df`, ради которого задание и дано, — нет.
- * Обхода правила тут нет: попытка и так считается в ОБЩЕМ ядре комнаты
+ * Обхода правила тут нет: попытка и так считается в ядре СВОЕЙ тетради
  * (`council:run` с ручкой преподавателя), и то же состояние, которое подсказка
  * покажет, человек в этой ячейке и так может напечатать и запустить.
  *
@@ -2558,8 +2652,19 @@ function askKernel(
     return
   }
   const { code, cursor } = trimToCursor(message.code, message.cursor)
+  /*
+   * Спрашиваем ядро ТОЙ тетради, в которой набирают.
+   *
+   * Ядер теперь столько, сколько тетрадей, и дополнение обязано знать про
+   * переменные своего листа: `df.` в семинаре — это `df` семинара, а не тот,
+   * что преподаватель загрузил на лекции. Кадр называет ячейку; ячейка — свою
+   * тетрадь. Ячейки нет (пишут в пустом месте) — тетрадь комнаты, как раньше.
+   */
+  const askRoot = (message.cellId ? rootOf(sessionId, message.cellId) : null) ?? CELLS_KEY
   const answer =
-    message.t === 'complete' ? completeIn(sessionId, code, cursor) : inspectIn(sessionId, code, cursor)
+    message.t === 'complete'
+      ? completeIn(sessionId, code, cursor, askRoot)
+      : inspectIn(sessionId, code, cursor, askRoot)
   void answer
     .then((result) => {
       if (result === null) {
@@ -2740,7 +2845,7 @@ export function dispatch(
       ) {
         return
       }
-      queue(ws, sessionId, payload, [id])
+      queue(ws, sessionId, payload, [id], rootOf(sessionId, id) ?? CELLS_KEY)
       return
     }
 
@@ -2792,7 +2897,7 @@ export function dispatch(
         send(ws, { t: 'error', message: NO_SUCH_BOOK() })
         return
       }
-      queue(ws, sessionId, payload, ids)
+      queue(ws, sessionId, payload, ids, rootOfCells(sessionId, ids))
       return
     }
 
@@ -2813,16 +2918,36 @@ export function dispatch(
         send(ws, { t: 'error', message: NO_SUCH_BOOK() })
         return
       }
-      queue(ws, sessionId, payload, ids)
+      queue(ws, sessionId, payload, ids, rootOfCells(sessionId, ids))
       return
     }
 
     case 'interrupt': {
       /*
+       * Какую тетрадь останавливаем.
+       *
+       * Названная ячейка сильнее имени листа: она и есть та работа, ради
+       * которой нажали, а лист приезжает из вкладки, которая в этот момент
+       * открыта. Без обоих — тетрадь комнаты, то есть прежнее поведение кадра
+       * от вкладки, открытой до появления нескольких ядер.
+       */
+      const stopBook = bookOf(message)
+      const stopRoot = rootOfBook(sessionId, stopBook)
+      if (stopBook && stopRoot === null) {
+        send(ws, { t: 'error', message: NO_SUCH_BOOK() })
+        return
+      }
+      const here = stopRoot ?? CELLS_KEY
+      /*
        * The host can always stop the kernel. So can whoever started the cell
        * that is running: they are stopping their own work, only one cell runs
-       * at a time, and a seminar with no teacher in the room otherwise has no
-       * way at all to end a loop that will not end itself.
+       * at a time in a notebook, and a seminar with no teacher in the room
+       * otherwise has no way at all to end a loop that will not end itself.
+       *
+       * Право спрашивается про ВСЁ занятие, а не про названную тетрадь:
+       * человек, у которого считается ячейка в семинаре, остаётся хозяином
+       * своей работы, какую бы вкладку ни держал открытой. Тетрадь решает, что
+       * именно остановится, — не кто вправе нажать.
        *
        * By participant id, not by name — two students called Anna are two
        * people, and a name is not a credential.
@@ -2852,14 +2977,15 @@ export function dispatch(
        * чужие пачки не трогай.
        */
       const target = optionalId(message.cellId)
-      if (!target && payload.role !== 'host' && !queueIsOnly(sessionId, payload.participantId)) {
+      // Очередь разбирается у ОДНОЙ тетради — у неё и спрашиваем, чья она.
+      if (!target && payload.role !== 'host' && !queueIsOnly(sessionId, payload.participantId, here)) {
         send(ws, {
           t: 'error',
           message: tr("server.otherParticipantsHaveQueuedCellsStopYour.32a330"),
         })
         return
       }
-      void interruptSession(sessionId, target).then(() => {
+      void interruptSession(sessionId, target, here).then(() => {
         appendActivity(sessionId, payload.participantId, 'execution.interrupted', target ? { cellId: target } : {}, payload.role)
       }).catch((err: unknown) => {
         send(ws, {
@@ -2871,13 +2997,30 @@ export function dispatch(
     }
 
     case 'restart': {
-      // Перезапуск сбрасывает все переменные у всей комнаты, поэтому по
-      // умолчанию он преподавательский; но комната, где работают вдвоём,
-      // вправе решить иначе.
+      /*
+       * Перезапуск уносит переменные ОДНОЙ тетради — той, что названа; без
+       * имени — тетради комнаты, как у вкладки, открытой до выкатки.
+       */
+      const restartBook = bookOf(message)
+      const restartRoot = rootOfBook(sessionId, restartBook)
+      if (restartBook && restartRoot === null) {
+        send(ws, { t: 'error', message: NO_SUCH_BOOK() })
+        return
+      }
+      /*
+       * Право — по ТЕТРАДИ, а не только по комнате.
+       *
+       * По умолчанию перезапуск преподавательский: он сбрасывает переменные
+       * занятия, и комната, где работают вдвоём, вправе решить иначе. Но в
+       * личной тетради студента ядро своё и переменные свои, и спрашивать на
+       * них преподавателя — значит поднимать руку посреди лекции, чтобы заново
+       * объявить `x` в собственном черновике. Развилка живёт в одном месте
+       * (shared/rules.ts · rulesForBook), и здесь мы просто её спрашиваем.
+       */
       if (
         !may(
           sessionId,
-          getRules(sessionId).restart,
+          rulesIn(sessionId, payload, restartRoot).restart,
           payload,
           ws,
           tr("server.onlyTheHostCanRestartTheKernel.987dcb"),
@@ -2885,7 +3028,11 @@ export function dispatch(
       ) {
         return
       }
-      void restartSession(sessionId, displayName(sessionId, payload.participantId)).then(() => {
+      void restartSession(
+        sessionId,
+        displayName(sessionId, payload.participantId),
+        restartRoot ?? CELLS_KEY,
+      ).then(() => {
         appendActivity(sessionId, payload.participantId, 'execution.restarted', {}, payload.role)
       }).catch(
         (err: unknown) => {
@@ -2905,28 +3052,37 @@ export function dispatch(
        * собой в собственной ячейке, чего никто не имел в виду.
        */
       const one = optionalId(message.cellId)
-      const rules = getRules(sessionId)
-      /*
-       * У своей ячейки — то же право, что у набора в ней, ЗАМОК ВКЛЮЧАЯ.
-       * Открытая преподавателем ячейка — это «здесь комната работает»: зал в
-       * ней печатает и запускает, а на «стереть вывод» читал отказ про
-       * тетрадь, которую ему только что открыли, — про свой же трейсбек на
-       * пол-экрана.
-       */
-      const allowed = one
-        ? mayEditThis(sessionId, payload, ws, one)
-        : may(sessionId, rules.wipe, payload, ws, tr("server.onlyTheTeacherMayEraseTheWhole.56250d"))
-      if (!allowed) return
       const book = bookOf(message)
       /*
        * Названная тетрадь обязана существовать: ниже неизвестный путь означает
        * «тетрадь не названа», а это стёртые выводы ВСЕХ тетрадей комнаты —
        * полтора часа счёта, снятые нажатием в закрывающейся вкладке.
        */
-      if (book && !cellsAt(getSessionDoc(sessionId).doc, book)) {
+      const wipeRoot = rootOfBook(sessionId, book)
+      if (book && wipeRoot === null) {
         send(ws, { t: 'error', message: NO_SUCH_BOOK() })
         return
       }
+      /*
+       * У своей ячейки — то же право, что у набора в ней, ЗАМОК ВКЛЮЧАЯ.
+       * Открытая преподавателем ячейка — это «здесь комната работает»: зал в
+       * ней печатает и запускает, а на «стереть вывод» читал отказ про
+       * тетрадь, которую ему только что открыли, — про свой же трейсбек на
+       * пол-экрана.
+       *
+       * У целого листа — право ТОЙ тетради: в личной вывод собственный, и
+       * стирает его автор (shared/rules.ts · rulesForBook).
+       */
+      const allowed = one
+        ? mayEditThis(sessionId, payload, ws, one)
+        : may(
+            sessionId,
+            rulesIn(sessionId, payload, wipeRoot).wipe,
+            payload,
+            ws,
+            whyIn(sessionId, payload, wipeRoot, tr("server.onlyTheTeacherMayEraseTheWhole.56250d")),
+          )
+      if (!allowed) return
       clearOutputs(sessionId, one, book)
       return
     }
@@ -4167,7 +4323,7 @@ export function dispatch(
            * Предел снимается с ячейки в секунду нажатия и едет с заданием: ядро
            * документа не читает (kernel/council.ts · CouncilJob.limitSec).
            * Касается и преподавательских запусков: жирный код не становится
-           * легче оттого, кто нажал, а ядро одно на всю комнату.
+           * легче оттого, кто нажал, а ядро одно на всю тетрадь.
            */
           limitSec: settings.runLimitSec,
           /*
@@ -4991,7 +5147,18 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   // Переподключившаяся вкладка — это ровно тот, кто приносит с собой ячейку,
   // «работающую» в процессе, которого больше нет. Один проход на подключение.
   sweepOrphanRuns(sessionId)
-  send(ws, { t: 'ready', kernel: kernelStatus(sessionId) })
+  /*
+   * `kernel` — состояние тетради комнаты, как и было: вкладка, открытая до
+   * появления нескольких ядер, читает только его. `kernels` — по тетрадям, для
+   * той, что умеет. Дальше и то и другое живёт в документе (`meta.kernels`), и
+   * этот кадр только про первый миг, пока sync ещё едет.
+   */
+  send(ws, {
+    t: 'ready',
+    kernel: kernelStatus(sessionId),
+    kernels: kernelStatuses(sessionId),
+    ownKernels: kernelBackend() === 'docker',
+  })
   send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
   /*
    * Дерево — из общего кэша комнаты: после перезапуска сервера сюда приходят

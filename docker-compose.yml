@@ -46,6 +46,11 @@ services:
       KERNEL_CPUS: ${KERNEL_CPUS:-2}
       KERNEL_GPUS: ${KERNEL_GPUS:-}
       KERNEL_SHM: ${KERNEL_SHM:-1g}
+      # The second container per class, the one holding students' personal
+      # notebooks: how many kernels may live in it and how many processes it
+      # may hold. It never receives a GPU slice.
+      KERNEL_OWN_MAX: ${KERNEL_OWN_MAX:-40}
+      KERNEL_OWN_PIDS: ${KERNEL_OWN_PIDS:-2048}
       TZ: ${TZ:-Europe/Moscow}
     # Docker socket access is root-equivalent and is development-only.
     group_add:

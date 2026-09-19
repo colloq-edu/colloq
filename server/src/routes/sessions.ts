@@ -33,7 +33,7 @@ import {
 import { onlineParticipantIds } from '../collab/index.js'
 import { freeMark } from '@shared/marks'
 import { seldom, tally } from '../log.js'
-import { ensureKernel } from '../kernel/index.js'
+import { ensureKernel, syncBookKernels } from '../kernel/index.js'
 import { forgetResources, readCpuInput, readMemoryInput } from '../kernel/resources.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { publicationOf, stepCount } from '../publish/store.js'
@@ -870,6 +870,13 @@ export function sessionRoutes(): Router {
       return res.status(400).json({ error: tr("server.rulesMustBeAnObject.c2a9d1") })
     }
     const rules = setRules(sessionId, readRules({ ...storedRules(sessionId), ...incoming }))
+    /*
+     * Доступ тетради решает, в каком контейнере её ядро: у личной он свой, без
+     * GPU занятия (shared/rules.ts · bookHasOwnKernel). Переселить живой
+     * процесс нельзя — значит, ядро тетради, у которой доступ поменялся,
+     * гасится, и комната читает об этом строкой в журнале ядра.
+     */
+    syncBookKernels(sessionId)
     /*
      * Комната узнаёт сейчас, а не при следующей перезагрузке: интерфейс гасит
      * по этому кнопки, и правило, о котором не сказали, выглядит как поломка —

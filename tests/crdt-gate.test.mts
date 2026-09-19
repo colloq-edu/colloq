@@ -23,6 +23,7 @@ import {
   bookCells,
   CELLS_KEY,
   CHAT_KEY,
+  KERNELS_KEY,
   META_KEY,
   TERMINAL_KEY,
 } from '../shared/notebook.js'
@@ -236,6 +237,41 @@ test('объявить ядро мёртвым здоровой комнате �
   const { server, client, frame } = pair()
   const bytes = frame(() => client.getMap(META_KEY).set('kernelStatus', 'dead'))
   assert.ok(refused(classify(server, bytes)))
+})
+
+test('карта ядер по тетрадям клиенту закрыта так же, как прежний ключ', () => {
+  /*
+   * Состояние ядер переехало в `meta.kernels` — карту корень → что с ним. Она
+   * такая же серверная запись, как `kernelStatus` рядом: по ней рисуется
+   * плашка тетради, счётчик очереди и то, включена ли кнопка «Прервать».
+   * Вкладка, которой дали бы туда писать, объявляла бы соседям, что их ядро
+   * свободно, пока оно считает, — и наоборот.
+   */
+  const named = pair()
+  assert.ok(
+    refused(classify(named.server, named.frame(() => {
+      const kernels = new Y.Map<unknown>()
+      kernels.set('cells', 'idle')
+      named.client.getMap(META_KEY).set(KERNELS_KEY, kernels)
+    }))),
+    'клиент завёл карту ядер',
+  )
+
+  // И внутрь уже существующей записи — тоже: сервер её создаёт, клиент читает.
+  const inside = pair()
+  inside.server.transact(() => {
+    const kernels = new Y.Map<unknown>()
+    const entry = new Y.Map<unknown>()
+    entry.set('status', 'busy')
+    kernels.set('cells', entry)
+    inside.server.getMap(META_KEY).set(KERNELS_KEY, kernels)
+  }, 'server')
+  Y.applyUpdate(inside.client, Y.encodeStateAsUpdate(inside.server))
+  const bytes = inside.frame(() =>
+    ((inside.client.getMap(META_KEY).get(KERNELS_KEY) as Y.Map<any>).get('cells') as Y.Map<any>)
+      .set('status', 'idle'),
+  )
+  assert.ok(refused(classify(inside.server, bytes)), 'клиент переписал состояние чужого ядра')
 })
 
 test('строка в терминал от чужого имени не проходит', () => {

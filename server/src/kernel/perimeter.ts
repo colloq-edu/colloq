@@ -160,6 +160,23 @@ export function pidsLimit(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isInteger(value) && value >= 64 ? value : 512
 }
 
+/**
+ * Потолок процессов КОНТЕЙНЕРА ЛИЧНЫХ ТЕТРАДЕЙ: KERNEL_OWN_PIDS, по умолчанию 2048.
+ *
+ * Отдельное число, потому что считает он другое. В контейнере комнаты живёт
+ * одно ядро на тетрадь занятия плюс терминал; в контейнере личных тетрадей —
+ * десятки ядер сразу, по одному на открытый черновик, и каждое ipykernel
+ * держит полтора десятка потоков само по себе. Комнатных 512 не хватает уже на
+ * тридцати ядрах, и кончается это не отказом, а `BlockingIOError` посреди
+ * чужого запуска. 2048 — те же 512 «на комнату», умноженные на потолок живых
+ * ядер (pool.ts · ownKernelMax): fork-бомба по-прежнему упирается в стенку, а
+ * стенка эта — не у соседа.
+ */
+export function ownPidsLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const value = Number((env.KERNEL_OWN_PIDS ?? '').trim())
+  return Number.isInteger(value) && value >= 64 ? value : 2048
+}
+
 /** KERNEL_ROOM_SUBNET, если он — настоящий IPv4 CIDR; иначе умолчание. */
 export function roomSubnetSetting(env: NodeJS.ProcessEnv = process.env): { subnet: string; explicit: boolean } {
   const raw = (env.KERNEL_ROOM_SUBNET ?? '').trim()
@@ -184,7 +201,11 @@ export function roomSubnetSetting(env: NodeJS.ProcessEnv = process.env): { subne
  * ядро по OOM. seccomp не трогаем — остаётся профиль docker по умолчанию, тот
  * же RuntimeDefault, что в проде.
  */
-export function roomHardeningArgs(env: NodeJS.ProcessEnv = process.env): string[] {
+export function roomHardeningArgs(
+  env: NodeJS.ProcessEnv = process.env,
+  /** Контейнер личных тетрадей считает процессы по своему потолку — `ownPidsLimit`. */
+  role: 'room' | 'own' = 'room',
+): string[] {
   return [
     // Тот же uid, что в образе и в проде (runAsUser/runAsGroup 1000): образ,
     // собранный кем-то с `USER root` в конце, не станет root-комнатой.
@@ -193,7 +214,7 @@ export function roomHardeningArgs(env: NodeJS.ProcessEnv = process.env): string[
     // setuid-файлы и file capabilities больше ничего не дают — ни su, ни
     // бинарю, который студент поставил себе сам.
     '--security-opt=no-new-privileges',
-    `--pids-limit=${pidsLimit(env)}`,
+    `--pids-limit=${role === 'own' ? ownPidsLimit(env) : pidsLimit(env)}`,
     // Без IPv6 вообще: правил для v6 нет, значит, не должно быть и адресов.
     '--sysctl=net.ipv6.conf.all.disable_ipv6=1',
     '--sysctl=net.ipv6.conf.default.disable_ipv6=1',

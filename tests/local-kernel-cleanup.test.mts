@@ -38,7 +38,10 @@ test('final cleanup removes only database-owned Docker containers and keeps file
   assert.equal(seed.status,0,seed.stderr)
   const cleanup=spawnSync(process.execPath,['--import','tsx','server/src/ops/local-cleanup.ts'],{env,encoding:'utf8',timeout:10000})
   assert.equal(cleanup.status,0,cleanup.stderr)
-  assert.deepEqual(fs.readFileSync(log,'utf8').trim().split('\n').map(l=>JSON.parse(l)),[['rm','-f','colloq-room-my-room']])
+  // Оба контейнера комнаты: её собственный и контейнер личных тетрадей её
+  // студентов. Остановка инстанса обязана унести и второй, иначе он доживает
+  // до `make down` уже без сервера, который знал бы о нём.
+  assert.deepEqual(fs.readFileSync(log,'utf8').trim().split('\n').map(l=>JSON.parse(l)),[['rm','-f','colloq-room-my-room'],['rm','-f','colloq-room-my-room-own']])
   const late=spawnSync(process.execPath,['--import','tsx','--input-type=module','-e',"import assert from 'node:assert/strict';import {dropLocalRoomKernel,endpointForSession} from './server/src/kernel/pool.ts';import {closeDatabase} from './server/src/db.ts';await dropLocalRoomKernel('my-room');await assert.rejects(endpointForSession('my-room',null),/stopping|останов/);closeDatabase()"],{env:{...env,KERNEL_ISOLATION:'on'},encoding:'utf8',timeout:10000})
   assert.equal(late.status,0,late.stderr)
   assert.equal(fs.readFileSync(path.join(workspace,'notebook.ipynb'),'utf8'),'preserved')

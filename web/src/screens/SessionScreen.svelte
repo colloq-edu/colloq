@@ -45,9 +45,16 @@
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
   import { onLanguageChange } from '@/lib/i18n.svelte'
   import type { PaletteItem } from '@/components/ui/palette'
-  import { watchBooks, watchCellNumbers, watchNotebookMeta } from '@/lib/yreactive.svelte'
+  import {
+    watchBookBusy,
+    watchBookKernel,
+    watchBooks,
+    watchCellNumbers,
+    watchNotebookMeta,
+  } from '@/lib/yreactive.svelte'
   import { kernelProblemAdvice } from '@shared/kernel-problem'
   import {
+    CELLS_KEY,
     cellLock,
     cellSource,
     findCell,
@@ -543,25 +550,6 @@
     dead: { get label() { return tr('room.kernel.state.dead') }, dot: 'bg-danger', alarm: true },
   }
 
-  const kernel = $derived(KERNEL[meta.current.kernelStatus])
-
-  /*
-   * Почему Python комнаты не поднялся — совет ведущему, и только ему.
-   *
-   * Pod комнаты на k3s не встаёт, когда узлу нечего дать: память каждой
-   * комнаты зарезервирована целиком. Студент видит в ячейке и журнале ядра
-   * короткое «на сервере нет места, преподаватель видит причину», а исправить
-   * это может только тот, кто меняет память комнат, — ему здесь сказано, что
-   * именно уменьшить. Висит, пока ядро мертво по этой причине; закрытый
-   * крестиком возвращается только с новым советом (другое число, другой ресурс).
-   */
-  const kernelAdvice = $derived(
-    isHost && meta.current.kernelStatus === 'dead' && meta.current.kernelProblem
-      ? kernelProblemAdvice(meta.current.kernelProblem)
-      : null,
-  )
-  let adviceDismissed = $state<string | null>(null)
-  const adviceUp = $derived(kernelAdvice !== null && kernelAdvice !== adviceDismissed)
 
   /* ------------------------------------------------------------- layout */
 
@@ -665,13 +653,54 @@
    * может переписать любой). Складываются они здесь, по корню: путь файла
    * переименовывают, корень — нет.
    */
+  const bookBusy = watchBookBusy(session.doc)
   const bookTabs = $derived(
     books.current.map((book) => ({
       path: book.path,
       root: book.root,
       rule: roomRules.books?.[book.root] ?? null,
+      // Ядро у каждой тетради своё: точка на вкладке говорит, что соседний
+      // лист считает прямо сейчас, — иначе туда надо переключаться, чтобы
+      // узнать, идёт ли ещё.
+      busy: bookBusy.busy(book.root),
     })),
   )
+
+  /**
+   * Тетрадь, о чьём ядре говорит индикатор в шапке, — ОТКРЫТАЯ.
+   *
+   * Ядро у каждой тетради своё (server/src/kernel/index.ts), и «ГОТОВО» над
+   * семинаром, пока лекция считает, — это правда про семинар, а не недосмотр.
+   * Когда открыта не тетрадь (доска, .py, лекция), шапка говорит про тетрадь
+   * комнаты: индикатор про занятие, а не про вкладку, и молчать ему нельзя.
+   *
+   * Стоит ПОСЛЕ списка тетрадей и вкладок намеренно: он их читает.
+   */
+  const openRoot = $derived(
+    (activeKind === 'notebook' && activePath
+      ? books.current.find((entry) => entry.path === activePath)?.root
+      : books.current[0]?.root) ?? CELLS_KEY,
+  )
+  const openKernel = watchBookKernel(session.doc, () => openRoot)
+  const kernel = $derived(KERNEL[openKernel.current.kernelStatus])
+
+  /*
+   * Почему Python комнаты не поднялся — совет ведущему, и только ему.
+   *
+   * Pod комнаты на k3s не встаёт, когда узлу нечего дать: память каждой
+   * комнаты зарезервирована целиком. Студент видит в ячейке и журнале ядра
+   * короткое «на сервере нет места, преподаватель видит причину», а исправить
+   * это может только тот, кто меняет память комнат, — ему здесь сказано, что
+   * именно уменьшить. Висит, пока ядро мертво по этой причине; закрытый
+   * крестиком возвращается только с новым советом (другое число, другой ресурс).
+   */
+  const kernelAdvice = $derived(
+    isHost && openKernel.current.kernelStatus === 'dead' && openKernel.current.kernelProblem
+      ? kernelProblemAdvice(openKernel.current.kernelProblem)
+      : null,
+  )
+  let adviceDismissed = $state<string | null>(null)
+  const adviceUp = $derived(kernelAdvice !== null && kernelAdvice !== adviceDismissed)
 
   /**
    * Сменить доступ к одной тетради.
@@ -1552,7 +1581,9 @@
       'interrupt',
       tr('room.ui.964'),
       live && may.run,
-      () => session.send({ t: 'interrupt' }),
+      // Лист называется, как и у соседних строк: очередей столько же, сколько
+      // тетрадей, и безымянное нажатие разобрало бы чужую.
+      () => session.send({ t: 'interrupt', book: book ?? undefined }),
       undefined,
       "interrupt stop прервать",
     )
@@ -3072,6 +3103,7 @@
         rules={roomRules}
         busy={rulesBusy}
         instance={oracleLimits}
+        ownKernels={session.ownKernels}
         onchange={setRule}
       />
     </div>

@@ -272,7 +272,8 @@ test('опасная команда спрашивает, «нет» даёт к
   const result = await run(['stop'], { commands: fakeCommands(), answer: 'n', tty: true })
   assert.equal(result.code, 4)
   assert.deepEqual(result.calls, [
-    ['capture', 'docker', 'ps', '--filter', 'label=colloq.kind=room-kernel', '--format', '{{.ID}}'],
+    // Считаются ЗАНЯТИЯ, а не контейнеры: у одного их два (pool.ts · KernelRole).
+    ['capture', 'docker', 'ps', '--filter', 'label=colloq.kind=room-kernel', '--format', '{{.Label "colloq.session"}}'],
   ])
   assert.match(result.asked[0] ?? '', /stop the server\? \[y\/N\]/)
   assert.deepEqual(result.out, ['cancelled'])

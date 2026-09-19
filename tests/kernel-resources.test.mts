@@ -345,7 +345,12 @@ test('сброс ядер в панели возвращает живому ко
     })
     assert.equal(reset.status, 200)
     assert.equal(sessionCpus(id), null)
-    assert.deepEqual(calls, [['update', '--cpus=1.5', `colloq-room-${id}`]])
+    // Обоим контейнерам комнаты: у личных тетрадей свой cgroup, и сброс,
+    // доехавший до одного, оставил бы второй на прежнем числе.
+    assert.deepEqual(calls, [
+      ['update', '--cpus=1.5', `colloq-room-${id}`],
+      ['update', '--cpus=1.5', `colloq-room-${id}-own`],
+    ])
   } finally {
     useDockerForLimits(null)
     if (previous === undefined) delete process.env.KERNEL_CPUS
@@ -459,10 +464,23 @@ test('живой комнате ядра меняют docker update --cpus', asy
     return { code: 0, out: '' }
   })
   assert.equal(await applyCpuLimit('res-live-cpu', 6), 'applied')
-  assert.equal(calls.length, 1)
-  assert.equal(calls[0][0], 'update')
-  assert.ok(calls[0].includes('--cpus=6'), JSON.stringify(calls[0]))
-  assert.ok(calls[0].includes('colloq-room-res-live-cpu'), JSON.stringify(calls[0]))
+  /*
+   * ОБА контейнера комнаты, и это поле в форме занятия обещает именно так.
+   *
+   * Контейнеров у комнаты два: её собственный и контейнер личных тетрадей её
+   * студентов (pool.ts · KernelRole). cgroup у них раздельные — в том и смысл
+   * второго, — так что «выдать комнате шесть ядер» это два `docker update`, а
+   * не один. Выдать одному значило бы оставить черновики студентов на числе
+   * инстанса, о чём в форме не сказано ни слова.
+   */
+  assert.deepEqual(
+    calls.map((args) => args.at(-1)),
+    ['colloq-room-res-live-cpu', 'colloq-room-res-live-cpu-own'],
+  )
+  for (const args of calls) {
+    assert.equal(args[0], 'update')
+    assert.ok(args.includes('--cpus=6'), JSON.stringify(args))
+  }
   useDockerForLimits(null)
 })
 
@@ -538,23 +556,27 @@ test('живой комнате память меняют docker update, обо�
     return { code: 0, out: '' }
   })
   assert.equal(await applyMemoryLimit('res-live', 8192), 'applied')
-  assert.equal(calls.length, 1)
-  const args = calls[0]
-  assert.equal(args[0], 'update')
-  /*
-   * Оба флага вместе, и это не перестраховка: `--memory` без `--memory-swap`
-   * docker отвергает всякий раз, когда новая память больше старого swap, — то
-   * есть ровно тогда, когда лимит поднимают после смерти ядра по памяти.
-   */
-  assert.ok(args.includes('--memory=8192m'), JSON.stringify(args))
-  assert.ok(args.includes('--memory-swap=8192m'), JSON.stringify(args))
-  // Контейнер спрашивается по имени комнаты, а не по чему-то угаданному.
-  assert.ok(args.includes('colloq-room-res-live'), JSON.stringify(args))
+  // Обоим контейнерам комнаты — по доводу у теста про ядра выше.
+  assert.deepEqual(
+    calls.map((args) => args.at(-1)),
+    ['colloq-room-res-live', 'colloq-room-res-live-own'],
+  )
+  for (const args of calls) {
+    assert.equal(args[0], 'update')
+    /*
+     * Оба флага вместе, и это не перестраховка: `--memory` без `--memory-swap`
+     * docker отвергает всякий раз, когда новая память больше старого swap, — то
+     * есть ровно тогда, когда лимит поднимают после смерти ядра по памяти.
+     */
+    assert.ok(args.includes('--memory=8192m'), JSON.stringify(args))
+    assert.ok(args.includes('--memory-swap=8192m'), JSON.stringify(args))
+  }
   useDockerForLimits(null)
 })
 
 test('комнаты без контейнера — не ошибка: число возьмёт следующий пуск', async () => {
   useDockerForLimits(async () => ({ code: 1, out: 'Error: No such container: colloq-room-res-cold' }))
+  // Ни одного контейнера — ни комнаты, ни личных тетрадей: число ждёт пуска.
   assert.equal(await applyMemoryLimit('res-cold', 4096), 'pending')
   useDockerForLimits(async () => ({ code: 1, out: 'permission denied while trying to connect' }))
   assert.equal(await applyMemoryLimit('res-cold', 4096), 'failed')

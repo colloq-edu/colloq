@@ -54,7 +54,7 @@ const requests: { code: string; store_history: boolean; silent: boolean }[] = []
  * with an aborted reply and an idle status; without that the caller waits for
  * ever, which is a property of this fake and not of the thing being tested.
  */
-let held: Array<{ socket: WebSocket; parent: unknown; asked?: boolean }> = []
+let held: Array<{ socket: WebSocket; parent: unknown; asked?: boolean; code?: string }> = []
 
 /**
  * Отчёт входа изоляции консилиума (kernel/council-isolation.ts).
@@ -251,9 +251,18 @@ before(async () => {
          * не начиналась вовсе, а тест падал пятью секундами ожидания.
          */
         const service = msg.content.silent === true
-        if (swallowExecutes) {
+        /*
+         * `HOLD` — ячейка, которая не кончается, пока её не отпустят ПОИМЁННО.
+         *
+         * `swallowExecutes` — флаг на всю подделку, и для одного ядра этого
+         * хватало. Ядер теперь столько, сколько тетрадей, и главное про них —
+         * что считают они ПАРАЛЛЕЛЬНО: проверить это можно, только удержав
+         * одно, пока второе отвечает. Метка стоит в коде ячейки, так что
+         * держится ровно то ядро, которому её послали.
+         */
+        if (swallowExecutes || (!service && /HOLD/.test(msg.content.code))) {
           reply(ws, msg.header, 'status', { execution_state: 'busy' })
-          held.push({ socket: ws, parent: msg.header, asked })
+          held.push({ socket: ws, parent: msg.header, asked, code: msg.content.code })
           return
         }
         reply(ws, msg.header, 'status', { execution_state: 'busy' })
@@ -393,6 +402,21 @@ function say(text: string): void {
   const [first] = held
   assert.ok(first, 'wait for the fake to receive execute_request before injecting output')
   reply(first.socket, first.parent, 'stream', { name: 'stdout', text })
+}
+
+/** Отпустить только те задержанные запросы, чей код подходит под образец. */
+function finishHeld(match: RegExp): number {
+  const mine = held.filter((one) => match.test(one.code ?? ''))
+  held = held.filter((one) => !match.test(one.code ?? ''))
+  for (const { socket, parent, asked } of mine) {
+    reply(socket, parent, 'execute_reply', {
+      status: 'ok',
+      execution_count: 1,
+      ...councilExpressions(asked === true),
+    })
+    reply(socket, parent, 'status', { execution_state: 'idle' })
+  }
+  return mine.length
 }
 
 /** Let the held request finish, the way a kernel does when the cell ends. */
@@ -2059,4 +2083,318 @@ test('пока ячейка пишет вывод, комнату из памя�
 
   // Писатель отпустил — и комната стала обычной пустой комнатой.
   assert.ok(sweepIdleRooms(hour).includes(room.id), 'комната осталась удержанной навсегда')
+})
+
+/* ------------------------------------------------------ тетрадь = ядро */
+
+/**
+ * Вторая тетрадь в той же комнате — со своей ячейкой.
+ *
+ * Корень у неё `nb:…`, а не `cells`: `cells` достаётся только первой и только
+ * пока комната ни одной не заводила (shared/notebook.ts · rootForNewBook), а
+ * `seminar()` выше комнату уже открыл, то есть тетрадь ей уже приписана.
+ */
+async function secondBook(room: Awaited<ReturnType<typeof seminar>>, path = 'Семинар.ipynb') {
+  const { addBook, bookCells, cellSource, createCell } = await import('../shared/notebook.js')
+  const book = addBook(room.doc, path)
+  const cell = createCell('code', '')
+  bookCells(room.doc, book.root).push([cell])
+  return {
+    path,
+    root: book.root,
+    cell,
+    id: cell.get('id') as string,
+    type: (source: string) => {
+      const text = cellSource(cell)
+      text.delete(0, text.length)
+      text.insert(0, source)
+    },
+    state: () => cell.get('state'),
+    execCount: () => cell.get('execCount') as number | null,
+  }
+}
+
+test('две тетради — два ядра: переменные и очереди у них раздельные', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { jupyterSessionPath } = await import('../server/src/kernel/jupyter.js')
+  const { CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const other = await secondBook(room)
+
+  room.type('HOLD lecture')
+  other.type('print("seminar")')
+  requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
+  assert.ok(await until(() => room.state() === 'running'), 'лекция не пошла в работу')
+
+  /*
+   * Главное утверждение всей правки: пока лекция считает, семинар СЧИТАЕТСЯ, а
+   * не стоит за ней в очереди. До этого шага ядро и насос были одни на комнату,
+   * и вторая тетрадь ждала бы конца первой.
+   */
+  requestRun(room.id, [other.id], 'Student', 'p_student', undefined, other.root)
+  assert.ok(await until(() => other.state() === 'ok'), 'семинар не досчитался при занятой лекции')
+  assert.equal(room.state(), 'running', 'лекцию отпустило чужое ядро')
+
+  // Два ядра — это две СЕССИИ Jupyter, по одной на путь; путь и есть ключ.
+  assert.ok(byPath.has(jupyterSessionPath(room.id, CELLS_KEY)), [...byPath.keys()].join(', '))
+  assert.ok(byPath.has(jupyterSessionPath(room.id, other.root)), [...byPath.keys()].join(', '))
+  assert.notEqual(
+    byPath.get(jupyterSessionPath(room.id, CELLS_KEY)),
+    byPath.get(jupyterSessionPath(room.id, other.root)),
+    'обе тетради попали в одно ядро',
+  )
+
+  assert.equal(finishHeld(/HOLD/), 1)
+  assert.ok(await until(() => room.state() === 'ok'))
+})
+
+test('путь сессии тетради комнаты — прежний, и выкатка не заводит ей второе ядро', async () => {
+  const { jupyterSessionPath, jupyterSessionName } = await import('../server/src/kernel/jupyter.js')
+  const { CELLS_KEY } = await import('../shared/notebook.js')
+  /*
+   * Комната, которая идёт прямо сейчас, после обновления сервера обязана найти
+   * СВОЁ живое ядро. Сессии Jupyter опознаются по пути, так что путь тетради
+   * `cells` — это обратная совместимость целиком, одной строкой.
+   */
+  assert.equal(jupyterSessionPath('r1', CELLS_KEY), 'r1/session.ipynb')
+  assert.equal(jupyterSessionName('r1', CELLS_KEY), 'r1')
+  // У остальных путь свой — и без двоеточия, которое корень `nb:` приносит.
+  assert.equal(jupyterSessionPath('r1', 'nb:b_abc12345'), 'r1/session-nb-b_abc12345.ipynb')
+  assert.equal(jupyterSessionName('r1', 'nb:b_abc12345'), 'r1#nb:b_abc12345')
+})
+
+test('перезапуск одной тетради не трогает соседнюю', async () => {
+  const { requestRun, restartSession } = await import('../server/src/kernel/index.js')
+  const { CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const other = await secondBook(room)
+  room.type('print("lecture")')
+  other.type('print("seminar")')
+  requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
+  assert.ok(await until(() => room.state() === 'ok'))
+  requestRun(room.id, [other.id], 'Student', 'p_student', undefined, other.root)
+  assert.ok(await until(() => other.state() === 'ok'))
+  const lectureRun = room.cell.get('execCount') as number | null
+  assert.ok(lectureRun !== null, 'номер выполнения у лекции не записался')
+
+  await restartSession(room.id, 'Аким', other.root)
+  /*
+   * Перезапуск уносит номера выполнений СВОЕЙ тетради — переменных у неё
+   * больше нет, и `Out [7]` над прошлым выводом врал бы. Соседняя тетрадь при
+   * этом не трогалась: её процесс жив, и объявлять её результаты
+   * недействительными не за что.
+   */
+  assert.equal(other.execCount(), null, 'номер выполнения в перезапущенной тетради остался')
+  assert.equal(room.cell.get('execCount'), lectureRun, 'перезапуск обнулил соседнюю тетрадь')
+  assert.equal(room.state(), 'ok')
+})
+
+test('состояние ядер лежит по тетрадям, а тетрадь комнаты ещё и зеркалится в прежние ключи', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { bookKernel, CELLS_KEY, getMeta } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const other = await secondBook(room)
+  room.type('print("lecture")')
+  other.type('HOLD seminar')
+  requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
+  assert.ok(await until(() => room.state() === 'ok'))
+  requestRun(room.id, [other.id], 'Student', 'p_student', undefined, other.root)
+  assert.ok(await until(() => bookKernel(room.doc, other.root).runningCell === other.id))
+
+  const meta = getMeta(room.doc)
+  // Зеркало — ровно тетрадь комнаты: она свободна, и старая вкладка видит это.
+  assert.equal(meta.get('runningCell'), null, 'зеркало показало чужую работающую ячейку')
+  assert.equal(bookKernel(room.doc, CELLS_KEY).runningCell, null)
+  assert.equal(meta.get('kernelStatus'), bookKernel(room.doc, CELLS_KEY).status)
+  assert.equal(bookKernel(room.doc, other.root).status, 'busy')
+
+  assert.equal(finishHeld(/HOLD/), 1)
+  assert.ok(await until(() => other.state() === 'ok'))
+
+  /*
+   * И очередь: ожидающие СЕМИНАРА в зеркало не попадают.
+   *
+   * Зеркало читает вкладка, открытая до выкатки, и по нему же считается чип
+   * «2 в очереди». Показать в нём чужую очередь значило бы сказать лекции, что
+   * её ядро занято, когда оно свободно.
+   */
+  other.type('HOLD again')
+  requestRun(room.id, [other.id], 'Student', 'p_student', undefined, other.root)
+  assert.ok(await until(() => bookKernel(room.doc, other.root).runningCell === other.id))
+  const second = await secondBook(room, 'Ещё.ipynb')
+  second.type('HOLD queued')
+  requestRun(room.id, [second.id], 'Student', 'p_student', undefined, second.root)
+  assert.ok(await until(() => second.state() === 'running'), 'третья тетрадь не пошла в работу')
+  assert.deepEqual(bookKernel(room.doc, CELLS_KEY).queue, [], 'чужая очередь попала в зеркало')
+  const legacy = meta.get('queue')
+  assert.equal(legacy === undefined || (legacy as { length: number }).length, 0)
+  assert.equal(finishHeld(/HOLD/), 2)
+})
+
+test('shutdownSession гасит ЯДРА ВСЕХ тетрадей занятия, а не одно', async () => {
+  const { requestRun, shutdownSession, kernelCensus } = await import('../server/src/kernel/index.js')
+  const { CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const other = await secondBook(room)
+  room.type('print("lecture")')
+  other.type('print("seminar")')
+  requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
+  requestRun(room.id, [other.id], 'Student', 'p_student', undefined, other.root)
+  assert.ok(await until(() => room.state() === 'ok' && other.state() === 'ok'))
+  const before = kernelCensus().live
+  assert.ok(before >= 2, `перепись не увидела оба ядра: ${before}`)
+
+  await shutdownSession(room.id)
+  /*
+   * Оставить хоть одно значило бы оставить процесс, который пишет вывод в
+   * документ комнаты, которой больше нет, — и который `getSessionDoc` завёл бы
+   * заново вместе с папкой и строкой в истории.
+   */
+  assert.equal(kernelCensus().live, before - 2, 'после конца занятия осталось живое ядро')
+})
+
+test('потолок личных ядер отказывает словами, а не молчанием', async () => {
+  const { ensureKernel } = await import('../server/src/kernel/index.js')
+  const { setRules, storedRules } = await import('../server/src/db.js')
+  const room = await seminar()
+  const first = await secondBook(room, 'Аким.ipynb')
+  const second = await secondBook(room, 'Борис.ipynb')
+  setRules(room.id, {
+    ...storedRules(room.id),
+    books: {
+      [first.root]: { access: 'owner', owner: 'p_akim', ownerName: 'Аким' },
+      [second.root]: { access: 'owner', owner: 'p_boris', ownerName: 'Борис' },
+    },
+  })
+  const previous = process.env.KERNEL_OWN_MAX
+  process.env.KERNEL_OWN_MAX = '1'
+  try {
+    await ensureKernel(room.id, first.root)
+    /*
+     * Второе личное ядро сверх потолка — отказ с числом и с советом, а не
+     * контейнер, упавший на пределе процессов посреди пары вместе с работой
+     * всех остальных.
+     */
+    await assert.rejects(
+      ensureKernel(room.id, second.root),
+      /1|закройте|close/,
+      'потолок личных ядер не сработал',
+    )
+  } finally {
+    if (previous === undefined) delete process.env.KERNEL_OWN_MAX
+    else process.env.KERNEL_OWN_MAX = previous
+  }
+})
+
+test('смена доступа к тетради гасит её ядро — и говорит об этом', async () => {
+  const { requestRun, syncBookKernels } = await import('../server/src/kernel/index.js')
+  const { setRules, storedRules } = await import('../server/src/db.js')
+  const { bookKernel } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const other = await secondBook(room, 'Черновик.ipynb')
+  other.type('HOLD draft')
+  requestRun(room.id, [other.id], 'Аким', 'p_akim', undefined, other.root)
+  assert.ok(await until(() => other.state() === 'running'))
+
+  // Преподаватель делает тетрадь личной: её ядро переезжает в другой контейнер,
+  // а переехать живой процесс не может — значит, он гасится, и вслух.
+  setRules(room.id, {
+    ...storedRules(room.id),
+    books: { [other.root]: { access: 'owner', owner: 'p_akim', ownerName: 'Аким' } },
+  })
+  syncBookKernels(room.id)
+
+  assert.ok(
+    await until(() => other.state() === 'idle'),
+    `считавшаяся ячейка не вернулась в покой: ${String(other.state())}`,
+  )
+  assert.equal(bookKernel(room.doc, other.root).runningCell, null)
+  assert.ok(
+    room.notes().some((line) => /Черновик\.ipynb/.test(line) && /(Доступ|access)/.test(line)),
+    room.notes().join(' | '),
+  )
+})
+
+test('убранная тетрадь уносит своё ядро, а соседнюю не трогает', async () => {
+  const { requestRun, syncBookKernels } = await import('../server/src/kernel/index.js')
+  const { bookKernel, CELLS_KEY, removeBook } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const other = await secondBook(room, 'Разбор.ipynb')
+  room.type('print("lecture")')
+  other.type('print("seminar")')
+  requestRun(room.id, [room.cellId], 'Teacher', 'p_host', undefined, CELLS_KEY)
+  requestRun(room.id, [other.id], 'Student', 'p_student', undefined, other.root)
+  assert.ok(await until(() => room.state() === 'ok' && other.state() === 'ok'))
+
+  removeBook(room.doc, other.path)
+  syncBookKernels(room.id)
+  assert.ok(await until(() => bookKernel(room.doc, other.root).status === 'starting'))
+  // Соседняя тетрадь живёт своей жизнью: её ядро никто не трогал.
+  assert.equal(bookKernel(room.doc, CELLS_KEY).status, 'idle')
+})
+
+test('консилиум во второй тетради считается в ЕЁ ядре', async () => {
+  const { requestCouncilRun, councilQueuePosition } = await import('../server/src/kernel/index.js')
+  const { jupyterSessionPath } = await import('../server/src/kernel/jupyter.js')
+  const room = await seminar()
+  const other = await secondBook(room, 'Консилиум.ipynb')
+  other.type('# задание')
+
+  let last: unknown = null
+  requestCouncilRun(
+    room.id,
+    {
+      cellId: other.id,
+      participantId: 'p_akim',
+      source: 'print(2 + 2)',
+      limitSec: null,
+      onChange: (run) => (last = run),
+    },
+    'Аким',
+    'p_akim',
+  )
+  assert.ok(await until(() => (last as { state?: string } | null)?.state === 'ok'), JSON.stringify(last))
+  // Ядро у попытки — ядро её тетради: путь сессии заведён, и он не комнатный.
+  assert.ok(byPath.has(jupyterSessionPath(room.id, other.root)), [...byPath.keys()].join(', '))
+  assert.equal(councilQueuePosition(room.id, other.id, 'p_akim'), null)
+})
+
+test('ячейка из чужой тетради в эту очередь не встаёт', async () => {
+  /*
+   * Кадр приходит по проводу, и ячейку в нём можно назвать от любой тетради.
+   * Посчитать её в чужом ядре значило бы дать ей чужие переменные — ровно ту
+   * границу, ради которой ядер и стало несколько. Молча и без единого слова на
+   * экране: имя ячейки в документе настоящее, и выглядело бы это как «запуск
+   * почему-то делает не то».
+   *
+   * Тот же случай стережёт control.ts · rootOfCells: список ячеек и права там
+   * считаются РАЗНЫМИ путями, и разойдясь, они дали бы Run All, который ничего
+   * не делает.
+   */
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { CELLS_KEY } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const other = await secondBook(room, 'Чужая.ipynb')
+  other.type('print("не должно посчитаться")')
+  requestRun(room.id, [other.id], 'Teacher', 'p_host', undefined, CELLS_KEY)
+  await wait(400)
+  assert.ok(
+    other.state() === undefined || other.state() === 'idle',
+    `ячейка семинара посчиталась в ядре лекции: ${String(other.state())}`,
+  )
+  assert.equal(other.execCount(), null, 'у чужой ячейки появился номер выполнения')
+  /*
+   * И тетрадь при этом не объявлена мёртвой.
+   *
+   * Отсеявшийся запуск заводит область, а насос в `finally` объявляет фазу
+   * ядра — у не поднимавшегося её нет, и читается она как «остановлено». Плашка
+   * «ЯДРО ОСТАНОВЛЕНО» над тетрадью, в которой никто ничего не запускал, — это
+   * поломка на ровном месте.
+   */
+  const { bookKernel: readKernel } = await import('../shared/notebook.js')
+  assert.notEqual(readKernel(room.doc, other.root).status, 'dead')
+
+  // А в своей — считается, и это тот же кадр с тем же именем.
+  requestRun(room.id, [other.id], 'Teacher', 'p_host', undefined, other.root)
+  assert.ok(await until(() => other.state() === 'ok'))
 })

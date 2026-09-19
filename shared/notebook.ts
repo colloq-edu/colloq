@@ -293,6 +293,93 @@ export type CellState = 'idle' | 'queued' | 'running' | 'ok' | 'error'
 export type KernelStatus = 'starting' | 'idle' | 'busy' | 'restarting' | 'dead'
 export type StreamName = 'stdout' | 'stderr'
 
+/* ------------------------------------------------------------ ядра тетрадей */
+
+/**
+ * Состояние ядер по тетрадям: корень → что с ним происходит.
+ *
+ * У каждой тетради своё ядро и своя очередь (server/src/kernel/index.ts), и
+ * комната обязана видеть это по тетрадям: лекция считает, семинар готов, и
+ * одна плашка на двоих врала бы обоим. Карта живёт в `meta`, как и всё
+ * остальное, что пишет сервер, — значит, доезжает тем же sync и попадает в
+ * снимок.
+ *
+ * Старые ключи `kernelStatus`, `runningCell`, `queue` и `kernelProblem` рядом
+ * НЕ убраны и продолжают зеркалить ядро тетради `cells`. Причин три, и все три
+ * настоящие: вкладка, открытая до выкатки, читает только их; история версий
+ * хранит снимки, в которых есть только они; и сброс зависшего состояния
+ * (`clearStaleWork`) чинит обе записи сразу. Зеркало пишет одно место —
+ * `setStatus`/`syncQueue`/`setKernelProblem` в kernel/index.ts.
+ */
+export const KERNELS_KEY = 'kernels'
+
+/** Поля одной записи карты — те же слова, что у старых ключей. */
+export const KERNEL_STATUS_FIELD = 'status'
+export const KERNEL_RUNNING_FIELD = 'runningCell'
+export const KERNEL_QUEUE_FIELD = 'queue'
+
+/** Карта ядер, если она в документе есть. Читателям — без создания. */
+export function kernelsMap(doc: Y.Doc): Y.Map<any> | null {
+  const raw = getMeta(doc).get(KERNELS_KEY)
+  return raw instanceof Y.Map ? (raw as Y.Map<any>) : null
+}
+
+/**
+ * Запись одной тетради в карте — заводя её, если надо.
+ *
+ * Только для сервера и только внутри транзакции: клиенту `meta` закрыта гейтом
+ * (collab/gate.ts), и карта ядер закрыта тем же правилом, что и `kernelStatus`.
+ */
+export function kernelEntry(doc: Y.Doc, root: string): Y.Map<any> {
+  const meta = getMeta(doc)
+  let map = meta.get(KERNELS_KEY)
+  if (!(map instanceof Y.Map)) {
+    map = new Y.Map<any>()
+    meta.set(KERNELS_KEY, map)
+  }
+  let entry = (map as Y.Map<any>).get(root)
+  if (!(entry instanceof Y.Map)) {
+    entry = new Y.Map<any>()
+    ;(map as Y.Map<any>).set(root, entry)
+  }
+  return entry as Y.Map<any>
+}
+
+/** Что комната знает про ядро одной тетради. Пусто — его ещё не поднимали. */
+export interface BookKernel {
+  status: KernelStatus
+  runningCell: string | null
+  queue: string[]
+}
+
+/**
+ * Состояние ядра одной тетради — одним вопросом и с запасным ответом.
+ *
+ * Карты нет вовсе (комната со старым снимком, документ из теста) — отвечаем
+ * по старым ключам, но ТОЛЬКО для тетради `cells`: у остальных в старой записи
+ * нет ничего, и приписывать им чужое состояние значило бы показать «выполняется»
+ * тетради, в которой никто ничего не запускал.
+ */
+export function bookKernel(doc: Y.Doc, root: string): BookKernel {
+  const entry = kernelsMap(doc)?.get(root)
+  if (entry instanceof Y.Map) {
+    const queue = entry.get(KERNEL_QUEUE_FIELD)
+    return {
+      status: (entry.get(KERNEL_STATUS_FIELD) as KernelStatus) ?? 'starting',
+      runningCell: (entry.get(KERNEL_RUNNING_FIELD) as string | null) ?? null,
+      queue: queue instanceof Y.Array ? (queue.toArray() as string[]) : [],
+    }
+  }
+  if (root !== CELLS_KEY) return { status: 'starting', runningCell: null, queue: [] }
+  const meta = getMeta(doc)
+  const queue = meta.get('queue')
+  return {
+    status: (meta.get('kernelStatus') as KernelStatus) ?? 'starting',
+    runningCell: (meta.get('runningCell') as string | null) ?? null,
+    queue: queue instanceof Y.Array ? (queue.toArray() as string[]) : [],
+  }
+}
+
 export interface StreamOutput {
   kind: 'stream'
   name: StreamName
@@ -404,7 +491,8 @@ export type CellLock = 'closed' | 'open' | 'council'
  *
  *   studentRun       — false: запускает преподаватель; true: студент сам;
  *                      request: студент просит одобрить конкретную версию кода.
- *                      По умолчанию false. Все запуски идут в одно ядро комнаты.
+ *                      По умолчанию false. Все запуски идут в ядро ТОЙ
+ *                      тетради, где стоит ячейка консилиума.
  *   namesOnProjector — имя автора показанной попытки: ВКЛ по умолчанию.
  *                      Выключенная, она подписывает показанное решение номером
  *                      варианта («Вариант 12») — и одинаково везде: в тетради у
@@ -416,7 +504,7 @@ export type CellLock = 'closed' | 'open' | 'council'
  *                      всё равно видит «ваш вариант на экране» — про себя он и
  *                      так знает.
  *   runLimitSec      — предел ОДНОГО запуска попытки в секундах; `null` — без
- *                      предела. Ядро в комнате одно, и очередь на весь поток
+ *                      предела. Ядро у тетради одно, и очередь на весь поток
  *                      стоит за тем, что считается: `while True` у одного — это
  *                      «В очереди: 37» у остальных до конца пары, пока
  *                      преподаватель не заметит и не нажмёт «Прервать». Предел
@@ -463,17 +551,19 @@ export const COUNCIL_RERUN_PAUSE_MAX = 3600
 /**
  * Что консилиум обещает про изоляцию попыток — и чего не обещает.
  *
- * Ядро в комнате одно: попытка видит `df`, `np` и всё, что преподаватель
- * подготовил в общей ячейке, — иначе консилиум был бы бесполезен. Но данные
- * каждая получает СВОИ: сервер подменяет привязки личными копиями перед
- * попыткой и возвращает пространство имён после неё (server/src/kernel/
- * council-isolation.ts), так что ни `secret = 42`, ни `data = data.dropna()`,
- * ни `df.drop(..., inplace=True)` у одного не доходят до следующего.
+ * Ядро у тетради одно, и попытки его делят: попытка видит `df`, `np` и всё,
+ * что преподаватель подготовил в общей ячейке ЭТОГО листа, — иначе консилиум
+ * был бы бесполезен. Соседних тетрадей занятия это не касается вовсе: у них
+ * свои ядра и свои переменные. Но данные каждая попытка получает СВОИ: сервер
+ * подменяет привязки личными копиями перед попыткой и возвращает пространство
+ * имён после неё (server/src/kernel/council-isolation.ts), так что ни
+ * `secret = 42`, ни `data = data.dropna()`, ни `df.drop(..., inplace=True)` у
+ * одного не доходят до следующего.
  *
  * Тем же входом закрыты и два способа кончить занятие всем сразу: `exit()` в
- * ядре Jupyter завершает процесс (переменные теряют ВСЕ), а жадная попытка
- * звала OOM-killer на ядро комнаты. Первое отвечает отказом, второму поставлен
- * потолок памяти.
+ * ядре Jupyter завершает процесс (переменные теряют все, кто работает в этой
+ * тетради), а жадная попытка звала OOM-killer на её ядро. Первое отвечает
+ * отказом, второму поставлен потолок памяти.
  *
  * Общими остаются файлы на диске, модули, которые попытка импортировала, и то,
  * что скопировать не вышло — слишком большое или не того типа; об этом попытка
@@ -1475,6 +1565,28 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
     const status = meta.get('kernelStatus')
     if (status === 'busy' || status === 'restarting')
       meta.set('kernelStatus', 'idle' as KernelStatus)
+
+    /*
+     * И то же самое по тетрадям.
+     *
+     * Ядер у комнаты столько, сколько тетрадей (server/src/kernel/index.ts), и
+     * каждое оставляет за собой свою запись. Починить прежние ключи и не
+     * тронуть карту значило бы вылечить то, что видит старая вкладка, и
+     * оставить «выполняется» навсегда во всех остальных — то есть ровно ту
+     * тихую беду, от которой эта функция и стоит.
+     */
+    const kernels = meta.get(KERNELS_KEY)
+    if (kernels instanceof Y.Map) {
+      for (const entry of kernels.values()) {
+        if (!(entry instanceof Y.Map)) continue
+        const waiting = entry.get(KERNEL_QUEUE_FIELD)
+        if (waiting instanceof Y.Array && waiting.length > 0) waiting.delete(0, waiting.length)
+        if (entry.get(KERNEL_RUNNING_FIELD) != null) entry.set(KERNEL_RUNNING_FIELD, null)
+        const state = entry.get(KERNEL_STATUS_FIELD)
+        if (state === 'busy' || state === 'restarting')
+          entry.set(KERNEL_STATUS_FIELD, 'idle' as KernelStatus)
+      }
+    }
 
     for (const cell of cells) {
       const state = cell.get('state')

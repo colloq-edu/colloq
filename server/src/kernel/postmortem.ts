@@ -26,7 +26,7 @@
  */
 
 import { formatNumber, getLocale, tr } from '@shared/i18n'
-import { dockerRead, roomContainer } from './pool.js'
+import { dockerRead, roomContainer, type KernelRole } from './pool.js'
 import { kernelBackend } from './runtime-client.js'
 
 /** Что docker и cgroup рассказали о контейнере комнаты. */
@@ -96,8 +96,19 @@ function available(): boolean {
  */
 const killsSeen = new Map<string, number>()
 
+/**
+ * Счётчик убийств считается ПО КОНТЕЙНЕРУ, и контейнеров у занятия два.
+ *
+ * Второй — тот, где живут личные тетради студентов (pool.ts · KernelRole): у
+ * него свой cgroup, свой лимит и свой счётчик. Считать их одним числом значило
+ * бы объявить смерть ядра студента нехваткой памяти у преподавателя — или
+ * наоборот промолчать о настоящей.
+ */
+const seenKey = (sessionId: string, role: KernelRole) => `${role}:${sessionId}`
+
+/** Забыть счётчики ОБОИХ контейнеров занятия: их сносят вместе. */
 export function forgetKills(sessionId: string): void {
-  killsSeen.delete(sessionId)
+  for (const role of ['room', 'own'] as const) killsSeen.delete(seenKey(sessionId, role))
 }
 
 /**
@@ -108,11 +119,11 @@ export function forgetKills(sessionId: string): void {
  * подготовка к диагностике, а не диагностика; сорвать из-за неё старт ядра
  * было бы обменом плохим.
  */
-export async function sampleKills(sessionId: string): Promise<void> {
+export async function sampleKills(sessionId: string, role: KernelRole = 'room'): Promise<void> {
   if (!available()) return
   try {
-    const reading = await readCgroup(roomContainer(sessionId))
-    if (reading.kills !== null) killsSeen.set(sessionId, reading.kills)
+    const reading = await readCgroup(roomContainer(sessionId, role))
+    if (reading.kills !== null) killsSeen.set(seenKey(sessionId, role), reading.kills)
   } catch {
     /* Диагностика не имеет права мешать. */
   }
@@ -191,8 +202,8 @@ const INSPECT = '{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.H
  * семинара. Ни одно из трёх не обязано получиться: контейнера может уже не
  * быть, `exec` в остановленный не заходит, журнала может не быть вовсе.
  */
-export async function readContainer(sessionId: string): Promise<MemoryReading> {
-  const container = roomContainer(sessionId)
+export async function readContainer(sessionId: string, role: KernelRole = 'room'): Promise<MemoryReading> {
+  const container = roomContainer(sessionId, role)
   const [state, cgroup, tail] = await Promise.all([
     docker(['inspect', container, '--format', INSPECT]),
     readCgroup(container),
@@ -271,16 +282,22 @@ export function describe(reading: MemoryReading, oom: boolean, cell: number | nu
  * нему угаданную причину — ровно тот способ потерять полдня, от которого это
  * всё и делается.
  */
-export async function explain(sessionId: string, cell: number | null): Promise<Postmortem | null> {
+export async function explain(
+  sessionId: string,
+  cell: number | null,
+  /** Где жило умершее ядро: в контейнере занятия или его личных тетрадей. */
+  role: KernelRole = 'room',
+): Promise<Postmortem | null> {
   if (!available()) return null
   let reading: MemoryReading
   try {
-    reading = await readContainer(sessionId)
+    reading = await readContainer(sessionId, role)
   } catch {
     return null
   }
-  const oom = killedByMemory(reading, killsSeen.get(sessionId))
-  if (reading.kills !== null) killsSeen.set(sessionId, reading.kills)
+  const key = seenKey(sessionId, role)
+  const oom = killedByMemory(reading, killsSeen.get(key))
+  if (reading.kills !== null) killsSeen.set(key, reading.kills)
   // Ни одного числа и ни строчки журнала — значит, docker промолчал целиком.
   if (!oom && reading.limit === null && reading.status === '' && reading.tail.length === 0) return null
   return { reading, oom, text: describe(reading, oom, cell) }

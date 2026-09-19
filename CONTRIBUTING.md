@@ -1,7 +1,7 @@
 # Contributing to Colloq
 
 Thanks for helping. Colloq is a self-hosted live notebook for teaching: one
-class link, one shared notebook, one Python kernel per class. It is maintained
+class link, shared notebooks, one Python kernel per notebook. It is maintained
 by one person, so a clear issue or a small, well-verified pull request goes a
 long way.
 

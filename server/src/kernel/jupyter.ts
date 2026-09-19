@@ -3,6 +3,7 @@ import crypto from 'node:crypto'
 import { WebSocket, type RawData } from 'ws'
 import { config } from '../config.js'
 import { sessionDir } from '../workspace.js'
+import { CELLS_KEY } from '@shared/notebook'
 
 /**
  * A hand-rolled client for the slice of the Jupyter protocol a seminar needs:
@@ -167,6 +168,41 @@ export function endpointIdentity(endpoint: KernelEndpoint): string {
   return endpoint.instanceId ? `${endpoint.url}\0${endpoint.instanceId}` : endpoint.url
 }
 
+/**
+ * Путь сессии Jupyter, по которому у тетради своё ядро.
+ *
+ * Сессии в jupyter_server опознаются по ПУТИ: `POST /api/sessions` сначала
+ * спрашивает `session_exists(path=…)` и на совпадение возвращает уже живую
+ * сессию с её ядром. Это то самое свойство, ради которого здесь сессии, а не
+ * `/api/kernels`: перезапуск сервера посреди пары находит то же ядро с теми же
+ * переменными. И оно же — способ дать каждой тетради своё: разные пути,
+ * разные ядра.
+ *
+ * У тетради комнаты (`cells`) путь ТОТ ЖЕ, что был до появления нескольких
+ * ядер, — и это не эстетика. Комната, которая идёт прямо сейчас, после выкатки
+ * обязана найти своё живое ядро, а не завести рядом второе: иначе переменные
+ * пары исчезают в момент обновления сервера, молча. Именно `cells`, а не
+ * «первая по порядку»: порядок тетрадей меняет перетаскивание вкладок.
+ *
+ * Двоеточие из корня `nb:` убрано: путь у Jupyter виртуальный, но ложится он
+ * на файловую систему контейнера, а двоеточие в имени файла — приглашение к
+ * беде на ровном месте. Столкнуться два корня не могут: `nb:` выдаётся один
+ * раз и никогда повторно (shared/notebook.ts · rootForNewBook).
+ *
+ * Папка одна на все тетради — папка занятия: рабочий каталог ядра берётся из
+ * пути, и `open('data.csv')` обязан находить то, что положили в панель файлов,
+ * из любой тетради.
+ */
+export function jupyterSessionPath(sessionId: string, root: string): string {
+  if (root === CELLS_KEY) return `${sessionId}/session.ipynb`
+  return `${sessionId}/session-${root.replace(/[^A-Za-z0-9_-]+/g, '-')}.ipynb`
+}
+
+/** Подпись сессии — то, что видно в списке ядер Jupyter; ядро ею не опознаётся. */
+export function jupyterSessionName(sessionId: string, root: string): string {
+  return root === CELLS_KEY ? sessionId : `${sessionId}#${root}`
+}
+
 /** The instance-wide kernel: what a seminar gets when it names no environment. */
 export function defaultEndpoint(): KernelEndpoint {
   return { url: config.jupyter.url, token: config.jupyter.token }
@@ -302,6 +338,8 @@ export class JupyterKernel {
     private readonly kernelId: string,
     /** Кому принадлежит это ядро: адрес контейнера окружения этой комнаты. */
     readonly endpoint: KernelEndpoint,
+    /** Тетрадь, чьё это ядро: корень в документе комнаты. */
+    readonly root: string = CELLS_KEY,
   ) {}
 
   get phase(): KernelPhase {
@@ -321,21 +359,31 @@ export class JupyterKernel {
   }
 
   /**
-   * Bring up (or re-attach to) the kernel for a session.
+   * Bring up (or re-attach to) the kernel for one notebook of a session.
    *
    * Going through the *sessions* API rather than /api/kernels is what makes the
    * kernel's cwd the session folder, so `open('data.csv')` in a cell finds what
    * the Files panel uploaded. It is also idempotent: Jupyter returns the
    * existing session for a path, so a server restart mid-seminar re-attaches to
    * the live kernel with everybody's variables still in it.
+   *
+   * Ключ этой идемпотентности — ПУТЬ, а не имя: jupyter_server ищет сессию
+   * через `session_exists(path=…)`, а `name` для него подпись. Отсюда и
+   * устройство `jupyterSessionPath` ниже: у каждой тетради свой путь, значит
+   * своё ядро и свои переменные, а `cells` держит ровно тот путь, что был.
    */
-  static async connect(sessionId: string, endpoint: KernelEndpoint): Promise<JupyterKernel> {
+  static async connect(
+    sessionId: string,
+    endpoint: KernelEndpoint,
+    /** Корень тетради; по умолчанию — тетрадь комнаты, то есть прежнее поведение. */
+    root: string = CELLS_KEY,
+  ): Promise<JupyterKernel> {
     sessionDir(sessionId)
 
     const deadline = Date.now() + STARTUP_TIMEOUT_MS
     const body = JSON.stringify({
-      name: sessionId,
-      path: `${sessionId}/session.ipynb`,
+      name: jupyterSessionName(sessionId, root),
+      path: jupyterSessionPath(sessionId, root),
       type: 'notebook',
       kernel: { name: 'python3' },
     })
@@ -375,7 +423,7 @@ export class JupyterKernel {
       )
     }
 
-    const kernel = new JupyterKernel(sessionId, created.sessionId, created.kernelId, endpoint)
+    const kernel = new JupyterKernel(sessionId, created.sessionId, created.kernelId, endpoint, root)
     try {
       await kernel.openSocket(Math.max(10_000, deadline - Date.now()))
     } catch (err) {

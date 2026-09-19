@@ -97,10 +97,25 @@ test('личная тетрадь открыта автору и препода�
   const theirs = rulesForBook(rules, 'nb:one', student(BORIS))
   assert.deepEqual([theirs.edit, theirs.run, theirs.structure], ['host', 'host', 'host'])
 
-  // Остальные правила комнаты тетрадью не трогаются: ядро, доска и файлы общие.
-  assert.equal(mine.wipe, rules.wipe)
+  /*
+   * Ядро и вывод СВОЕЙ тетради — свои, и это ровно две ручки.
+   *
+   * У личной тетради своё ядро в отдельном контейнере (`bookHasOwnKernel`):
+   * «перезапустить» в ней уносит переменные одного человека, а «стереть
+   * выводы» — его собственный вывод. Требовать на это преподавателя значило бы
+   * поднимать руку посреди лекции, чтобы заново объявить `x` у себя в
+   * черновике.
+   */
+  assert.deepEqual([mine.restart, mine.wipe], ['room', 'room'], 'автору не дали своё ядро')
+  assert.deepEqual(
+    [theirs.restart, theirs.wipe],
+    [rules.restart, rules.wipe],
+    'чужая личная тетрадь раздала права на своё ядро',
+  )
+
+  // Остальные правила комнаты тетрадью не трогаются: доска, файлы, история.
   assert.equal(mine.files, rules.files)
-  assert.equal(mine.restart, rules.restart)
+  assert.equal(mine.board, rules.board)
 
   // Тетрадь комнаты остаётся комнатной для обоих — и это тот же объект.
   assert.equal(rulesForBook(rules, CELLS_KEY, student(AKIM)), rules)
@@ -118,6 +133,15 @@ test('«открыта всем» пускает при закрытой ком�
   }
   const all = rulesForBook(open, 'nb:one', student(BORIS))
   assert.deepEqual([all.edit, all.run, all.structure], ['room', 'room', 'room'])
+  /*
+   * «Открыта всем» ядра не раздаёт.
+   *
+   * Тетрадь, открытая всем, — по-прежнему тетрадь ЗАНЯТИЯ: её ядро живёт в
+   * контейнере комнаты (`bookHasOwnKernel` про неё отвечает «нет»), и
+   * «перезапустить» в ней значит обнулить переменные пары. Разница с личной
+   * ровно здесь, и без этой строки она держалась бы на одном слове в коде.
+   */
+  assert.deepEqual([all.restart, all.wipe], [open.restart, open.wipe])
 
   const shut: RoomRules = {
     ...OPEN_ROOM,
@@ -447,6 +471,39 @@ test('перестановка, форматирование и очистка �
   // black переписывает КАЖДУЮ ячейку названной тетради — и спрашивает у неё.
   assert.ok(say(id, boris, { t: 'format', book: 'Аким.ipynb' }))
   assert.ok(say(id, akim, { t: 'format' }), 'форматирование тетради комнаты прошло в лекции')
+})
+
+test('ядро и вывод своей тетради перезапускает и стирает её автор', () => {
+  /*
+   * У личной тетради своё ядро в отдельном контейнере, и «перезапустить» в ней
+   * уносит переменные одного человека — его собственные. Требовать на это
+   * преподавателя значило бы поднимать руку посреди лекции, чтобы заново
+   * объявить `x` у себя в черновике. В тетради комнаты и в чужой личной
+   * правило прежнее: перезапуск преподавательский.
+   */
+  const id = 'book-restart'
+  roomWithBooks(id)
+  const root = Object.keys(storedRules(id).books ?? {})[0]
+  setRules(id, {
+    ...OPEN_ROOM,
+    wipe: 'host',
+    restart: 'host',
+    books: { [root]: { access: 'owner', owner: AKIM, ownerName: 'Аким' } },
+  })
+  const akim = who(id, AKIM, 'participant')
+  const boris = who(id, BORIS, 'participant')
+
+  assert.equal(say(id, akim, { t: 'restart', book: 'Аким.ipynb' }), null, 'автор не перезапустил своё ядро')
+  assert.equal(say(id, akim, { t: 'clearOutputs', book: 'Аким.ipynb' }), null, 'автор не стёр свой вывод')
+
+  // Тетрадь комнаты и чужая личная — как было: только преподаватель.
+  assert.ok(say(id, akim, { t: 'restart' }), 'перезапуск ядра занятия достался студенту')
+  assert.ok(say(id, akim, { t: 'clearOutputs' }), 'очистка всей комнаты досталась студенту')
+  assert.ok(say(id, boris, { t: 'restart', book: 'Аким.ipynb' }))
+  assert.ok(say(id, boris, { t: 'clearOutputs', book: 'Аким.ipynb' }))
+
+  // Названная и несуществующая тетрадь отвечает своей фразой, а не правилами.
+  assert.ok(say(id, who(id, 'p_host', 'host'), { t: 'restart', book: 'Нет.ipynb' }))
 })
 
 test('«только преподаватель» закрывает тетрадь при открытой комнате', () => {

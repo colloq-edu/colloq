@@ -4,6 +4,16 @@ The web app sends room intent to this service. Only this service receives a
 namespaced Kubernetes service-account token. It creates a fixed kernel Pod and
 private ClusterIP Service; it has no generic Kubernetes proxy or image-build API.
 
+**One Pod per class, several kernels inside it.** Every notebook of a class gets
+its own Python kernel, through the Jupyter *sessions* API inside that one Pod —
+different notebook, different session path, different kernel and different
+variables. What the broker does not have is a *second* Pod: students' personal
+notebooks (`access: owner`) run in a separate, GPU-less container on the Docker
+backend, and here there is nowhere to put them. Running in a personal notebook is
+therefore refused in words on this backend rather than quietly handed the class's
+kernel, which would give a student the class's GPU and put its OOM killer in
+reach of the teacher's kernel.
+
 Build with `npm run build --prefix runtime`; start with
 `node runtime/dist/runtime.js`. Only Node built-ins are runtime dependencies.
 

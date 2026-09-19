@@ -12,7 +12,7 @@
 import './_env.mts'
 import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { runArgs } from '../server/src/kernel/pool.js'
+import { ownKernelMax, runArgs } from '../server/src/kernel/pool.js'
 import {
   BLOCKED_V4,
   DEFAULT_ROOM_SUBNET,
@@ -24,6 +24,7 @@ import {
   ipv4Subnets,
   networkCreateArgs,
   ownAddresses,
+  ownPidsLimit,
   perimeterProblem,
   perimeterRemovalScript,
   perimeterRules,
@@ -102,6 +103,7 @@ test('комната на хосте: своя сеть, порт на петл�
     '--label', 'colloq.kind=room-kernel',
     '--label', 'colloq.session=r1',
     '--label', 'colloq.environment=base',
+    '--label', 'colloq.role=room',
     'colloq-kernel:base',
   ])
   // Ни одной поблажки: ни --privileged, ни --cap-add, ни хостовой сети.
@@ -132,6 +134,75 @@ test('потолок процессов — KERNEL_PIDS, и глупое чис�
   // а не «без потолка» и не комната, которая не поднимет даже ядро.
   for (const bad of ['0', '-1', 'много', '1.5', '10', '']) {
     withEnv({ KERNEL_PIDS: bad }, () => assert.equal(pidsLimit(), 512, bad))
+  }
+})
+
+test('контейнер личных тетрадей: тот же профиль, но без GPU, со своей меткой и своим потолком', () => {
+  const room = runArgs({
+    sessionId: 'r3', env: 'base-gpu', mount: '/srv/workspace/r3',
+    network: 'colloq-rooms', publish: true, gpu: '0',
+  })
+  const own = withEnv({ KERNEL_OWN_PIDS: undefined }, () =>
+    runArgs({
+      sessionId: 'r3', env: 'base-gpu', mount: '/srv/workspace/r3',
+      network: 'colloq-rooms', publish: true, gpu: '0', role: 'own',
+    }),
+  )
+
+  // Имя и метка — чтобы уборка, `colloq status` и раздача срезов отличали их.
+  assert.equal(own[own.indexOf('--name') + 1], 'colloq-room-r3-own')
+  assert.ok(own.includes('colloq.role=own'), JSON.stringify(own))
+  assert.ok(room.includes('colloq.role=room'), JSON.stringify(room))
+
+  /*
+   * Ни карты, ни метки среза, ни разделяемой памяти под неё — и это не
+   * настройка, а устройство: GPU выдаётся контейнеру целиком, а
+   * `CUDA_VISIBLE_DEVICES` студент снимает одной строкой. Срез передан
+   * намеренно: ошибка вызывающего не должна уметь отдать карту черновикам.
+   */
+  assert.ok(room.includes('--gpus'), 'комната осталась без карты')
+  assert.ok(!own.includes('--gpus'), JSON.stringify(own))
+  assert.ok(!own.some((arg) => /^--label$/.test(arg) && false))
+  assert.ok(!own.some((arg) => arg.startsWith('colloq.gpu=')), JSON.stringify(own))
+  assert.ok(!own.some((arg) => arg.startsWith('--shm-size')), JSON.stringify(own))
+
+  // Свой потолок процессов: ядер в нём десятки, комнатных 512 не хватит.
+  assert.ok(own.includes('--pids-limit=2048'), JSON.stringify(own))
+  assert.ok(room.includes('--pids-limit=512'), JSON.stringify(room))
+
+  // Всё остальное — то же самое: образ, сеть, папка занятия, профиль, числа.
+  assert.equal(own.at(-1), room.at(-1))
+  assert.equal(own[own.indexOf('--network') + 1], 'colloq-rooms')
+  assert.equal(own[own.indexOf('-v') + 1], '/srv/workspace/r3:/workspace/r3')
+  for (const flag of ['--user=1000:1000', '--cap-drop=ALL', '--security-opt=no-new-privileges']) {
+    assert.ok(own.includes(flag), flag)
+  }
+  assert.equal(
+    own.find((arg) => arg.startsWith('--memory=')),
+    room.find((arg) => arg.startsWith('--memory=')),
+  )
+
+  // Токен у него СВОЙ: иначе строка из черновика открывала бы Jupyter лекции.
+  const tokenOf = (args: string[]) => args.find((arg) => arg.startsWith('JUPYTER_TOKEN='))
+  assert.match(tokenOf(own) ?? '', /^JUPYTER_TOKEN=[0-9a-f]{40}$/)
+  assert.notEqual(tokenOf(own), tokenOf(room))
+})
+
+test('потолок процессов контейнера личных тетрадей — KERNEL_OWN_PIDS, и мусор его не снимает', () => {
+  withEnv({ KERNEL_OWN_PIDS: undefined }, () => assert.equal(ownPidsLimit(), 2048))
+  withEnv({ KERNEL_OWN_PIDS: '4096' }, () => {
+    assert.equal(ownPidsLimit(), 4096)
+    const args = runArgs({ sessionId: 'p', env: 'base', mount: '/m', network: 'colloq-rooms', publish: true, gpu: null, role: 'own' })
+    assert.ok(args.includes('--pids-limit=4096'), JSON.stringify(args))
+  })
+  for (const bad of ['0', '-1', 'много', '1.5', '10', '']) {
+    withEnv({ KERNEL_OWN_PIDS: bad }, () => assert.equal(ownPidsLimit(), 2048, bad))
+  }
+  // И потолок ЖИВЫХ ядер в нём — отдельное число, тем же правилом чтения.
+  withEnv({ KERNEL_OWN_MAX: undefined }, () => assert.equal(ownKernelMax(), 40))
+  withEnv({ KERNEL_OWN_MAX: '4' }, () => assert.equal(ownKernelMax(), 4))
+  for (const bad of ['0', '-1', 'сорок', '1.5', '']) {
+    withEnv({ KERNEL_OWN_MAX: bad }, () => assert.equal(ownKernelMax(), 40, bad))
   }
 })
 

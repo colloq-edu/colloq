@@ -70,10 +70,12 @@ for questions, or individual attempts the teacher brings back to the room.
 
 ### Seminar: write together, run once
 
-Everyone edits the same cells live and sees who is typing where. Each class has
-**one Python kernel**: runs enter a visible queue, outputs reach everyone, and a
-variable one student defines is there for the next. A late arrival sees the
-notebook as it stands. This is the **Standard** preset.
+Everyone edits the same cells live and sees who is typing where. Each notebook
+has **its own Python kernel**: runs enter a visible queue, outputs reach
+everyone, and a variable one student defines is there for the next. A lecture
+and a seminar open side by side in one class therefore do not share variables,
+and they can be computing at the same time. A late arrival sees the notebook as
+it stands. This is the **Standard** preset.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme/run-dark.svg"><img src=".github/assets/readme/run-light.svg" width="880" alt="Maria runs cell 03, which loads df; Ivan's cell 04 waits in the queue, then runs in the same kernel using her df, and everyone sees both outputs."></picture></p>
 
@@ -83,7 +85,7 @@ Open a cell as a council and every student writes on their own sheet; only the
 teacher sees the text. The teacher's council console, a separate window, lists the
 submitted work and the run queue, sets a time limit for each run, marks each
 answer correct or for revision, and shows one answer to the class, **with or
-without names**. Attempts share the room's one kernel, so council is a teaching tool, not
+without names**. Attempts share that notebook's one kernel, so council is a teaching tool, not
 an isolated grading sandbox ([details below](#presets-and-cell-locks)).
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme/council-dark.svg"><img src=".github/assets/readme/council-light.svg" width="880" alt="Three students write their own answers to one cell; their runs queue through the room's one kernel, a runaway loop is stopped by the time limit, the teacher marks the results in the council console and shows one answer to the class without the author's name."></picture></p>
@@ -114,7 +116,7 @@ how the room takes part. In any preset, a cell can be:
 
 * **closed** — the room's rules decide who edits and runs it.
 * **open to shared editing** — anyone in the room can edit and run that one cell, even under Lecture rules.
-* **council** — each cell runs **Only me** (teacher-only execution, the default), **Everyone in turn** (students run directly) or **On request** (each student run needs the teacher's approval). Requests work for drafts as well as submitted answers; editing the text invalidates the request. Approval queues the requested version; it does not submit the answer. All attempts run in the room's **one kernel**, one after another, so students can use the data the teacher prepared. Each attempt gets personal copies of that data — tables, arrays, containers, torch tensors, models and their optimisers, sparse matrices, and objects of classes defined in the notebook — and afterwards the server restores the namespace exactly as it was: it removes the names the attempt defines and undoes its rebindings, so `data = data.dropna()`, `df.drop(..., inplace=True)`, `del df` or `globals().clear()` in one attempt does not reach the next. The same entry also protects the room from the two ways one attempt could end the class for everybody: `exit()` and `quit()` are refused (in a Jupyter kernel they shut the process down and everyone loses their variables), and an attempt's address space is capped (`COUNCIL_MEMORY_GUARD`) so `np.ones((40000, 40000))` fails with `MemoryError` on its own card instead of the OOM killer taking the kernel. Process state that would otherwise change everyone's results goes back too: random seeds, `sys.stdout`, `sys.path`, `os.environ`, `builtins`, warning filters, numpy and pandas options, matplotlib figures. Everything else stays shared: files on disk, modules the attempt imported, objects of types that cannot be copied and objects above the `COUNCIL_COPY_MB` budget — an attempt is told in its own output which of its variables were left shared, and which threads it left running. A review mark reaches only the answer's author, and the class sees it only on an answer the teacher shows. Individual sheets are a teaching tool, not independent execution sandboxes or an isolated grading environment.
+* **council** — each cell runs **Only me** (teacher-only execution, the default), **Everyone in turn** (students run directly) or **On request** (each student run needs the teacher's approval). Requests work for drafts as well as submitted answers; editing the text invalidates the request. Approval queues the requested version; it does not submit the answer. All attempts run in that notebook's **one kernel**, one after another, so students can use the data the teacher prepared. Each attempt gets personal copies of that data — tables, arrays, containers, torch tensors, models and their optimisers, sparse matrices, and objects of classes defined in the notebook — and afterwards the server restores the namespace exactly as it was: it removes the names the attempt defines and undoes its rebindings, so `data = data.dropna()`, `df.drop(..., inplace=True)`, `del df` or `globals().clear()` in one attempt does not reach the next. The same entry also protects the room from the two ways one attempt could end the class for everybody: `exit()` and `quit()` are refused (in a Jupyter kernel they shut the process down and everyone loses their variables), and an attempt's address space is capped (`COUNCIL_MEMORY_GUARD`) so `np.ones((40000, 40000))` fails with `MemoryError` on its own card instead of the OOM killer taking the notebook's kernel. Process state that would otherwise change everyone's results goes back too: random seeds, `sys.stdout`, `sys.path`, `os.environ`, `builtins`, warning filters, numpy and pandas options, matplotlib figures. Everything else stays shared: files on disk, modules the attempt imported, objects of types that cannot be copied and objects above the `COUNCIL_COPY_MB` budget — an attempt is told in its own output which of its variables were left shared, and which threads it left running. A review mark reaches only the answer's author, and the class sees it only on an answer the teacher shows. Individual sheets are a teaching tool, not independent execution sandboxes or an isolated grading environment.
 
 <details>
 <summary><strong>Room rules and teacher access</strong></summary>
@@ -128,7 +130,11 @@ notebook's tab. It overrides editing, running and structure for that notebook
 alone; files, the terminal and the shared screen stay shared by the room.
 Whether a student may start their own notebook at all is a separate rule, off by
 default — the teacher grants the rights, not the student — and an own notebook
-is personal from the moment it is created.
+is personal from the moment it is created. A personal notebook is the one kind
+that also runs in a **separate container**: never the class's GPU, its own
+memory cgroup, so a greedy draft cannot pull the OOM killer onto the teacher's
+kernel — and its author may restart its kernel and clear its output without
+asking.
 
 Whether the oracle answers in this room is chosen on the creation form: **As set for the instance**, **Off**, **Hints only** or **Full answers**. It is not one of those rows and cannot be changed later in the room settings. Room limits can tighten the instance settings, never loosen them.
 
@@ -458,10 +464,11 @@ development backend; the production installer supplies broker configuration.
 | `UI_LANGUAGE` | Interface language (`ru`, the default, or `en`) until the owner chooses one in `/admin`. |
 | `KERNEL_ENV` | Default Python environment for the Docker development backend. |
 | `KERNEL_PIDS` / `KERNEL_ROOM_SUBNET` | Process ceiling of a room container (512 by default) and the subnet of the `colloq-rooms` network (`10.213.0.0/22`). |
+| `KERNEL_OWN_MAX` / `KERNEL_OWN_PIDS` | Students' personal notebooks run in a second container per class, one that never receives the class's GPU: how many kernels may live in it at once (40 by default) and its process ceiling (2048, because each kernel is about fifteen threads). Over the first number, a run in a personal notebook is refused in words. |
 | `COLLOQ_ROOM_NETWORK` | Unset: rooms cannot reach local addresses (LAN, router, the host, cloud metadata), and they refuse to start if that block cannot be installed. `open` lifts the block for a trusted setup; `colloq doctor` then says so. |
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | Application upload limits; these do not limit arbitrary writes from Python. |
 | `COUNCIL_COPY_MB` | How much memory one council attempt may spend on personal copies of the room's data (512 by default). Anything above the budget stays shared, and the attempt is told so in its own output. Copy-on-write pandas copies cost nothing and are not counted. |
-| `COUNCIL_MEMORY_GUARD` | Cap the address space of a council attempt at the container's memory limit minus what is already in use (`1` by default; `0` turns it off). A greedy attempt then fails with `MemoryError` on its own card instead of the OOM killer taking the room's kernel and everybody's variables. Skipped automatically where it cannot work: outside Linux, without a cgroup limit, or with CUDA nearby. |
+| `COUNCIL_MEMORY_GUARD` | Cap the address space of a council attempt at the container's memory limit minus what is already in use (`1` by default; `0` turns it off). A greedy attempt then fails with `MemoryError` on its own card instead of the OOM killer taking the notebook's kernel and everybody's variables. Skipped automatically where it cannot work: outside Linux, without a cgroup limit, or with CUDA nearby. |
 
 </details>
 

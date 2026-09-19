@@ -1,20 +1,36 @@
 import { tr } from '@shared/i18n'
 /**
- * One Python kernel per seminar, and the queue in front of it.
+ * One Python kernel per NOTEBOOK, and the queue in front of each.
  *
- * The room shares a kernel, so the interesting part of this file is not talking
- * to Jupyter — jupyter.ts does that — but deciding whose turn it is and making
- * that decision visible. A `Runtime` per seminar holds the kernel, the queue
- * and, importantly, its *own* record of what is running and who started it: the
- * document is shared and a student with a console could write any `runById`
- * into any cell, so anything that grants a right (interrupting, cancelling) is
- * answered from here rather than from the CRDT.
+ * Тетрадь — это ноутбук, а ноутбуки не делят переменных. Лекция и семинар
+ * идут в одной комнате и в одном занятии, но `df`, загруженный на лекции, в
+ * семинаре появляться не должен: это разные файлы и разная работа. Поэтому
+ * область исполнения здесь — пара (занятие, корень тетради), а не занятие: у
+ * каждой свой процесс Python, своя очередь и свой счёт. Считаются они
+ * ПАРАЛЛЕЛЬНО — два ядра, два насоса, — и это видно: пока лекция думает над
+ * обучением, семинар отвечает.
+ *
+ * Где живёт ядро — второй вопрос, и у него другой ответ. Тетради занятия
+ * считаются в контейнере комнаты; личные тетради студентов — в отдельном
+ * контейнере без GPU (`bookHasOwnKernel`, pool.ts · KernelRole), потому что
+ * карта выдаётся контейнеру целиком, а OOM-killer в общем лимите выбирает
+ * самый тяжёлый процесс — то есть ядро преподавателя с датасетом.
+ *
+ * The room shares a kernel per notebook, so the interesting part of this file
+ * is not talking to Jupyter — jupyter.ts does that — but deciding whose turn it
+ * is and making that decision visible. A `Runtime` per scope holds the kernel,
+ * the queue and, importantly, its *own* record of what is running and who
+ * started it: the document is shared and a student with a console could write
+ * any `runById` into any cell, so anything that grants a right (interrupting,
+ * cancelling) is answered from here rather than from the CRDT.
  *
  * Everything the room sees is written into the session document, not sent to
  * the browser that pressed the button: cell state, execution counts, output,
  * the queue, the kernel status and the notes in the terminal's kernel log. That
  * is why a student who joins twenty minutes late sees the whole history, and
- * why two people watching the same run see byte-identical output.
+ * why two people watching the same run see byte-identical output. Состояние
+ * ядер лежит там по тетрадям (`meta.kernels`), а у тетради комнаты ещё и
+ * зеркалится в прежние ключи — см. `setStatus`.
  *
  * A press of Run is a *batch* — one cell for Run, thirty for Run All. A failure
  * stops the rest of its own batch and nothing else, so somebody else's queued
@@ -26,13 +42,24 @@ import {
   cellId as idOf,
   cellOutputs,
   cellSource,
+  allBooks,
   allCellArrays,
+  bookCells,
+  bookList,
   cellsAt,
   cellType,
   createTerminalLine,
   findCell,
   getMeta,
   getTerminal,
+  kernelEntry,
+  kernelsMap,
+  rootOfCell,
+  CELLS_KEY,
+  KERNELS_KEY,
+  KERNEL_QUEUE_FIELD,
+  KERNEL_RUNNING_FIELD,
+  KERNEL_STATUS_FIELD,
   type CellState,
   type KernelStatus,
   type YCell,
@@ -40,21 +67,26 @@ import {
 import { config } from '../config.js'
 import { appendActivity } from '../activity.js'
 import type { ActivityDetails, ActivityKind, ActivityOutcome } from '@shared/activity'
-import { sessionEnvironment } from '../db.js'
+import { sessionEnvironment, storedRules } from '../db.js'
+import { bookHasOwnKernel } from '@shared/rules'
 import { activeName } from '../environments.js'
 import { formatNotebook, type FormatOutcome } from './format.js'
 import {
+  dropOwnKernel,
   dropRoomKernel,
   endpointForSession,
   forgetSessionKernel,
   listRoomKernels,
   onRoomKernelRecreated,
+  ownKernelMax,
   runningRoomKernels,
+  OwnKernelUnavailable,
+  type KernelRole,
 } from './pool.js'
 import { kernelBackend, RuntimeRequestError } from './runtime-client.js'
 import { KERNEL_PROBLEM_KEY, type KernelProblem } from '@shared/kernel-problem'
 import { explain as explainDeath, forgetKills, sampleKills } from './postmortem.js'
-import { getSessionDoc, holdRoom, onlineCount } from '../collab/index.js'
+import { getSessionDoc, holdRoom, onlineCount, peekSessionDoc } from '../collab/index.js'
 import { seldom } from '../log.js'
 import { projectBooks } from '../collab/books.js'
 import { flushSessionFiles } from '../collab/files.js'
@@ -124,7 +156,7 @@ interface QueueItem {
   /**
    * Попытка консилиума, а не ячейка.
    *
-   * Тот же насос и та же очередь — ядро одно, и «запустить попытку» стоит в
+   * Тот же насос и та же очередь — ядро у тетради одно, и «запустить попытку» стоит в
    * ней рядом с ячейками, в порядке нажатий. Но `cellId` у такой записи
    * синтетический (`councilQueueId`): в документе такой ячейки нет, и всё, что
    * пишет в документ по имени ячейки — состояние, вывод, зеркало очереди, —
@@ -209,6 +241,24 @@ function councilQueueId(cellId: string, participantId: string): string {
 
 interface Runtime {
   sessionId: string
+  /**
+   * Тетрадь, чьё это ядро, — корень в документе комнаты.
+   *
+   * Пара (занятие, корень) и есть область исполнения: у каждой свой Python,
+   * своя очередь и свой счёт. `cells` — тетрадь комнаты, историческая первая;
+   * её область несёт прежнее имя сессии Jupyter и зеркалится в прежние ключи
+   * документа, чтобы выкатка не стоила живым комнатам переменных.
+   */
+  root: string
+  /**
+   * В каком контейнере это ядро поднято: занятия или личных тетрадей.
+   *
+   * Решается ОДИН раз, при подъёме, по хранимым правилам — и запоминается,
+   * потому что гасить ядро надо там, где оно живёт. Преподаватель, сменивший
+   * доступ тетради посреди пары, меняет ответ `bookHasOwnKernel`; область при
+   * этом гасится целиком (`relocateBookKernel`), а не переезжает молча.
+   */
+  role: KernelRole
   activityItem?: QueueItem | null
   kernel: JupyterKernel | null
   /** In-flight connect, shared by concurrent ensureKernel callers. */
@@ -294,16 +344,51 @@ interface Runtime {
   retired: boolean
 }
 
-const runtimes = new Map<string, Runtime>()
+/**
+ * Области исполнения: занятие → корень тетради → её ядро с очередью.
+ *
+ * Вложенная карта, а не плоская с составным ключом, и это существенно: половина
+ * работы здесь — «всё, что относится к этому занятию» (погасить, посчитать,
+ * прибрать по простою), и склеенный ключ превращал бы каждый такой вопрос в
+ * разбор строки. Внутренняя карта, оставшаяся пустой, снимается сразу —
+ * занятие без областей не должно занимать место в памяти до перезапуска.
+ */
+const runtimes = new Map<string, Map<string, Runtime>>()
 const workspaceListeners: Array<(sessionId: string) => void> = []
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
-function getRuntime(sessionId: string): Runtime {
-  let runtime = runtimes.get(sessionId)
+/**
+ * В каком контейнере считать эту тетрадь.
+ *
+ * По ХРАНИМЫМ правилам, а не по действующим, и это не мелочь: `rulesAfterClass`
+ * карту `books` не переносит вовсе, так что после звонка действующие правила
+ * отвечают «комнатная» про каждую тетрадь — и первый же запуск после конца
+ * занятия переселял бы ядро личной тетради в контейнер лекции, к её карте и её
+ * лимиту памяти. Конец занятия — про права, а не про размещение.
+ */
+function roleOfBook(sessionId: string, root: string): KernelRole {
+  try {
+    return bookHasOwnKernel(storedRules(sessionId), root) ? 'own' : 'room'
+  } catch {
+    // Строки занятия в базе нет (тест, удалённая комната) — считаем комнатной:
+    // это прежнее поведение и единственный контейнер, который точно существует.
+    return 'room'
+  }
+}
+
+function getRuntime(sessionId: string, root: string): Runtime {
+  let scopes = runtimes.get(sessionId)
+  if (!scopes) {
+    scopes = new Map<string, Runtime>()
+    runtimes.set(sessionId, scopes)
+  }
+  let runtime = scopes.get(root)
   if (!runtime) {
     runtime = {
       sessionId,
+      root,
+      role: roleOfBook(sessionId, root),
       kernel: null,
       starting: null,
       restarting: null,
@@ -321,9 +406,86 @@ function getRuntime(sessionId: string): Runtime {
       environment: null,
       retired: false,
     }
-    runtimes.set(sessionId, runtime)
+    scopes.set(root, runtime)
   }
   return runtime
+}
+
+/** Область, если она уже заведена. Вопрос не должен заводить комнате Python. */
+function peekRuntime(sessionId: string, root: string): Runtime | undefined {
+  return runtimes.get(sessionId)?.get(root)
+}
+
+/** Все области ОДНОГО занятия — по всем его тетрадям. */
+function scopesOf(sessionId: string): Runtime[] {
+  const scopes = runtimes.get(sessionId)
+  return scopes ? [...scopes.values()] : []
+}
+
+/** Все области всех занятий этого процесса. */
+function allScopes(): Runtime[] {
+  const out: Runtime[] = []
+  for (const scopes of runtimes.values()) out.push(...scopes.values())
+  return out
+}
+
+/** Убрать область из карты — и само занятие, если областей у него не осталось. */
+function forgetScope(runtime: Runtime): void {
+  const scopes = runtimes.get(runtime.sessionId)
+  if (!scopes) return
+  if (scopes.get(runtime.root) === runtime) scopes.delete(runtime.root)
+  if (scopes.size === 0) runtimes.delete(runtime.sessionId)
+}
+
+/**
+ * В какой тетради лежит ячейка — и `cells`, если её в комнате уже нет.
+ *
+ * Запасной ответ нужен для ячеек, удалённых, пока они стояли в очереди: искать
+ * их область по документу уже негде, а сказать «нигде» значило бы оставить
+ * запись в очереди навсегда. Настоящие вызовы, которым область важна, спрашивают
+ * `rootOfCell` сами и умеют получить `null`.
+ */
+function rootOf(sessionId: string, cellId: string): string {
+  try {
+    return rootOfCell(getSessionDoc(sessionId).doc, cellId) ?? CELLS_KEY
+  } catch {
+    return CELLS_KEY
+  }
+}
+
+/** Имя корня по самому массиву ячеек — `findCell` отдаёт его вместе с ячейкой. */
+function rootOfArray(cells: Y.Array<YCell>): string | null {
+  try {
+    return Y.findRootTypeKey(cells)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Чья это работа — по имени записи очереди, а не только по документу.
+ *
+ * Сначала спрашиваются живые области, и это не оптимизация. В очереди стоят не
+ * только ячейки: у попытки консилиума имя синтетическое (`councilQueueId`), и
+ * ячейки с таким именем в документе нет вовсе — найти её область можно только
+ * там, где она лежит. Тем же способом находится и ячейка, которую успели
+ * удалить, пока она ждала.
+ *
+ * Документ — второй вопрос и обычный случай: ячейка есть, область ей ещё не
+ * заводили. `fallback` — последнее слово вызывающего: тетрадь, из которой
+ * нажали.
+ */
+function scopeOfCell(sessionId: string, cellId: string, fallback: string): string {
+  for (const scope of scopesOf(sessionId)) {
+    if (scope.currentCell === cellId || scope.queue.some((item) => item.cellId === cellId)) {
+      return scope.root
+    }
+  }
+  try {
+    return rootOfCell(getSessionDoc(sessionId).doc, cellId) ?? fallback
+  } catch {
+    return fallback
+  }
 }
 
 /**
@@ -344,12 +506,32 @@ function dropWriter(runtime: Runtime): void {
 
 /* --------------------------------------------------------- document mirror */
 
+/**
+ * Состояние ядра ОДНОЙ тетради — в карту `meta.kernels`, а у тетради комнаты
+ * ещё и в прежний ключ.
+ *
+ * Зеркало — не переходный костыль, а три живых читателя. Вкладка, открытая до
+ * выкатки, знает только `kernelStatus` и будет знать только его до перезагрузки
+ * страницы. Снимки в истории версий хранят прежнюю форму, и лента обязана
+ * открываться. И сброс зависшего состояния (shared/notebook.ts · clearStaleWork)
+ * чинит обе записи сразу, потому что обе может оставить умерший процесс.
+ *
+ * Зеркалится ровно `cells` — тетрадь комнаты. Класть туда состояние «какой-то»
+ * тетради значило бы, что старая вкладка показывает то лекцию, то семинар, по
+ * тому, кто последним нажал.
+ */
 function setStatus(runtime: Runtime, status: KernelStatus): void {
   if (runtime.retired) return
   const { doc } = getSessionDoc(runtime.sessionId)
   const meta = getMeta(doc)
-  if (meta.get('kernelStatus') === status) return
-  doc.transact(() => meta.set('kernelStatus', status), ORIGIN)
+  const mirrored = runtime.root === CELLS_KEY
+  const entry = kernelsMap(doc)?.get(runtime.root)
+  const known = entry instanceof Y.Map ? entry.get(KERNEL_STATUS_FIELD) : undefined
+  if (known === status && (!mirrored || meta.get('kernelStatus') === status)) return
+  doc.transact(() => {
+    kernelEntry(doc, runtime.root).set(KERNEL_STATUS_FIELD, status)
+    if (mirrored) meta.set('kernelStatus', status)
+  }, ORIGIN)
 }
 
 /**
@@ -362,8 +544,15 @@ function setKernelProblem(runtime: Runtime, problem: KernelProblem | null): void
   if (runtime.retired) return
   const { doc } = getSessionDoc(runtime.sessionId)
   const meta = getMeta(doc)
-  if (problem === null && !meta.has(KERNEL_PROBLEM_KEY)) return
+  const mirrored = runtime.root === CELLS_KEY
+  const entry = kernelsMap(doc)?.get(runtime.root)
+  const had = entry instanceof Y.Map && entry.get(KERNEL_PROBLEM_KEY) != null
+  if (problem === null && !had && !(mirrored && meta.has(KERNEL_PROBLEM_KEY))) return
   doc.transact(() => {
+    const slot = kernelEntry(doc, runtime.root)
+    if (problem === null) slot.delete(KERNEL_PROBLEM_KEY)
+    else slot.set(KERNEL_PROBLEM_KEY, { ...problem })
+    if (!mirrored) return
     if (problem === null) meta.delete(KERNEL_PROBLEM_KEY)
     else meta.set(KERNEL_PROBLEM_KEY, { ...problem })
   }, ORIGIN)
@@ -406,39 +595,65 @@ export function queueDelta(
 }
 
 function syncQueue(runtime: Runtime): void {
+  if (runtime.retired) return
   const { doc } = getSessionDoc(runtime.sessionId)
   const meta = getMeta(doc)
+  const mirrored = runtime.root === CELLS_KEY
   // Попытки консилиума в зеркало не попадают: у них нет ячейки, которую
   // комната могла бы подсветить, а чип «2 queued» и так честен — он про лист.
   const ids = runtime.queue.filter((item) => !item.council).map((item) => item.cellId)
   const running = runtime.job ? null : (runtime.currentCell ?? null)
 
-  const existing = meta.get('queue')
+  const entry = kernelsMap(doc)?.get(runtime.root)
+  const existing = entry instanceof Y.Map ? entry.get(KERNEL_QUEUE_FIELD) : undefined
   const current = existing instanceof Y.Array ? (existing.toArray() as string[]) : null
   const queueUnchanged =
     current !== null && current.length === ids.length && current.every((id, i) => id === ids[i])
-  if (queueUnchanged && meta.get('runningCell') === running) return
+  const runningUnchanged =
+    entry instanceof Y.Map && (entry.get(KERNEL_RUNNING_FIELD) ?? null) === running
+  if (queueUnchanged && runningUnchanged) {
+    // Зеркало могло отстать само по себе только у комнаты со старым снимком;
+    // проверка дешевле, чем транзакция, и не даёт тихого расхождения.
+    if (!mirrored) return
+    const legacy = meta.get('queue')
+    const sameLegacy =
+      legacy instanceof Y.Array &&
+      legacy.length === ids.length &&
+      (legacy.toArray() as string[]).every((id, i) => id === ids[i])
+    if (sameLegacy && (meta.get('runningCell') ?? null) === running) return
+  }
 
   doc.transact(() => {
-    let list = meta.get('queue') as Y.Array<string> | undefined
-    if (!(list instanceof Y.Array)) {
-      list = new Y.Array<string>()
-      meta.set('queue', list)
-    }
-    /*
-     * Список трогается ТОЛЬКО когда он правда изменился.
-     *
-     * Смена одной `runningCell` — самое частое, что здесь происходит (два раза
-     * на ячейку), и списка она не касается вовсе: раньше он всё равно
-     * переписывался целиком.
-     */
-    if (!queueUnchanged) {
-      const delta = queueDelta((list.toArray() as string[]) ?? [], ids)
-      if (delta.remove > 0) list.delete(delta.at, delta.remove)
-      if (delta.insert.length > 0) list.insert(delta.at, delta.insert)
-    }
+    const slot = kernelEntry(doc, runtime.root)
+    writeQueue(slot, KERNEL_QUEUE_FIELD, ids, queueUnchanged)
+    slot.set(KERNEL_RUNNING_FIELD, running)
+    if (!mirrored) return
+    writeQueue(meta, 'queue', ids, false)
     meta.set('runningCell', running)
   }, ORIGIN)
+}
+
+/**
+ * Записать список ожидающих узкой правкой — ту же, что и раньше.
+ *
+ * Полная перезапись превращала каждый старт и каждый конец ячейки в «удалить
+ * всё и положить всё» — сотни идентификаторов в обновлении Yjs на КАЖДЫЙ шаг
+ * очереди, всей комнате. См. `queueDelta`.
+ */
+function writeQueue(
+  holder: Y.Map<any>,
+  key: string,
+  ids: string[],
+  unchanged: boolean,
+): void {
+  let list = holder.get(key) as Y.Array<string> | undefined
+  if (!(list instanceof Y.Array)) {
+    list = new Y.Array<string>()
+    holder.set(key, list)
+  } else if (unchanged) return
+  const delta = queueDelta((list.toArray() as string[]) ?? [], ids)
+  if (delta.remove > 0) list.delete(delta.at, delta.remove)
+  if (delta.insert.length > 0) list.insert(delta.at, delta.insert)
 }
 
 /**
@@ -456,11 +671,21 @@ async function runOnKernel(
     return await runtime.kernel!.execute(source, handlers, opts)
   } catch (err) {
     if (runtime.kernel && runtime.kernel.phase !== 'dead') throw err
+    /*
+     * Область закрыта — поднимать ей ядро заново НЕЛЬЗЯ.
+     *
+     * Сюда приходит и обычная смерть ядра на перемене (тогда свежее ядро —
+     * ровно то, что нужно), и конец области: семинар удалили, тетрадь убрали,
+     * доступ к ней сменили. Во втором случае подъём завёл бы комнате новый
+     * контейнер и новый Python под тетрадь, которой уже нет, — и писал бы в
+     * документ, который в этот момент выселяют.
+     */
+    if (runtime.retired) throw err
     kernelNote(
       runtime.sessionId,
       tr("server.theKernelHadStoppedStartingAFresh.65e2e2"),
     )
-    await ensureKernel(runtime.sessionId)
+    await ensureKernel(runtime.sessionId, runtime.root)
     /*
      * Секундомер заводится заново, когда ядро наконец есть.
      *
@@ -516,8 +741,10 @@ function setCellState(sessionId: string, cellId: string, state: CellState): void
    * документе остаётся тем, чем и было: числом, от которого в браузере растёт
    * секундомер. Настоящее время начала сервер держит у себя.
    */
-  const runtime = runtimes.get(sessionId)
-  const startedAt = runtime?.started?.cellId === cellId ? runtime.started.at : null
+  // По областям: ячейка принадлежит одной тетради, но отметку начала держит
+  // та область, которая её и запускала, — а какая именно, знает только она.
+  const runtime = scopesOf(sessionId).find((scope) => scope.started?.cellId === cellId)
+  const startedAt = runtime?.started?.at ?? null
   doc.transact(() => {
     const was = found.cell.get('state') as CellState | undefined
     found.cell.set('state', state)
@@ -526,7 +753,7 @@ function setCellState(sessionId: string, cellId: string, state: CellState): void
       found.cell.set('ranMs', Math.max(0, Date.now() - startedAt))
     }
   }, ORIGIN)
-  if (runtime?.started?.cellId === cellId) runtime.started = null
+  if (runtime) runtime.started = null
 }
 
 /**
@@ -555,8 +782,10 @@ const orphanSweeps = new Map<string, number>()
  * дышит и считает секунды до конца пары: анимация сделала старую тихую беду
  * громкой, и чинить её приходится здесь.
  *
- * `runtimes.get`, а не `getRuntime`: комната, в которой никто ничего не
- * запускал, не должна обзаводиться средой исполнения от одной проверки.
+ * `scopesOf`, а не `getRuntime`: комната, в которой никто ничего не запускал,
+ * не должна обзаводиться средой исполнения от одной проверки. Проход идёт по
+ * ВСЕМ областям занятия: ядер у него столько, сколько тетрадей, и застрявшая
+ * ячейка может стоять в любой из них.
  *
  * Отвергнутый вариант — повесить отложенный проход на `doc.on('update')` в
  * collab. Это точный момент, и он же цикл: ядро берёт `getSessionDoc` у collab,
@@ -573,10 +802,10 @@ export function sweepOrphanRuns(sessionId: string, now: number = Date.now()): nu
   const last = orphanSweeps.get(sessionId)
   if (last !== undefined && now - last < ORPHAN_SWEEP_EVERY_MS) return 0
   orphanSweeps.set(sessionId, now)
-  const runtime = runtimes.get(sessionId)
+  const scopes = scopesOf(sessionId)
   const { doc } = getSessionDoc(sessionId)
-  // По всем тетрадям комнаты: ядро одно, очередь одна, и застрявшая ячейка
-  // может стоять в любой открытой.
+  // По всем тетрадям комнаты: у каждой своё ядро и своя очередь, и застрявшая
+  // ячейка может стоять в любой открытой.
   const cells = allCellArrays(doc).flatMap((array: Y.Array<YCell>) => array.toArray())
   let repaired = 0
 
@@ -585,8 +814,9 @@ export function sweepOrphanRuns(sessionId: string, now: number = Date.now()): nu
       const state = cell.get('state')
       if (state !== 'running' && state !== 'queued') continue
       const id = idOf(cell)
-      const ours =
-        runtime && (runtime.currentCell === id || runtime.queue.some((q) => q.cellId === id))
+      const ours = scopes.some(
+        (scope) => scope.currentCell === id || scope.queue.some((q) => q.cellId === id),
+      )
       if (ours) continue
       cell.set('state', 'idle' as CellState)
       cell.set('startedAt', null)
@@ -616,10 +846,34 @@ export function sweepOrphanRuns(sessionId: string, now: number = Date.now()): nu
    * перезапуска — чистим прямо, как это делает clearStaleExecution.
    */
   if (repaired > 0) {
-    if (runtime) syncQueue(runtime)
-    else {
-      const meta = getMeta(doc)
-      doc.transact(() => {
+    const live = new Set(scopes.map((scope) => scope.root))
+    for (const scope of scopes) syncQueue(scope)
+    /*
+     * И по тем тетрадям, у которых области в этом процессе НЕТ.
+     *
+     * Это и есть случай после перезапуска сервера: запись в документе осталась
+     * от умершего процесса, а завести ей область значило бы поднять комнате
+     * Python от одной проверки. Чистим прямо — то же, что делает
+     * clearStaleExecution, только теперь по карте.
+     */
+    const meta = getMeta(doc)
+    const roots = new Set<string>([CELLS_KEY, ...bookList(doc).map((book) => book.root)])
+    const known = kernelsMap(doc)
+    if (known) for (const root of known.keys()) roots.add(root)
+    doc.transact(() => {
+      for (const root of roots) {
+        if (live.has(root)) continue
+        const entry = known?.get(root)
+        if (entry instanceof Y.Map) {
+          const queue = entry.get(KERNEL_QUEUE_FIELD)
+          if (queue instanceof Y.Array && queue.length > 0) queue.delete(0, queue.length)
+          if (entry.get(KERNEL_RUNNING_FIELD) != null) entry.set(KERNEL_RUNNING_FIELD, null)
+          const state = entry.get(KERNEL_STATUS_FIELD)
+          if (state === 'busy' || state === 'restarting') {
+            entry.set(KERNEL_STATUS_FIELD, 'idle' as KernelStatus)
+          }
+        }
+        if (root !== CELLS_KEY) continue
         const queue = meta.get('queue')
         if (queue instanceof Y.Array && queue.length > 0) queue.delete(0, queue.length)
         if (meta.get('runningCell') != null) meta.set('runningCell', null)
@@ -627,8 +881,8 @@ export function sweepOrphanRuns(sessionId: string, now: number = Date.now()): nu
         if (status === 'busy' || status === 'restarting') {
           meta.set('kernelStatus', 'idle' as KernelStatus)
         }
-      }, ORIGIN)
-    }
+      }
+    }, ORIGIN)
   }
 
   // runBy, runById, execCount, ranMs и вывод остаются: та же позиция, что у
@@ -736,7 +990,9 @@ function tellWhyItDied(runtime: Runtime, cellId: string | null): void {
   })()
   const found = cellId && doc ? findCell(doc, cellId) : null
   const cell = found ? found.index + 1 : null
-  void explainDeath(runtime.sessionId, cell)
+  // Вскрытие — по ТОМУ контейнеру, где жило умершее ядро: у личных тетрадей
+  // свой cgroup, свой лимит памяти и свой счётчик убийств.
+  void explainDeath(runtime.sessionId, cell, runtime.role)
     .then((why) => {
       if (!why) return
       // В журнал машины — тем же словом `oom`, по которому эту беду уже ищут
@@ -771,7 +1027,7 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
      * «From an earlier run — the kernel restarted». Без этой строки врала не
      * одна убитая ячейка, а вся тетрадь.
      */
-    resetAllCells(runtime.sessionId, runtime.currentCell)
+    resetAllCells(runtime, runtime.currentCell)
     const known = churnReason()
     /*
      * В журнал — отдельной строкой, и словом «oom».
@@ -846,11 +1102,40 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
  * Idempotent and concurrency-safe: five students hitting Run at once share one
  * connect. A kernel that has died counts as absent, so the next Run quietly
  * brings a fresh one up instead of demanding a manual restart.
+ *
+ * `root` — тетрадь, чьё ядро поднимаем; без него — тетрадь комнаты, то есть
+ * прежнее поведение для всего, что о нескольких ядрах ещё не знает.
  */
-export function ensureKernel(sessionId: string): Promise<void> {
-  const runtime = getRuntime(sessionId)
+export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promise<void> {
+  const runtime = getRuntime(sessionId, root)
   if (runtime.kernel && runtime.kernel.phase !== 'dead') return Promise.resolve()
   if (runtime.starting) return runtime.starting
+
+  /*
+   * Потолок личных ядер считается ДО подъёма и до всякой работы.
+   *
+   * Контейнер личных тетрадей один на занятие, и ядер в нём десятки: без
+   * потолка поток, у каждого по черновику, кладёт его на пределе процессов или
+   * памяти — то есть роняет работу всех сразу и молча. Считаются живые ядра, а
+   * не заведённые области: тетрадь, чьё ядро погасло по простою, места не
+   * занимает.
+   *
+   * Своя область в счёт не идёт: у неё ядро либо уже есть (и мы сюда не дошли),
+   * либо умерло и поднимается заново — отказать ей значило бы запереть тетрадь
+   * насовсем после первого же OOM.
+   */
+  if (runtime.role === 'own') {
+    const limit = ownKernelMax()
+    const live = scopesOf(sessionId).filter(
+      (scope) =>
+        scope !== runtime && scope.role === 'own' && scope.kernel && scope.kernel.phase !== 'dead',
+    ).length
+    if (live >= limit) {
+      const refusal = new Error(tr('server.kernel.ownFull', { p0: limit }))
+      setStatus(runtime, 'dead')
+      return Promise.reject(refusal)
+    }
+  }
 
   const dead = runtime.kernel
   runtime.kernel = null
@@ -897,10 +1182,16 @@ export function ensureKernel(sessionId: string): Promise<void> {
     // Какое окружение сейчас спрашиваем — понадобится, если оно не ответит.
     const wanted = sessionEnvironment(sessionId)
     try {
-      // Куда идти за Python — решает сама комната: у каждой свой контейнер, и
-      // окружение выбирает только образ, из которого он поднят.
-      const endpoint = await endpointForSession(sessionId, wanted)
-      const kernel = await JupyterKernel.connect(sessionId, endpoint)
+      /*
+       * Куда идти за Python — решают комната и тетрадь.
+       *
+       * Комната выбирает контейнер: у занятия свой, у его личных тетрадей —
+       * второй, без карты (pool.ts · KernelRole). Окружение выбирает только
+       * образ, из которого контейнер поднят. А тетрадь выбирает СЕССИЮ внутри
+       * него: разные пути — разные ядра и разные переменные.
+       */
+      const endpoint = await endpointForSession(sessionId, wanted, runtime.role)
+      const kernel = await JupyterKernel.connect(sessionId, endpoint, runtime.root)
       if (runtime.retired) {
         // Семинар закрыли, пока ядро поднималось. Подключаться теперь не к
         // чему: без этой ветки сокет и сторож живого ядра остались бы висеть
@@ -923,7 +1214,7 @@ export function ensureKernel(sessionId: string): Promise<void> {
       setStatus(runtime, runtime.currentCell ? 'busy' : (kernel.phase as KernelStatus))
       // Подъём ядра — настоящее событие: до полутора минут холодного старта, и
       // именно между этой строкой и следующей комната смотрит в пустоту.
-      console.log(`[kernel ${sessionId}] up (${envName ?? 'shared'})`)
+      console.log(`[kernel ${sessionId}/${runtime.root}] up (${envName ?? 'shared'}, ${runtime.role})`)
       /*
        * Точка отсчёта для будущего вскрытия.
        *
@@ -933,7 +1224,7 @@ export function ensureKernel(sessionId: string): Promise<void> {
        * ячейкой» от «убит утром на прошлой паре». Не ждём: старт комнаты не
        * должен стоять из-за диагностики, которая понадобится через час.
        */
-      void sampleKills(sessionId)
+      void sampleKills(sessionId, runtime.role)
     } catch (err) {
       setStatus(runtime, 'dead')
       // Отказ планировщика — слово для совета преподавателю; остальное его снимает.
@@ -942,11 +1233,11 @@ export function ensureKernel(sessionId: string): Promise<void> {
       // Не чаще раза в минуту на комнату: `ensureKernel` зовёт и вход каждого
       // студента, и каждый Run, а обещание у них одно на всех — тридцать
       // одинаковых строк в ту же миллисекунду мы уже видели.
-      if (seldom(`kernel-down:${sessionId}`)) {
+      if (seldom(`kernel-down:${sessionId}/${runtime.root}`)) {
         // Текст ошибки здесь — студенческий, поэтому в журнал ещё и слово:
         // оператору по нему искать в событиях кластера.
         const lacking = problem ? ` [unschedulable: ${problem.unschedulable}]` : ''
-        console.warn(`[kernel ${sessionId}] did not start: ${errText(err)}${lacking}`)
+        console.warn(`[kernel ${sessionId}/${runtime.root}] did not start: ${errText(err)}${lacking}`)
       }
       /*
        * Забыть запомненный адрес контейнера.
@@ -956,7 +1247,7 @@ export function ensureKernel(sessionId: string): Promise<void> {
        * старому — и будет ходить, пока не перезапустят весь сервер: «No Python
        * kernel after 60s» на каждый Run, при живом и здоровом контейнере рядом.
        */
-      forgetSessionKernel(sessionId)
+      forgetSessionKernel(sessionId, runtime.role)
       // Into the shared record too: the person who presses Run sees the message
       // on their cell, and everyone else sees a notebook that stopped.
       // Закрытой комнате — молча: заметка завела бы её документ заново.
@@ -980,15 +1271,20 @@ export function ensureKernel(sessionId: string): Promise<void> {
  * вдруг NameError, а на экране ни строки. Теперь строка есть, и в ней сказано
  * почему.
  */
-onRoomKernelRecreated((sessionId, why) => {
-  // Контейнер новый — и счётчик его убийств тоже начинается с нуля.
-  forgetKills(sessionId)
+onRoomKernelRecreated((sessionId, why, role) => {
+  // Контейнер новый — и счётчик его убийств тоже начинается с нуля. Считается
+  // он по контейнеру комнаты (postmortem.ts), так что пересоздание второго его
+  // не касается.
+  if (role !== 'own') forgetKills(sessionId)
   // Закрытой комнате — молча: заметка завела бы её документ заново.
-  if (runtimes.get(sessionId)?.retired) return
+  const scopes = scopesOf(sessionId)
+  if (scopes.length > 0 && scopes.every((scope) => scope.retired)) return
   kernelNote(
     sessionId,
-    tr("server.theRoomSPythonContainerHadTo.253b0b", { p0: why }) +
-      'The files in the Files panel are untouched; run your cells again.',
+    role === 'own'
+      ? tr('server.kernel.ownRecreated', { p0: why })
+      : tr("server.theRoomSPythonContainerHadTo.253b0b", { p0: why }) +
+          'The files in the Files panel are untouched; run your cells again.',
   )
 })
 
@@ -1015,8 +1311,20 @@ export function kernelNote(sessionId: string, text: string): void {
   }
 }
 
-export async function restartSession(sessionId: string, restartedBy?: string): Promise<void> {
-  const runtime = getRuntime(sessionId)
+/**
+ * Перезапустить ядро ОДНОЙ тетради.
+ *
+ * `root` — чьё; без него — тетрадь комнаты, чтобы вкладка, открытая до выкатки,
+ * делала ровно то, что делала раньше. Соседние тетради занятия это не трогает
+ * вовсе: у них свои процессы, и «перезапустить лекцию» не должно означать
+ * «обнулить семинар».
+ */
+export async function restartSession(
+  sessionId: string,
+  restartedBy?: string,
+  root: string = CELLS_KEY,
+): Promise<void> {
+  const runtime = getRuntime(sessionId, root)
   // Два нажатия — один перезапуск. Второе присоединяется к первому, а не
   // запускает поверх него ещё один.
   if (runtime.restarting) return runtime.restarting
@@ -1027,8 +1335,8 @@ export async function restartSession(sessionId: string, restartedBy?: string): P
   runtime.restarting = (async () => {
     try {
       if (runtime.kernel && runtime.kernel.phase !== 'dead') await runtime.kernel.restart()
-      else await ensureKernel(sessionId)
-      resetAllCells(sessionId, runtime.currentCell)
+      else await ensureKernel(sessionId, root)
+      resetAllCells(runtime, runtime.currentCell)
       setStatus(runtime, 'idle')
       kernelNote(
         sessionId,
@@ -1066,12 +1374,23 @@ export async function restartSession(sessionId: string, restartedBy?: string): P
  * которые ничего не нажимали. Пока «стоп» жил только внизу ячейки, попасть в
  * этот промежуток было трудно; кнопка под курсором делает это лёгким.
  *
- * Без `cellId` поведение прежнее, и эта ветка нужна: комнатный Interrupt в
- * верхней панели — единственный способ разобрать скопившуюся очередь одним
- * нажатием, когда не выполняется ничего.
+ * Без `cellId` поведение прежнее, и эта ветка нужна: Interrupt в полосе
+ * тетради — единственный способ разобрать скопившуюся очередь одним нажатием,
+ * когда не выполняется ничего.
+ *
+ * @param root Тетрадь, чьё ядро останавливаем. Названная ячейка сильнее: её
+ * область и есть та, где идёт работа, — а `root` при промахе именем взялся бы
+ * из вкладки, которая в этот момент открыта.
  */
-export async function interruptSession(sessionId: string, cellId?: string): Promise<void> {
-  const runtime = getRuntime(sessionId)
+export async function interruptSession(
+  sessionId: string,
+  cellId?: string,
+  root: string = CELLS_KEY,
+): Promise<void> {
+  const runtime = getRuntime(
+    sessionId,
+    cellId === undefined ? root : scopeOfCell(sessionId, cellId, root),
+  )
   /*
    * Drop the tail first: interrupting cell 3 of 10 must not start cell 4.
    *
@@ -1091,15 +1410,16 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
    * ядро в этот момент считает следующую ячейку того же Run All, и человек,
    * который жал «стоп», остаётся с работающей тетрадью и молчащей кнопкой.
    *
-   * Опасна была ровно нижняя ветка: `dropQueue` выносит очередь всей комнаты,
+   * Опасна была ровно нижняя ветка: `dropQueue` выносит очередь всей тетради,
    * включая чужие батчи. `stopBatchOf` так не умеет — он ограничен батчем той
    * ячейки, которая сейчас выполняется, — поэтому остановить текущую работу
    * можно и промахнувшимся нажатием, а вот разбирать очередь по промаху нельзя.
    */
   if (running) {
     /*
-     * SIGINT всё равно достаётся тому, что считается: ядро одно, и выбирать
-     * ему не из чего. А вот очередь по промаху разбираем только свою.
+     * SIGINT всё равно достаётся тому, что считается в ЭТОЙ тетради: ядро у
+     * области одно, и выбирать ему не из чего. А вот очередь по промаху
+     * разбираем только свою.
      *
      * Промах между двумя ячейками бывает и межвладельческим: преподаватель
      * жмёт «стоп» на своей ячейке ровно когда она кончилась, а ядро уже взяло
@@ -1117,7 +1437,7 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
   try {
     await runtime.kernel.interrupt()
   } catch (err) {
-    console.error(`[kernel] interrupt failed for ${sessionId}:`, errText(err))
+    console.error(`[kernel] interrupt failed for ${sessionId}/${runtime.root}:`, errText(err))
   }
 }
 
@@ -1130,20 +1450,23 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
  * Every other caller wants restartSession, which keeps the room.
  */
 export async function shutdownSession(sessionId: string, permanent = false): Promise<void> {
-  const runtime = runtimes.get(sessionId)
-  if (runtime) {
+  // ВСЕ области занятия: ядер у него столько, сколько тетрадей, и оставить
+  // хоть одно значило бы оставить процесс, который пишет в документ комнаты,
+  // которой больше нет.
+  const scopes = scopesOf(sessionId)
+  runtimes.delete(sessionId)
+  for (const runtime of scopes) {
     // Первым делом, до всякого await: подъём ядра, идущий прямо сейчас, увидит
     // этот признак и не станет ни писать в документ, ни оставлять за собой
     // подключённое ядро.
     runtime.retired = true
-    runtimes.delete(sessionId)
     for (const item of runtime.queue) finishExecution(runtime, item, 'cancelled')
     runtime.queue.length = 0
     dropWriter(runtime)
     try {
       await runtime.kernel?.dispose()
     } catch (err) {
-      console.error(`[kernel] could not stop ${sessionId}:`, errText(err))
+      console.error(`[kernel] could not stop ${sessionId}/${runtime.root}:`, errText(err))
     }
   }
   try {
@@ -1156,12 +1479,12 @@ export async function shutdownSession(sessionId: string, permanent = false): Pro
   // И отметка прохода по призракам: комната кончилась, помнить о ней нечего.
   orphanSweeps.delete(sessionId)
   /*
-   * И сам контейнер комнаты.
+   * И сами контейнеры комнаты — оба.
    *
-   * Контейнер теперь один на семинар, а не один на окружение: не убрать его —
-   * значит оставить по контейнеру на каждую пару, когда-либо проведённую на
-   * этой машине. Файлы комнаты лежат на хосте и это переживают; уходит только
-   * Python со всеми переменными, что и означает «семинар закончился».
+   * Контейнеры теперь по паре на семинар, а не один на окружение: не убрать их
+   * — значит оставить по два контейнера на каждую пару, когда-либо проведённую
+   * на этой машине. Файлы комнаты лежат на хосте и это переживают; уходит
+   * только Python со всеми переменными, что и означает «семинар закончился».
    */
   // Deleting documents or files is safe only after the runtime confirms that
   // every room writer stopped. The caller must retain the room on failure.
@@ -1172,6 +1495,177 @@ export async function shutdownSession(sessionId: string, permanent = false): Pro
   forgetKills(sessionId)
 }
 
+/* ------------------------------------------------- переезд и снос областей */
+
+/**
+ * Погасить ядро ОДНОЙ тетради — со всем, что оно держало.
+ *
+ * Не перезапуск: область снимается с карты целиком, и следующий запуск в этой
+ * тетради заведёт её заново — уже там, где ей теперь положено жить. Это и есть
+ * «переезд»: переселить живой процесс из одного контейнера в другой нельзя, а
+ * делать вид, что переменные уцелели, — хуже, чем сказать, что их нет.
+ *
+ * Порядок здесь важен и весь про гонку с насосом. Сначала область снимается с
+ * карты, чтобы параллельный Run завёл СВЕЖУЮ, а не дописывал в умирающую.
+ * Потом разбирается очередь — ячейки возвращаются в покой, попытки консилиума
+ * узнают, что запуска не было. И только потом гасится ядро: его `dispose`
+ * обрывает то, что считалось, и насос допишет в ячейку своё — поэтому
+ * состояния ячеек тетради выравниваются ПОСЛЕ него, последним словом.
+ */
+async function retireScope(runtime: Runtime, note: string | null): Promise<void> {
+  const { sessionId, root } = runtime
+  forgetScope(runtime)
+  if (runtime.activityItem) runtime.activityItem.activityCancelled = true
+  /*
+   * Что эта область держала — до того, как мы её разберём.
+   *
+   * Ячейка, которая считалась, кончится сама: `dispose` оборвёт её, и насос
+   * допишет в неё «ядро остановлено». Для обычной смерти ядра это правильные
+   * слова, а здесь — нет: ядра не стало не потому, что что-то сломалось, а
+   * потому, что тетрадь переехала, и об этом сказано отдельной строкой. Имена
+   * запоминаются сейчас, потому что через строку очередь будет пуста.
+   */
+  const touched = new Set<string>(runtime.queue.map((item) => item.cellId))
+  if (runtime.currentCell) touched.add(runtime.currentCell)
+  dropQueue(runtime)
+  dropWriter(runtime)
+  // Признак ставится ДО `dispose`: насос, увидев мёртвое ядро, иначе поднял бы
+  // этой тетради новое (см. `runOnKernel`) — тетради, которой уже нет.
+  runtime.retired = true
+  try {
+    await runtime.kernel?.dispose()
+  } catch (err) {
+    console.error(`[kernel] could not stop ${sessionId}/${root}:`, errText(err))
+  }
+  runtime.kernel = null
+  /*
+   * Дождаться насоса, прежде чем выравнивать ячейки.
+   *
+   * `dispose` обрывает то, что считалось, но узнаёт об этом `runOne` на своём
+   * `await` — и дописывает в ячейку свой конец («ядро остановлено») уже после
+   * того, как мы отсюда вернёмся. Выровнять состояния раньше него значит
+   * оставить в тетради «ошибка» там, где ядра просто не стало: последнее слово
+   * должно быть за нами, а не за гонкой.
+   */
+  await settled(runtime)
+  runtime.currentCell = null
+  restCells(sessionId, root, touched)
+  clearScopeMirror(sessionId, root)
+  if (note) kernelNote(sessionId, note)
+  // Контейнер личных тетрадей держится, пока в нём есть хоть одно ядро.
+  if (runtime.role === 'own') await dropOwnIfEmpty(sessionId)
+}
+
+/**
+ * Подождать, пока насос этой области остановится, — но не дольше секунды.
+ *
+ * Секунда, а не «сколько понадобится»: сюда приходит удаление семинара и смена
+ * доступа, и висеть на них из-за ядра, которое не отвечает, нельзя. Не успели —
+ * выравниваем состояния как есть: лишняя строка «ядро остановлено» в тетради
+ * честнее, чем запрос, который не вернулся.
+ */
+async function settled(runtime: Runtime): Promise<void> {
+  const deadline = Date.now() + 1000
+  while (runtime.pumping && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+/**
+ * Всё, что эта тетрадь считала, — обратно в покой. Вывод остаётся: он был.
+ *
+ * `touched` — имена, которые область держала на момент сноса. Они гасятся в
+ * любом состоянии, а не только из «работает»: насос успел дописать в свою
+ * ячейку конец («ядро остановлено»), и оставить её красной значило бы объявить
+ * поломкой то, что было переездом.
+ */
+function restCells(sessionId: string, root: string, touched: ReadonlySet<string>): void {
+  let doc: Y.Doc
+  try {
+    doc = getSessionDoc(sessionId).doc
+  } catch {
+    return
+  }
+  const cells = bookCells(doc, root).toArray()
+  doc.transact(() => {
+    for (const cell of cells) {
+      const state = cell.get('state')
+      const ours = touched.has(idOf(cell))
+      if (!ours && state !== 'running' && state !== 'queued') continue
+      if (state === 'idle') continue
+      cell.set('state', 'idle' as CellState)
+      cell.set('startedAt', null)
+      if (cell.get('stdin') != null) cell.set('stdin', null)
+    }
+  }, ORIGIN)
+}
+
+/** Снять запись тетради из карты ядер — и её зеркало, если это тетрадь комнаты. */
+function clearScopeMirror(sessionId: string, root: string): void {
+  let doc: Y.Doc
+  try {
+    doc = getSessionDoc(sessionId).doc
+  } catch {
+    return
+  }
+  const map = kernelsMap(doc)
+  const meta = getMeta(doc)
+  doc.transact(() => {
+    if (map?.has(root)) map.delete(root)
+    if (root !== CELLS_KEY) return
+    const queue = meta.get('queue')
+    if (queue instanceof Y.Array && queue.length > 0) queue.delete(0, queue.length)
+    if (meta.get('runningCell') != null) meta.set('runningCell', null)
+    meta.set('kernelStatus', 'idle' as KernelStatus)
+    if (meta.has(KERNEL_PROBLEM_KEY)) meta.delete(KERNEL_PROBLEM_KEY)
+  }, ORIGIN)
+}
+
+/** Личных ядер не осталось — контейнеру личных тетрадей стоять незачем. */
+async function dropOwnIfEmpty(sessionId: string): Promise<void> {
+  if (scopesOf(sessionId).some((scope) => scope.role === 'own')) return
+  try {
+    await dropOwnKernel(sessionId)
+  } catch (err) {
+    console.error(`[kernel] could not drop the personal-notebook container of ${sessionId}:`, errText(err))
+  }
+}
+
+/**
+ * Свериться с правилами и документом: где ядрам этого занятия теперь место.
+ *
+ * Зовётся там, где меняется ответ: преподаватель сменил доступ тетради
+ * (routes/sessions.ts, routes/admin-instance.ts) и тетрадь убрали из комнаты
+ * (control.ts · onBooksWritten). Дёшево: проход по живым областям занятия, а их
+ * столько, сколько тетрадей в нём открывали, — единицы.
+ *
+ * Почему гасим, а не переносим. Ядро — это процесс в конкретном контейнере с
+ * конкретным лимитом памяти и конкретным доступом к карте. «Перенести» его
+ * нельзя: можно только завести новый и потерять переменные. Оставить как есть —
+ * значит оставить личную тетрадь студента считаться в контейнере лекции, с её
+ * GPU и её OOM-killer'ом, то есть ровно то, от чего вся эта развилка и стоит.
+ */
+export function syncBookKernels(sessionId: string): void {
+  const scopes = scopesOf(sessionId)
+  if (scopes.length === 0) return
+  const doc = peekSessionDoc(sessionId)?.doc ?? null
+  const books = doc ? bookList(doc) : []
+  // Пустой список — у комнаты, которую ещё не открывали в этом процессе, и у
+  // документа из теста. Считать по нему «тетрадей нет» значило бы погасить всё.
+  const roots = books.length > 0 ? new Set(books.map((book) => book.root)) : null
+  const named = (root: string): string =>
+    books.find((book) => book.root === root)?.path ?? root
+  for (const scope of scopes) {
+    if (scope.retired) continue
+    const gone = roots !== null && !roots.has(scope.root)
+    if (!gone && roleOfBook(sessionId, scope.root) === scope.role) continue
+    void retireScope(
+      scope,
+      gone ? null : `${named(scope.root)}: ${tr('server.kernel.bookAccessChanged')}`,
+    )
+  }
+}
+
 /* --------------------------------------------------------- уборка простоя */
 
 /**
@@ -1179,9 +1673,10 @@ export async function shutdownSession(sessionId: string, permanent = false): Pro
  *
  * Пара идёт полтора часа; два часа пустой комнаты — это «занятие кончилось», а
  * не «преподаватель вышел за кофе». Раньше уборки не требовалось вовсе:
- * контейнер был один на окружение и обслуживал всех. Теперь их по одному на
- * семинар, и без уборки на машине копится по контейнеру на каждую когда-либо
- * проведённую пару.
+ * контейнер был один на окружение и обслуживал всех. Теперь их по ДВА на
+ * семинар — его собственный и тот, где считаются личные тетради студентов, — и
+ * без уборки на машине копится по паре на каждую когда-либо проведённую пару.
+ * Уходят они вместе: занятие кончилось целиком, а не наполовину.
  */
 const IDLE_KERNEL_MS = 2 * 60 * 60 * 1000
 /**
@@ -1258,15 +1753,18 @@ async function sweepIdleKernelsOnce(): Promise<void> {
   for (const sessionId of runningRoomKernels()) rooms.set(sessionId, true)
   for (const room of await listRoomKernels()) rooms.set(room.session, room.running)
   for (const [sessionId, running] of rooms) {
-    const runtime = runtimes.get(sessionId)
+    const scopes = scopesOf(sessionId)
     // Считающая комната занята, даже если все закрыли вкладки: у ячейки есть
     // хозяин, который вернётся за результатом. То же и у команды в оболочке:
     // трёхчасовое обучение, запущенное в терминале, — работа с хозяином, и
     // снести контейнер под ней значит убить её строкой «terminal closed».
+    //
+    // По ВСЕМ областям занятия: считающая лекция держит комнату так же, как
+    // держал бы её единственный прежний насос, — а уборка снимает контейнеры
+    // занятия целиком, и оба сразу.
     const busy =
       onlineCount(sessionId) > 0 ||
-      !!runtime?.currentCell ||
-      (runtime?.queue.length ?? 0) > 0 ||
+      scopes.some((scope) => scope.currentCell !== null || scope.queue.length > 0) ||
       terminalPhase(sessionId) === 'busy'
     const verdict = idleVerdict({ running, busy, since: lastOccupied.get(sessionId), now })
     if (verdict !== 'drop') {
@@ -1301,7 +1799,7 @@ setInterval(() => void sweepIdleKernels(), SWEEP_EVERY_MS).unref()
  * running; a room's kernel is ended when the room is (shutdownSession).
  */
 export async function shutdownKernels(): Promise<void> {
-  const all = [...runtimes.values()]
+  const all = allScopes()
   runtimes.clear()
   // Отметки прохода — вместе со средами исполнения: следующий процесс начинает
   // с чистого листа, и первый же его повод обязан пройти по призракам.
@@ -1317,15 +1815,19 @@ export async function shutdownKernels(): Promise<void> {
 /**
  * Состояние ядер для минутной сводки: живые, из них занятые, и мёртвые.
  *
- * Комнаты, которым ядро ещё ни разу не поднимали, здесь не считаются вовсе:
- * у них нет ядра, а не мёртвое — и записывать всю тетрадную комнату в потери
- * значило бы каждую минуту пугать того, кто читает журнал.
+ * Считаются ЯДРА, а не комнаты: у занятия их столько, сколько тетрадей в нём
+ * открывали, плюс личные тетради его студентов. Сводка про нагрузку машины, и
+ * нагрузку даёт каждый процесс, а не комната.
+ *
+ * Тетради, которым ядро ещё ни разу не поднимали, здесь не считаются вовсе:
+ * у них нет ядра, а не мёртвое — и записывать пустую тетрадь в потери значило
+ * бы каждую минуту пугать того, кто читает журнал.
  */
 export function kernelCensus(): { live: number; busy: number; dead: number } {
   let live = 0
   let busy = 0
   let dead = 0
-  for (const runtime of runtimes.values()) {
+  for (const runtime of allScopes()) {
     const phase = runtime.kernel?.phase
     if (!phase) continue
     if (phase === 'dead') {
@@ -1333,7 +1835,7 @@ export function kernelCensus(): { live: number; busy: number; dead: number } {
       continue
     }
     live += 1
-    // Занято — это когда в комнате правда идёт ячейка: фаза 'busy' приходит от
+    // Занято — это когда в тетради правда идёт ячейка: фаза 'busy' приходит от
     // Jupyter с задержкой, а `currentCell` знает об этом с самого execute.
     if (phase === 'busy' || runtime.currentCell !== null) busy += 1
   }
@@ -1346,10 +1848,22 @@ export function kernelCensus(): { live: number; busy: number; dead: number } {
  * Read from the runtime rather than the document: the document is shared and a
  * client could write `runById` into a cell itself. The queue is the server's
  * own record of who asked for what.
+ *
+ * `root` — тетрадь, про которую спрашивают; без него — про ЛЮБУЮ тетрадь
+ * занятия. Это не послабление, а прежний смысл вопроса: его задаёт «стоп» и
+ * ответ на `input()`, и человек, у которого считается ячейка в семинаре,
+ * остаётся её хозяином независимо от того, какую вкладку он держит открытой.
  */
-export function startedTheRunningCell(sessionId: string, participantId: string): boolean {
-  const runtime = runtimes.get(sessionId)
-  if (!runtime) return false
+export function startedTheRunningCell(
+  sessionId: string,
+  participantId: string,
+  root?: string,
+): boolean {
+  const scopes = root === undefined ? scopesOf(sessionId) : [peekRuntime(sessionId, root)]
+  return scopes.some((scope) => scope !== undefined && startedIn(scope, participantId))
+}
+
+function startedIn(runtime: Runtime, participantId: string): boolean {
   if (runtime.currentCell) return runtime.currentRunById === participantId
   /*
    * Между двумя ячейками хозяин работы — тот, чья ячейка стоит первой.
@@ -1367,14 +1881,19 @@ export function startedTheRunningCell(sessionId: string, participantId: string):
 /**
  * Стоит ли в очереди только то, что поставил этот человек.
  *
- * Комнатное «остановить» выносит очередь целиком, а очередь общая: одно нажатие
- * убирало чужие пачки под тем же правом, под которым человек останавливает
- * свою ячейку. Пустая очередь считается своей — останавливать нечего.
+ * Безымянное «остановить» выносит очередь тетради целиком, а очередь у тетради
+ * общая: одно нажатие убирало бы чужие пачки под тем же правом, под которым
+ * человек останавливает свою ячейку. Пустая очередь считается своей —
+ * останавливать нечего.
+ *
+ * `root` — тетрадь, чью очередь собираются разбирать; без него — все очереди
+ * занятия, как и было, когда очередь была одна.
  */
-export function queueIsOnly(sessionId: string, participantId: string): boolean {
-  const runtime = runtimes.get(sessionId)
-  if (!runtime) return true
-  return runtime.queue.every((item) => item.runById === participantId)
+export function queueIsOnly(sessionId: string, participantId: string, root?: string): boolean {
+  const scopes = root === undefined ? scopesOf(sessionId) : [peekRuntime(sessionId, root)]
+  return scopes.every(
+    (scope) => scope === undefined || scope.queue.every((item) => item.runById === participantId),
+  )
 }
 
 /* -------------------------------------------------------------- run queue */
@@ -1396,8 +1915,18 @@ export function requestRun(
   runBy: string,
   runById: string,
   cap = Number.POSITIVE_INFINITY,
+  /**
+   * Тетрадь, в чью очередь. Без него — тетрадь комнаты, то есть прежнее
+   * поведение кадра без имени листа.
+   *
+   * Потолок `cap` считается ПО ЭТОЙ очереди, и это следствие того, что ядер
+   * теперь несколько: «по одной» значит «по одной в тетради», иначе правило
+   * запирало бы студента, чья ячейка считается в лекции, в его собственном
+   * черновике.
+   */
+  root: string = CELLS_KEY,
 ): number {
-  const runtime = getRuntime(sessionId)
+  const runtime = getRuntime(sessionId, root)
   // Нажатие чинит комнату, в которой нажали: если в ней осталась ячейка,
   // которую документ считает работающей, а сервер о ней не знает, — самое
   // время это заметить. См. sweepOrphanRuns.
@@ -1416,6 +1945,15 @@ export function requestRun(
       const found = findCell(doc, cellId)
       // Markdown cells arrive in every runAll list; skipping them is not an error.
       if (!found || cellType(found.cell) !== 'code') continue
+      /*
+       * Ячейка из другой тетради в эту очередь не встаёт.
+       *
+       * Списки сюда приходят собранными по листу, так что в работе это молчит.
+       * Но кадр приходит по проводу, и ячейка, названная от чужой тетради,
+       * посчиталась бы в ядре этой — то есть увидела бы её переменные. Ровно та
+       * граница, ради которой ядер и стало несколько.
+       */
+      if (rootOfArray(found.cells) !== runtime.root) continue
       if (runtime.currentCell === cellId) continue
       if (runtime.queue.some((item) => item.cellId === cellId)) continue
       if (mine >= cap) {
@@ -1456,7 +1994,28 @@ export function cancelRun(
   participantId: string,
   isHost: boolean,
 ): number {
-  const runtime = getRuntime(sessionId)
+  /*
+   * По ВСЕМ очередям занятия, а не по одной.
+   *
+   * Имя ячейки само называет свою тетрадь, а называть её отдельно вызывающему
+   * нечем: сюда приходит и `onCellsRemoved`, где ячейки уже нет в документе и
+   * спросить о ней некого. Очередь — наша запись, в ней ячейка лежит там, где
+   * её поставили, и найти её можно только так.
+   */
+  let removedTotal = 0
+  for (const runtime of scopesOf(sessionId)) {
+    removedTotal += cancelIn(runtime, cellIds, participantId, isHost)
+  }
+  return removedTotal
+}
+
+function cancelIn(
+  runtime: Runtime,
+  cellIds: string[],
+  participantId: string,
+  isHost: boolean,
+): number {
+  const sessionId = runtime.sessionId
   const wanted = new Set(cellIds)
   const removed: string[] = []
 
@@ -1573,6 +2132,17 @@ function stopBatch(runtime: Runtime, failedItem: QueueItem): void {
 
 async function pump(runtime: Runtime): Promise<void> {
   if (runtime.pumping) return
+  /*
+   * Пустую очередь насос не разбирает вовсе — и это не экономия.
+   *
+   * `finally` ниже объявляет комнате фазу ядра, а у области, которой ядро
+   * никогда не поднимали, фазы нет, и читается она как `dead`. Пока очередь
+   * была одна на комнату, сюда с пустой не приходили; теперь приходят — Run,
+   * у которого все ячейки отсеялись (markdown, потолок «по одной», ячейка
+   * чужой тетради), заводит область и будит насос. Без этой строки тетрадь, в
+   * которой никто ничего не запускал, получала бы плашку «ядро остановлено».
+   */
+  if (runtime.queue.length === 0) return
   runtime.pumping = true
   try {
     while (runtime.queue.length > 0) {
@@ -1589,7 +2159,7 @@ async function pump(runtime: Runtime): Promise<void> {
         if (runtime.queue.length === 0) break
       }
       try {
-        await ensureKernel(runtime.sessionId)
+        await ensureKernel(runtime.sessionId, runtime.root)
       } catch (err) {
         reportDeadKernel(runtime, errText(err))
         return
@@ -1606,7 +2176,7 @@ async function pump(runtime: Runtime): Promise<void> {
     }
   } catch (err) {
     // The queue must not die silently with cells stuck on "running".
-    console.error(`[kernel] run queue failed for ${runtime.sessionId}:`, errText(err))
+    console.error(`[kernel] run queue failed for ${runtime.sessionId}/${runtime.root}:`, errText(err))
     reportDeadKernel(runtime, errText(err))
   } finally {
     runtime.pumping = false
@@ -1826,7 +2396,7 @@ const COUNCIL_REPORT_MS = 400
  * Попытка консилиума работает с личными копиями данных, а после неё ядро
  * возвращается в точности к тому, что было.
  *
- * Ядро в комнате одно — это устройство продукта, а не недосмотр: попытка
+ * Ядро у тетради одно — это устройство продукта, а не недосмотр: попытка
  * должна видеть `df`, `np` и всё, что преподаватель подготовил в общей ячейке.
  * А вот в обратную сторону это была дыра, и притом молчаливая. Сначала по
  * именам: `secret = 42` в попытке одного студента отвечал на `print(secret)` в
@@ -1904,7 +2474,7 @@ const SILENT_HANDLERS: Parameters<JupyterKernel['execute']>[1] = {
   onClear: () => {},
 }
 
-/** Молча посчитать служебную строку в ядре комнаты; неудача — не беда попытки. */
+/** Молча посчитать служебную строку в ядре тетради; неудача — не беда попытки. */
 async function quietly(runtime: Runtime, source: string): Promise<void> {
   try {
     await runtime.kernel?.execute(source, SILENT_HANDLERS, { silent: true, storeHistory: false })
@@ -2031,7 +2601,16 @@ export function requestCouncilRun(
   runBy: string,
   runById: string,
 ): { queued: boolean; position: number } {
-  const runtime = getRuntime(sessionId)
+  /*
+   * Попытка считается в ядре ТОЙ тетради, где стоит её ячейка.
+   *
+   * Консилиум — это ячейка на листе, и лист у неё один. Считать попытки в ядре
+   * комнаты, когда сама ячейка лежит в семинаре, значило бы дать им чужие
+   * переменные и занять чужую очередь. Изоляция попыток друг от друга
+   * (council-isolation.ts) от этого не меняется: она про пространство имён
+   * внутри одного ядра, и ядро это теперь — ядро своей тетради.
+   */
+  const runtime = getRuntime(sessionId, rootOf(sessionId, job.cellId))
   sweepOrphanRuns(sessionId)
   const already = councilQueuePosition(sessionId, job.cellId, job.participantId)
   if (already !== null) {
@@ -2085,7 +2664,7 @@ export function cancelCouncilRun(
   cellId: string,
   participantId: string,
 ): boolean {
-  const runtime = runtimes.get(sessionId)
+  const runtime = councilScope(sessionId, cellId)
   if (!runtime) return false
   const id = councilQueueId(cellId, participantId)
   if (runtime.currentCell === id) return false
@@ -2110,21 +2689,39 @@ export function purgeCouncilRunsOf(
   sessionId: string,
   participantId: string,
 ): { running: boolean; queued: number } {
-  const runtime = runtimes.get(sessionId)
-  if (!runtime) return { running: false, queued: 0 }
-
-  const dropped = runtime.queue.filter((item) => item.council?.participantId === participantId)
-  if (dropped.length > 0) {
-    const gone = new Set(dropped)
-    runtime.queue = runtime.queue.filter((item) => !gone.has(item))
-    releaseCouncil(runtime, dropped)
-    syncQueue(runtime)
+  // По всем тетрадям занятия: забаненный мог стоять в очереди у каждой, где
+  // ведётся консилиум, и оставить хоть одну значит оставить его бесконечный
+  // цикл занимать ядро уже после того, как его самого убрали из комнаты.
+  let running = false
+  let queued = 0
+  for (const runtime of scopesOf(sessionId)) {
+    const dropped = runtime.queue.filter((item) => item.council?.participantId === participantId)
+    if (dropped.length > 0) {
+      const gone = new Set(dropped)
+      runtime.queue = runtime.queue.filter((item) => !gone.has(item))
+      releaseCouncil(runtime, dropped)
+      syncQueue(runtime)
+      queued += dropped.length
+    }
+    const active = runtime.job
+    if (active?.job.participantId === participantId) {
+      running = true
+      stopRunningJob(runtime, active)
+    }
   }
+  return { running, queued }
+}
 
-  const active = runtime.job
-  const running = active?.job.participantId === participantId
-  if (running) stopRunningJob(runtime, active)
-  return { running, queued: dropped.length }
+/**
+ * Область, в которой живёт консилиум этой ячейки, — и `undefined`, если её ещё
+ * не заводили.
+ *
+ * `peekRuntime`, а не `getRuntime`: вопрос «где моя попытка в очереди» задаёт
+ * каждая карточка при открытии пульта, и заводить от него комнате Python
+ * нельзя.
+ */
+function councilScope(sessionId: string, cellId: string): Runtime | undefined {
+  return peekRuntime(sessionId, rootOf(sessionId, cellId))
 }
 
 /**
@@ -2156,14 +2753,14 @@ function stopRunningJob(runtime: Runtime, active: ActiveJob): void {
 
 /**
  * Где попытка в очереди: `0` — считается сейчас, `null` — её там нет.
- * Считает и ячейки перед ней: очередь одна, и ждать студенту придётся их всех.
+ * Считает и ячейки перед ней: очередь у тетради одна, и ждать студенту придётся их всех.
  */
 export function councilQueuePosition(
   sessionId: string,
   cellId: string,
   participantId: string,
 ): number | null {
-  const runtime = runtimes.get(sessionId)
+  const runtime = councilScope(sessionId, cellId)
   if (!runtime) return null
   const id = councilQueueId(cellId, participantId)
   if (runtime.currentCell === id) return 0
@@ -2183,29 +2780,31 @@ export function councilQueuePosition(
 export function councilQueuePositions(
   sessionId: string,
 ): { cellId: string; participantId: string; position: number }[] {
-  const runtime = runtimes.get(sessionId)
-  if (!runtime) return []
-  const ahead = runtime.currentCell ? 1 : 0
+  // Номер считается В СВОЕЙ очереди: тетрадей несколько, очередей столько же, и
+  // «третий» в семинаре ничего не говорит о том, что делается в лекции.
   const out: { cellId: string; participantId: string; position: number }[] = []
-  runtime.queue.forEach((item, index) => {
-    if (!item.council) return
-    out.push({
-      cellId: item.council.cellId,
-      participantId: item.council.participantId,
-      position: index + 1 + ahead,
+  for (const runtime of scopesOf(sessionId)) {
+    const ahead = runtime.currentCell ? 1 : 0
+    runtime.queue.forEach((item, index) => {
+      if (!item.council) return
+      out.push({
+        cellId: item.council.cellId,
+        participantId: item.council.participantId,
+        position: index + 1 + ahead,
+      })
     })
-  })
+  }
   return out
 }
 
 /** Чьи попытки ждут в очереди — чтобы после каждого сдвига сказать им новый номер. */
 export function councilQueued(sessionId: string): { cellId: string; participantId: string }[] {
-  const runtime = runtimes.get(sessionId)
-  if (!runtime) return []
   const out: { cellId: string; participantId: string }[] = []
-  for (const item of runtime.queue) {
-    if (item.council)
-      out.push({ cellId: item.council.cellId, participantId: item.council.participantId })
+  for (const runtime of scopesOf(sessionId)) {
+    for (const item of runtime.queue) {
+      if (item.council)
+        out.push({ cellId: item.council.cellId, participantId: item.council.participantId })
+    }
   }
   return out
 }
@@ -2275,7 +2874,7 @@ function fireLimit(runtime: Runtime, active: ActiveJob): void {
   // И семинар, закрытый за эти миллисекунды, не будит `getRuntime` внутри
   // `interruptSession`: тот заводит среду заново, а с ней и документ комнаты,
   // которой больше нет (та же осторожность, что у `retired` в `shutdownSession`).
-  if (runtime.retired || runtimes.get(runtime.sessionId) !== runtime) return
+  if (runtime.retired || peekRuntime(runtime.sessionId, runtime.root) !== runtime) return
   if (active.limitSec !== null) active.timedOut = active.limitSec
   active.interrupts += 1
   stopRunningJob(runtime, active)
@@ -2297,7 +2896,7 @@ function fireLimit(runtime: Runtime, active: ActiveJob): void {
  * который его как раз и запрещает.
  */
 export function retimeCouncilRun(sessionId: string, cellId: string, limitSec: number | null): void {
-  const runtime = runtimes.get(sessionId)
+  const runtime = councilScope(sessionId, cellId)
   if (!runtime) return
   /*
    * Сначала те, кто ждёт: предел записан в саму работу при постановке в очередь
@@ -2447,7 +3046,7 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
     /*
      * Без истории ядра — единственное отличие от ячейки в самом запросе.
      *
-     * Ядро в комнате одно, и IPython кладёт исходник каждой выполненной ячейки
+     * Ядро у тетради одно, и IPython кладёт исходник каждой выполненной ячейки
      * в `In`/`_ih`: попытки, которые преподаватель запускал, читал бы любой,
      * кому потом откроют ячейку «всем» (`print(In[-5:])`, `%history`). Вывод
      * попытки едет двоим честно, а её текст в памяти ядра лежал бы для всех —
@@ -2689,8 +3288,13 @@ function killedMessage(): string {
  * formatter refuses is left alone — see kernel/format.ts for why that is the
  * whole design rather than a fallback.
  */
-export async function formatSession(sessionId: string, book?: string): Promise<FormatOutcome> {
-  const runtime = getRuntime(sessionId)
+export async function formatSession(
+  sessionId: string,
+  book?: string,
+  /** Тетрадь, чьё ядро считает чёрноту; без него — тетрадь комнаты. */
+  root: string = CELLS_KEY,
+): Promise<FormatOutcome> {
+  const runtime = getRuntime(sessionId, root)
   /*
    * Мимо очереди — но не в занятое ядро.
    *
@@ -2708,7 +3312,7 @@ export async function formatSession(sessionId: string, book?: string): Promise<F
   const busyWith = formatBlocker(runtime)
   if (busyWith) return formatRefused(sessionId, busyWith)
   try {
-    await ensureKernel(sessionId)
+    await ensureKernel(sessionId, root)
   } catch (err) {
     // Единственный отказ без своей строки в журнале: `ensureKernel` уже положил
     // туда `errText(err)` теми же словами, и повторять их второй раз всей
@@ -2776,9 +3380,21 @@ export async function answerInput(
   value: string,
   cellId?: string,
 ): Promise<boolean> {
-  const runtime = runtimes.get(sessionId)
+  const scopes = scopesOf(sessionId)
+  /*
+   * Область ищется по ячейке, а без неё — по тому, кто СПРАШИВАЕТ.
+   *
+   * Ядер теперь несколько, и стоять в `input()` может любое; «то, на чём ядро
+   * заблокировано» перестало быть одним местом. С именем ячейки ответ уходит
+   * ровно туда, откуда спросили. Без имени — вкладке, открытой до выкатки, —
+   * берём ту область, которая правда ждёт ответа: если ждёт одна, промахнуться
+   * не в кого, а если несколько, порядок тот же, в каком заводились тетради.
+   */
+  const runtime = cellId
+    ? scopes.find((scope) => scope.currentCell === cellId)
+    : scopes.find((scope) => scope.kernel?.waitingForInput)
   const kernel = runtime?.kernel
-  if (!kernel || !kernel.waitingForInput) {
+  if (!runtime || !kernel || !kernel.waitingForInput) {
     /*
      * Ядро ввода не ждёт — значит, и форма на ячейке не должна спрашивать.
      *
@@ -2786,17 +3402,17 @@ export async function answerInput(
      * следующее «Send» тихо получало `false`, и выйти из этого можно было
      * только «остановить». Гасим здесь, а не только на удачном ответе.
      */
-    if (runtime && !runtime.retired) clearStdinOn(sessionId, cellId ?? runtime.currentCell)
+    const stale = cellId ?? scopes.find((scope) => scope.currentCell)?.currentCell ?? null
+    if (stale && scopes.some((scope) => !scope.retired)) clearStdinOn(sessionId, stale)
     return false
   }
-  if (cellId && runtime.currentCell !== cellId) return false
   const answered = await kernel.answerInput(value)
   if (answered) clearStdinOn(sessionId, runtime.currentCell)
   return answered
 }
 
 /**
- * Ядро комнаты — но только то, которое УЖЕ живо.
+ * Ядро ТЕТРАДИ — но только то, которое УЖЕ живо.
  *
  * Про дополнение это не оговорка, а правило. `ensureKernel` поднимает
  * контейнер, и это до полутора минут: набранная точка после `df` не имеет
@@ -2805,8 +3421,8 @@ export async function answerInput(
  * и запускать ничего не собирается. Нет ядра, оно мертво или перезапускается —
  * ответ пуст, и клиент подставляет слова самой ячейки.
  */
-function liveKernel(sessionId: string): JupyterKernel | null {
-  const kernel = runtimes.get(sessionId)?.kernel ?? null
+function liveKernel(sessionId: string, root: string): JupyterKernel | null {
+  const kernel = peekRuntime(sessionId, root)?.kernel ?? null
   if (!kernel) return null
   return kernel.phase === 'dead' || kernel.phase === 'restarting' || kernel.phase === 'starting'
     ? null
@@ -2825,6 +3441,8 @@ export async function completeIn(
   sessionId: string,
   code: string,
   cursor: number,
+  /** Тетрадь, у чьего ядра спрашиваем; без неё — тетрадь комнаты. */
+  root: string = CELLS_KEY,
 ): Promise<CompleteResult | null> {
   /*
    * У тестового бэкенда ядра нет вовсе (KERNEL_BACKEND=test, JUPYTER_URL
@@ -2834,7 +3452,7 @@ export async function completeIn(
    * случай, а не про пустой список.
    */
   if (kernelBackend() === 'test') return cannedComplete(code, cursor)
-  const kernel = liveKernel(sessionId)
+  const kernel = liveKernel(sessionId, root)
   if (!kernel) return null
   try {
     return await kernel.complete(code, cursor)
@@ -2850,9 +3468,10 @@ export async function inspectIn(
   sessionId: string,
   code: string,
   cursor: number,
+  root: string = CELLS_KEY,
 ): Promise<InspectResult | null> {
   if (kernelBackend() === 'test') return cannedInspect(code, cursor)
-  const kernel = liveKernel(sessionId)
+  const kernel = liveKernel(sessionId, root)
   if (!kernel) return null
   try {
     return await kernel.inspect(code, cursor)
@@ -2950,10 +3569,18 @@ export function clearOutputs(sessionId: string, cellId?: string, book?: string):
  * пройтись по ней здесь, состояние ляжет раньше — и насос допишет своё поверх,
  * оставив ячейку «running» в комнате, где ничего не выполняется.
  */
-function resetAllCells(sessionId: string, except: string | null = null): void {
-  const { doc } = getSessionDoc(sessionId)
-  // Перезапуск ядра уносит переменные всей комнаты, а не одной тетради.
-  const cells = allCellArrays(doc).flatMap((array: Y.Array<YCell>) => array.toArray())
+function resetAllCells(runtime: Runtime, except: string | null = null): void {
+  const { doc } = getSessionDoc(runtime.sessionId)
+  /*
+   * Ячейки ОДНОЙ тетради — той, чьё ядро перезапустили.
+   *
+   * Раньше здесь был обход всех тетрадей комнаты, и это было правдой: ядро
+   * было одно, и его перезапуск уносил переменные всех сразу. Теперь у каждой
+   * тетради свой процесс, и стирать номера выполнений в соседней значит
+   * объявлять её результаты недействительными — ровно в тот момент, когда они
+   * совершенно действительны, потому что её ядро никто не трогал.
+   */
+  const cells = bookCells(doc, runtime.root).toArray()
   doc.transact(() => {
     cells.forEach((cell: YCell) => {
       /*
@@ -3003,7 +3630,13 @@ function notifyWorkspaceChanged(sessionId: string): void {
  * started one. Read by the panel: a seminar that was live through a switch is
  * still on the old image, and a column that showed the configured value would
  * be quietly wrong about exactly the case worth knowing.
+ *
+ * Окружение у занятия одно на все его тетради — образ выбирается для
+ * контейнера, а не для ядра. Спрашивается сначала тетрадь комнаты: она
+ * поднимается первой и живёт дольше всех, а панель говорит про занятие.
  */
 export function environmentOf(sessionId: string): string | null {
-  return runtimes.get(sessionId)?.environment ?? null
+  const scopes = scopesOf(sessionId)
+  const main = scopes.find((scope) => scope.root === CELLS_KEY && scope.environment)
+  return (main ?? scopes.find((scope) => scope.environment))?.environment ?? null
 }

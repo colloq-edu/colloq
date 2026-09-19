@@ -118,7 +118,11 @@ function assertReachable(lines: string[]): void {
 function alive(cmd: string, args: string[]): Answer {
   if (cmd === 'ps') return { code: 0, stdout: ' 01:14:23\n', stderr: '' }
   if (cmd === 'docker' && args[0] === 'ps') {
-    return { code: 0, stdout: 'room-kernel||running\nroom-kernel||running\n', stderr: '' }
+    /*
+      * Две КОМНАТЫ — это четыре контейнера: у каждой свой и ещё один под
+      * личные тетради её студентов. Экран обязан написать «2», а не «4».
+      */
+    return { code: 0, stdout: 'room-kernel||running|r1\nroom-kernel||running|r1\nroom-kernel||running|r2\nroom-kernel||running|r2\n', stderr: '' }
   }
   if (cmd === 'docker' && args[0] === 'image') {
     return { code: 0, stdout: '2026-09-12T10:00:00Z\n', stderr: '' }
@@ -267,7 +271,7 @@ test('status: контейнер compose — своя форма, мёртвый
       // .colloq.pid остался от прошлого make run: ps о нём ничего не знает.
       if (cmd === 'ps') return silent
       if (cmd === 'docker' && args[0] === 'ps') {
-        return { code: 0, stdout: '|app|running\nroom-kernel||running\n', stderr: '' }
+        return { code: 0, stdout: '|app|running|\nroom-kernel||running|r1\n', stderr: '' }
       }
       return alive(cmd, args)
     },

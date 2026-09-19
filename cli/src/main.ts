@@ -135,14 +135,23 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
     },
   }
 
+  /**
+   * Сколько ЗАНЯТИЙ сейчас держат Python — а не сколько контейнеров.
+   *
+   * У одного занятия их два: его собственный и тот, где считаются личные
+   * тетради студентов. Считать строки значило бы предупредить «остановится 2
+   * комнаты» там, где идёт одна пара, — и число это человек читает ровно перед
+   * тем, как согласиться остановить сервер.
+   */
   async function countRooms(): Promise<number> {
     const result = await sh.capture(
       'docker',
-      ['ps', '--filter', 'label=colloq.kind=room-kernel', '--format', '{{.ID}}'],
+      ['ps', '--filter', 'label=colloq.kind=room-kernel', '--format', '{{.Label "colloq.session"}}'],
       { timeoutMs: 4000 },
     )
     if (result.code !== 0) return 0
-    return result.stdout.split('\n').filter((line) => line.trim() !== '').length
+    const rooms = new Set(result.stdout.split('\n').map((line) => line.trim()).filter(Boolean))
+    return rooms.size
   }
 
   /** Вопрос с уточнением о комнатах: число не запрещает действие, только уточняет. */

@@ -18,7 +18,9 @@ import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import {
   allCellArrays,
+  bookKernel,
   bookList,
+  CELLS_KEY,
   cellId,
   cellOutputs,
   cellSource,
@@ -34,6 +36,7 @@ import {
   type YOutput,
   type Book,
   getChat,
+  kernelsMap,
   type YChatEntry,
 } from '@shared/notebook'
 import type { AwarenessUser } from '@shared/protocol'
@@ -668,11 +671,42 @@ export function watchText(cell: () => YCell | null): Reactive<string> {
 
 export interface NotebookMeta {
   title: string
+  /**
+   * Состояние ядра тетради КОМНАТЫ — прежнее поле и прежний смысл.
+   *
+   * Ядро теперь у каждой тетради своё (`watchBookKernel` ниже), и всё, что
+   * рисует одну открытую тетрадь, спрашивает её. Здесь остаётся комнатное — для
+   * тех мест, у которых тетради нет вовсе: журнал ядра в ящике и список людей.
+   */
   kernelStatus: KernelStatus
   /** Почему последний подъём ядра не вышел, если это можно объяснить (shared/kernel-problem.ts). */
   kernelProblem: KernelProblem | null
   queue: string[]
   runningCellId: string | null
+}
+
+/**
+ * Состояние ядра ОДНОЙ тетради — то, что рисует её полоса.
+ *
+ * Те же четыре поля, что и у комнаты, и это не совпадение: до появления
+ * нескольких ядер они и были комнатными. Теперь «ГОТОВО», счётчик очереди,
+ * «Прервать» и «Перезапустить» относятся к тетради, которую человек открыл, —
+ * лекция может считать, пока семинар свободен, и одна плашка на двоих врала бы
+ * обоим.
+ */
+export interface BookKernelView {
+  kernelStatus: KernelStatus
+  kernelProblem: KernelProblem | null
+  queue: string[]
+  runningCellId: string | null
+}
+
+interface BookKernelBoxes {
+  status: Box<KernelStatus>
+  problem: Box<KernelProblem | null>
+  queue: Box<string[]>
+  running: Box<string | null>
+  view: BookKernelView
 }
 
 /**
@@ -694,8 +728,12 @@ class MetaRegistry {
   readonly view: NotebookMeta
 
   readonly #meta: Y.Map<any>
+  readonly #doc: Y.Doc
+  /** Коробки по тетрадям: корень → состояние её ядра. Заводятся по первому спросу. */
+  readonly #books = new Map<string, BookKernelBoxes>()
 
   constructor(doc: Y.Doc) {
+    this.#doc = doc
     this.#meta = getMeta(doc)
 
     const fields = this
@@ -722,6 +760,71 @@ class MetaRegistry {
     this.#meta.observeDeep(this.#onEvents)
   }
 
+  /**
+   * Состояние ядра одной тетради — заводя ей коробки при первом спросе.
+   *
+   * Читается сразу, а не ждёт следующего события: вкладку открывают посреди
+   * уже идущего счёта, и плашка обязана показать правду в тот же кадр.
+   */
+  bookView(root: string): BookKernelView {
+    let found = this.#books.get(root)
+    if (!found) {
+      const status = box<KernelStatus>('starting')
+      const problem = box<KernelProblem | null>(null)
+      const queue = box<string[]>(EMPTY_IDS)
+      const running = box<string | null>(null)
+      found = {
+        status,
+        problem,
+        queue,
+        running,
+        view: {
+          get kernelStatus() {
+            return status.value
+          },
+          get kernelProblem() {
+            return problem.value
+          },
+          get queue() {
+            return queue.value
+          },
+          get runningCellId() {
+            return running.value
+          },
+        },
+      }
+      this.#books.set(root, found)
+      this.#readBook(root, found)
+    }
+    return found.view
+  }
+
+  #readBook(root: string, boxes: BookKernelBoxes): void {
+    const state = bookKernel(this.#doc, root)
+    if (state.status !== boxes.status.value) boxes.status.value = state.status
+    if (state.runningCell !== boxes.running.value) boxes.running.value = state.runningCell
+    if (!sameIds(state.queue, boxes.queue.value)) boxes.queue.value = state.queue
+    /*
+     * Совет про неподнявшееся ядро лежит там же, где состояние: в записи своей
+     * тетради, а у тетради комнаты ещё и в прежнем ключе. Читаем по тому же
+     * правилу, что и всё остальное (shared/notebook.ts · bookKernel).
+     */
+    const entry = kernelsMap(this.#doc)?.get(root)
+    const raw =
+      entry instanceof Y.Map
+        ? entry.get(KERNEL_PROBLEM_KEY)
+        : root === CELLS_KEY
+          ? this.#meta.get(KERNEL_PROBLEM_KEY)
+          : null
+    const problem = readKernelProblem(raw)
+    if (JSON.stringify(problem) !== JSON.stringify(boxes.problem.value))
+      boxes.problem.value = problem
+  }
+
+  #readBooks(): void {
+    for (const [root, boxes] of this.#books) this.#readBook(root, boxes)
+  }
+
   #onEvents = (events: Y.YEvent<any>[]) => {
     let scalars = false
     let queue = false
@@ -742,6 +845,16 @@ class MetaRegistry {
     }
     if (scalars) this.#readScalars()
     if (queue) this.#readQueue()
+    /*
+     * Карта ядер перечитывается на ЛЮБОЕ событие под `meta`, и это дешевле,
+     * чем кажется: коробок столько, сколько открытых тетрадей, а каждая из них
+     * — одно чтение записи и одного короткого списка. Разбирать, какая именно
+     * запись изменилась, пришлось бы по трём разным целям события (сама карта,
+     * запись тетради, её Y.Array), и первая же забытая цель означала бы плашку,
+     * которая молча не обновляется. Читатели будятся только на настоящей смене
+     * значения — это делают коробки.
+     */
+    if (this.#books.size > 0) this.#readBooks()
   }
 
   #readScalars(): void {
@@ -770,16 +883,57 @@ class MetaRegistry {
 
 const metaRegistries = new WeakMap<Y.Doc, MetaRegistry>()
 
-export function watchNotebookMeta(doc: Y.Doc): Reactive<NotebookMeta> {
+function registryFor(doc: Y.Doc): MetaRegistry {
   let registry = metaRegistries.get(doc)
   if (!registry) {
     registry = new MetaRegistry(doc)
     metaRegistries.set(doc, registry)
   }
-  const fields = registry
+  return registry
+}
+
+export function watchNotebookMeta(doc: Y.Doc): Reactive<NotebookMeta> {
+  const fields = registryFor(doc)
   return {
     get current() {
       return fields.view
+    },
+  }
+}
+
+/**
+ * Занято ли ядро тетради — одним вопросом на все вкладки сразу.
+ *
+ * Отдельно от `watchBookKernel`, потому что спрашивают здесь про ЧУЖУЮ
+ * вкладку: строка вкладок рисует точку у каждой тетради, а не только у
+ * открытой. Читается лениво, внутри того `$derived`, который строит ряд, —
+ * значит, подписка встаёт ровно на те тетради, что сейчас на экране.
+ */
+export function watchBookBusy(doc: Y.Doc): { busy: (root: string) => boolean } {
+  const fields = registryFor(doc)
+  return {
+    busy(root: string): boolean {
+      const state = fields.bookView(root)
+      return (
+        state.kernelStatus === 'busy' || state.runningCellId !== null || state.queue.length > 0
+      )
+    },
+  }
+}
+
+/**
+ * Состояние ядра ОТКРЫТОЙ тетради.
+ *
+ * `root` — функцией, а не значением: вкладка знает свой корень не сразу
+ * (список тетрадей приезжает документом), и передать его один раз значило бы
+ * навсегда запомнить пустую строку. Пустой корень отвечает тем же, чем пустая
+ * тетрадь, — «ядро ещё не поднимали».
+ */
+export function watchBookKernel(doc: Y.Doc, root: () => string): Reactive<BookKernelView> {
+  const fields = registryFor(doc)
+  return {
+    get current() {
+      return fields.bookView(root())
     },
   }
 }

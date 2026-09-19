@@ -113,6 +113,7 @@ The server reads the container's environment and `/workspace/colloq/.env`. For m
 | `KERNEL_IMAGE_TAG` | `v<image version>` | Tag prefix, matching the names `scripts/release-build.py` publishes |
 | `KERNEL_MEM`, `KERNEL_MEM_<ENV>` | `4g`, `16g` for GPU environments | Memory per room; `<ENV>` is the environment name in capitals with `_` for `-` (`KERNEL_MEM_GPU`, `KERNEL_MEM_BASE_GPU`). The panel can override it per room |
 | `KERNEL_CPUS` | `2` | CPUs per room |
+| `KERNEL_OWN_MAX`, `KERNEL_OWN_PIDS` | `40`, `2048` | The second container a class gets for its students' personal notebooks, which never receives a GPU: how many kernels may live in it at once, and its process ceiling |
 | `KERNEL_GPUS` | all GPUs (detected by `colloq-host`) | GPU slices handed out one per GPU room, e.g. `0,1` or MIG ids |
 | `KERNEL_SHM` | `1g` | `/dev/shm` for GPU rooms |
 | `KERNEL_NETWORK` | `colloq` | Docker network shared by the server and room kernels |

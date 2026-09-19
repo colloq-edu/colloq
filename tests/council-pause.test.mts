@@ -108,9 +108,9 @@ test('m:ss с округлением вверх: «0:00» не показыва�
 test('чип собирается из каталога, а не из склеенных слов', () => {
   assert.equal(translate('ru', 'room.council.nextRun', { p0: pauseClock(12_000) }), 'Запуск через 0:12')
   assert.equal(translate('en', 'room.council.nextRun', { p0: pauseClock(12_000) }), 'Run in 0:12')
-  // Подсказка объясняет ПРАВИЛО, а не отказ: ядро одно на комнату.
+  // Подсказка объясняет ПРАВИЛО, а не отказ: ядро у тетради одно на всех.
   assert.match(translate('ru', 'room.council.nextRunWhy'), /правило преподавателя/)
-  assert.match(translate('ru', 'room.council.nextRunWhy'), /ядро одно/)
+  assert.match(translate('ru', 'room.council.nextRunWhy'), /ядро у тетради одно/)
 })
 
 /* ------------------------------------------------------------ подвал */

@@ -390,6 +390,16 @@ export class SessionState {
   /** Shared terminal lifecycle; 'closed' until somebody opens the drawer. */
   terminalStatus = $state<TerminalStatus>('closed')
   /**
+   * Умеет ли этот инстанс давать личной тетради собственное ядро.
+   *
+   * Приезжает первым кадром сокета (`ready`). `true` по умолчанию — так
+   * отвечал бы сервер, который про это поле ещё не знает, и так устроен docker,
+   * то есть всё, кроме брокера. Читает это строка правила «Свои тетради
+   * студентов»: обещать то, чего инстанс не умеет, значит отдать отказ
+   * студенту посреди пары вместо предупреждения преподавателю до неё.
+   */
+  ownKernels = $state(true)
+  /**
    * Kernel notes nobody has read yet.
    *
    * The runtime's out-of-band news — "a cell failed, so the 12 cells queued
@@ -1145,6 +1155,18 @@ export class SessionState {
       } else if (message.t === 'laser') this.laser = message.at
       else if (message.t === 'terminal') this.terminalStatus = message.status
       else if (message.t === 'error') this.lastError = message.message
+      /*
+       * Умеет ли этот инстанс давать личной тетради своё ядро.
+       *
+       * По этому слову строка правила «Свои тетради студентов» говорит правду:
+       * на брокере (k3s) личная тетрадь пока считается без своего ядра вовсе, и
+       * обещать обратное — значит дать преподавателю включить то, что не
+       * работает, и узнать об этом от студента посреди пары. Отсутствие поля —
+       * старый сервер, и тогда прежнее молчание.
+       */
+      else if (message.t === 'ready' && message.ownKernels !== undefined) {
+        this.ownKernels = message.ownKernels
+      }
     }
 
     socket.onclose = (event: CloseEvent) => {

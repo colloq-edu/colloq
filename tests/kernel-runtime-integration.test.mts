@@ -30,6 +30,16 @@ test('room image pins survive catalog/default updates and missing revisions fail
  Object.assign(process.env,{KERNEL_BACKEND:'broker',KERNEL_ISOLATION:'required',KERNEL_CATALOG_FILE:file,KERNEL_RUNTIME_URL:`http://127.0.0.1:${port}`,KERNEL_RUNTIME_TOKEN_FILE:tokenFile,PATH:'/no-docker-here'})
  try {
   await endpointForSession('legacy-default',null)
+  /*
+   * Личной тетради на брокере своего ядра нет — и отказ честнее подмены.
+   *
+   * Pod брокер заводит один на занятие; второй, без карты, — это правка его
+   * протокола, контроллера и прав в кластере. Посчитать личную тетрадь в ядре
+   * лекции вместо отказа нельзя: это и есть та беда, ради которой второй
+   * контейнер заводится, — GPU занятия в руках студента и OOM-killer,
+   * выбирающий ядро преподавателя.
+   */
+  await assert.rejects(endpointForSession('legacy-default',null,'own'),/personal notebooks|личные тетради/)
   assert.equal(sessionEnvironment('legacy-default'),'base')
   assert.equal(sessionKernelRevision('legacy-default'),rev('a'))
   createSession('pin-old','Old','base');assert.equal(sessionKernelRevision('pin-old'),rev('a'))

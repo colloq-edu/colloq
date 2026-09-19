@@ -47,9 +47,18 @@
      * рисует те же две строки без подсказки, а не прячет правило целиком.
      */
     instance?: OracleLimits | null
+    /**
+     * Умеет ли инстанс давать личной тетради собственное ядро.
+     *
+     * `true` по умолчанию, и это не осторожность, а правда про обычную
+     * установку: своё ядро у личной тетради есть везде, кроме брокера (k3s),
+     * где Pod заводится один на занятие. Там строка правила говорит об этом
+     * ДО того, как преподаватель включит своим тетради, которые не считают.
+     */
+    ownKernels?: boolean
   }
 
-  let { rules, onchange, busy = false, instance = null }: Props = $props()
+  let { rules, onchange, busy = false, instance = null, ownKernels = true }: Props = $props()
 
   /** Поля потолков, чтобы вернуть их к правде после отказа сервера, — см. ниже. */
   let fields = $state<Record<string, HTMLInputElement | null>>({})
@@ -144,6 +153,14 @@
         {#if row.kind === 'limit' && instance && instance[row.key] !== undefined}
           <p class="mt-0.5 text-2xs font-semibold leading-snug text-muted"> {tr('room.ui.5')} {row.atInstance(instance[row.key]!)}
           </p>
+        {/if}
+        <!--
+          Оговорка инстанса, а не правила: на брокере личная тетрадь считается
+          без собственного ядра, и её запуск отказывает. Сказать это здесь —
+          значит сказать преподавателю до пары, а не студенту посреди неё.
+        -->
+        {#if row.key === 'ownBooks' && !ownKernels}
+          <p class="mt-0.5 text-2xs font-semibold leading-snug text-warning">{tr('room.rules.ownBooks.noKernel')}</p>
         {/if}
       </div>
       {#if row.kind === 'choice'}

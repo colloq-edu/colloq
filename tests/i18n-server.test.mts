@@ -25,7 +25,8 @@ test('shared labels and refusal constants resolve after an in-process language c
   assert.equal(SHELL_WORD.closed, 'not started')
   assert.equal(SKIP_REASON_TEXT.broken, 'this version cannot be read')
   assert.match(tr(CLASS_IS_OVER), /class is over/)
-  assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /shared kernel/)
+  // Ядро у КАЖДОЙ тетради своё, и попытки делят ядро своей — не «общее ядро».
+  assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /this notebook's kernel/)
   assert.match(whySegmentRefused(' данные '), /данные/)
   assert.match(whySegmentRefused(' данные '), /space/)
   use('ru')

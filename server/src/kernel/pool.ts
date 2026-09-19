@@ -50,21 +50,101 @@ function run(args: string[], timeoutMs = 20_000): Promise<RunResult> {
 }
 
 /**
- * Токен Jupyter для одной комнаты.
+ * Чей это контейнер: занятия — или личных тетрадей его студентов.
+ *
+ * Контейнеров у комнаты два, и второй заводится лениво, при первом запуске в
+ * личной тетради. Зачем он нужен отдельно, а не вторым процессом внутри
+ * первого, сказано в shared/rules.ts · bookHasOwnKernel: GPU выдаётся
+ * контейнеру целиком, а OOM-killer в общем лимите выбирает самый тяжёлый
+ * процесс — то есть ядро лекции, а не жадного студента.
+ *
+ * Отсутствие метки `colloq.role` на живом контейнере читается как `room`: так
+ * выглядят ВСЕ контейнеры, поднятые до этой правки, и переживать выкатку они
+ * обязаны без пересоздания.
+ */
+export type KernelRole = 'room' | 'own'
+
+/**
+ * На этом инстансе личной тетради своего ядра не дать — и это честный отказ,
+ * а не сбой.
+ *
+ * Бывает ровно на брокере (k3s): Pod он заводит один на занятие, и второй,
+ * без карты, — это правка его протокола, его контроллера и его прав в
+ * кластере. Посчитать личную тетрадь в ядре лекции вместо отказа нельзя: это
+ * и есть та самая беда, ради которой второй контейнер заводится, — GPU
+ * занятия в руках студента и OOM-killer, выбирающий ядро преподавателя.
+ *
+ * Своим классом, а не строкой: `ensureKernel` ловит его отдельно от сетевых
+ * неудач — «не вышло, попробуйте ещё» здесь было бы неправдой, пробовать
+ * нечего.
+ */
+export class OwnKernelUnavailable extends Error {
+  constructor() {
+    super(tr('server.kernel.ownUnavailable'))
+    this.name = 'OwnKernelUnavailable'
+  }
+}
+
+/**
+ * Токен Jupyter для одного контейнера.
  *
  * Выводится из секрета инстанса, а не выдаётся случайно: контейнер переживает
  * перезапуск сервера, и случайный токен пришлось бы где-то хранить — либо
  * терять вместе с доступом к живому ядру посреди пары. Разный у разных комнат,
  * так что ячейка, прочитавшая свой `JUPYTER_TOKEN`, не открывает соседние.
+ *
+ * И разный у двух контейнеров ОДНОЙ комнаты: иначе строка из личной тетради
+ * студента открывала бы Jupyter лекции — то есть чужие ядра, чужие переменные
+ * и чужой `execute` — ровно тем токеном, который лежит у неё в окружении.
+ * Прежняя строка (`jupyter:<id>`) остаётся за комнатой, чтобы живые контейнеры
+ * после выкатки отвечали на свой токен, а не пересоздавались все разом.
  */
-function roomToken(sessionId: string): string {
+function roomToken(sessionId: string, role: KernelRole = 'room'): string {
   return createHmac('sha256', config.sessionSecret)
-    .update(`jupyter:${sessionId}`)
+    .update(role === 'own' ? `jupyter:own:${sessionId}` : `jupyter:${sessionId}`)
     .digest('hex')
     .slice(0, 40)
 }
 
-const containerFor = (sessionId: string) => `${ROOM_PREFIX}-${sessionId}`
+const containerFor = (sessionId: string, role: KernelRole = 'room') =>
+  role === 'own' ? `${ROOM_PREFIX}-${sessionId}-own` : `${ROOM_PREFIX}-${sessionId}`
+
+/**
+ * Ключ, под которым пул помнит один контейнер: адрес, идущий подъём, брошенность.
+ *
+ * У комнатного — сам идентификатор занятия, буква в букву как раньше: карты
+ * `endpoints`/`starting` пережили десяток правок с этим ключом, и менять его
+ * значило бы переписывать каждую из них ради одного суффикса. У контейнера
+ * личных тетрадей — `<id>#own`; `#` в идентификаторе занятия не бывает
+ * (shared/runtime.ts · RUNTIME_SESSION_ID), так что разобрать ключ обратно
+ * можно точно.
+ */
+const slotFor = (sessionId: string, role: KernelRole): string =>
+  role === 'own' ? `${sessionId}#own` : sessionId
+
+/** Занятие, которому принадлежит слот. */
+const sessionOfSlot = (slot: string): string => {
+  const cut = slot.indexOf('#')
+  return cut < 0 ? slot : slot.slice(0, cut)
+}
+
+/**
+ * Потолок ЖИВЫХ личных ядер в одном занятии.
+ *
+ * Ядер в контейнере личных тетрадей десятки, и каждое — это питон с
+ * ipykernel: полтора десятка потоков и сотня мегабайт вхолостую. Без потолка
+ * поток в пятьсот человек, у каждого по три черновика, кладёт контейнер (а
+ * вместе с ним и работу всех) на `--pids-limit` или на лимите памяти — молча и
+ * посреди пары. С потолком лишний запуск получает фразу, а занятие идёт.
+ *
+ * Сорок — это «вся группа работает у себя одновременно» с запасом; поток
+ * столько личных тетрадей разом не открывает, а если открывает, преподаватель
+ * узнаёт об этом из отказа, а не из мёртвого контейнера.
+ */
+export function ownKernelMax(env: NodeJS.ProcessEnv = process.env): number {
+  const value = Number((env.KERNEL_OWN_MAX ?? '').trim())
+  return Number.isInteger(value) && value >= 1 ? value : 40
+}
 
 /**
  * Кому сказать, что контейнер комнаты пришлось пересоздать.
@@ -75,17 +155,17 @@ const containerFor = (sessionId: string) => `${ROOM_PREFIX}-${sessionId}`
  * пула, не наоборот. Поэтому пул объявляет, а слушателя ставит тот, у кого есть
  * документ комнаты.
  */
-type RecreateListener = (sessionId: string, why: string) => void
+type RecreateListener = (sessionId: string, why: string, role: KernelRole) => void
 const recreateListeners: RecreateListener[] = []
 
 export function onRoomKernelRecreated(cb: RecreateListener): void {
   recreateListeners.push(cb)
 }
 
-function announceRecreate(sessionId: string, why: string): void {
+function announceRecreate(sessionId: string, why: string, role: KernelRole): void {
   for (const cb of [...recreateListeners]) {
     try {
-      cb(sessionId, why)
+      cb(sessionId, why, role)
     } catch (err) {
       console.error(`[kernel] слушатель пересоздания упал для ${sessionId}:`, err)
     }
@@ -309,16 +389,28 @@ export async function warmRoomPerimeter(): Promise<void> {
 export async function listRoomKernels(): Promise<Array<{ session: string; running: boolean }>> {
   if (kernelBackend() === 'broker') return (await kernelRuntimeClient().rooms()).map(room => ({session:room.sessionId,running:room.phase === 'ready' || room.phase === 'pending'}))
   if (kernelBackend() === 'test') return []
-  const rooms = await roomContainers()
-  return rooms
-    .filter((room) => room.session.length > 0)
-    .map((room) => ({ session: room.session, running: room.running }))
+  /*
+   * По ЗАНЯТИЯМ, а не по контейнерам: их у комнаты два.
+   *
+   * Строка на контейнер означала бы, что уборка простоя разбирает одну и ту же
+   * комнату дважды, а панель считает её живой дважды. Живая — если жив хотя бы
+   * один из двух: контейнер личных тетрадей стоит, а лекция считает — это
+   * работающее занятие, и отсчёт двух часов ему ещё рано.
+   */
+  const rooms = new Map<string, boolean>()
+  for (const room of await roomContainers()) {
+    if (room.session.length === 0) continue
+    rooms.set(room.session, (rooms.get(room.session) ?? false) || room.running)
+  }
+  return [...rooms].map(([session, running]) => ({ session, running }))
 }
 
 /** Комната и срез, который держит её контейнер; срез пустой — комната без GPU. */
 interface RoomContainer {
   session: string
   gpu: string
+  /** Контейнер занятия или его личных тетрадей; метки нет — значит занятия. */
+  role: KernelRole
   /**
    * Живой ли контейнер прямо сейчас.
    *
@@ -349,7 +441,7 @@ async function roomContainers(): Promise<RoomContainer[]> {
     '--filter',
     'label=colloq.kind=room-kernel',
     '--format',
-    '{{.Label "colloq.session"}}\t{{.Label "colloq.gpu"}}\t{{.State}}',
+    '{{.Label "colloq.session"}}\t{{.Label "colloq.gpu"}}\t{{.State}}\t{{.Label "colloq.role"}}',
   ])
   if (res.code !== 0) return []
   return res.out
@@ -357,11 +449,14 @@ async function roomContainers(): Promise<RoomContainer[]> {
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .map((line) => {
-      const [session, gpu, state] = line.split('\t')
+      const [session, gpu, state, role] = line.split('\t')
       return {
         session: (session ?? '').trim(),
         gpu: (gpu ?? '').trim(),
         running: (state ?? '').trim() === 'running',
+        // Пусто или `<no value>` — контейнер, поднятый до появления метки, то
+        // есть комнатный. Молчание здесь и есть обратная совместимость.
+        role: (role ?? '').trim() === 'own' ? 'own' : 'room',
       }
     })
 }
@@ -507,7 +602,16 @@ export function gpuRefusal(env: string, devices: string[]): string {
  */
 export async function gpuAssignments(): Promise<Array<Pick<RoomContainer, 'session' | 'gpu'>>> {
   const held: Array<Pick<RoomContainer, 'session' | 'gpu'>> = (await roomContainers())
-    .filter((room) => room.gpu.length > 0)
+    /*
+     * Контейнер личных тетрадей в раздаче срезов не участвует ВОВСЕ.
+     *
+     * Метки среза у него нет и быть не может (`runArgs` его вычёркивает), так
+     * что фильтр по `gpu` его и так не пропустил бы. Проверка на роль стоит
+     * рядом потому, что важно не «сегодня он без метки», а «ему карта не
+     * положена»: `pickGpu` считает своим ЛЮБОЙ срез своей комнаты, и метка,
+     * попавшая сюда по ошибке, отдала бы карту занятия его черновикам.
+     */
+    .filter((room) => room.role !== 'own' && room.gpu.length > 0)
     .map((room) => ({ session: room.session, gpu: room.gpu }))
   const known = new Set(held.map((room) => room.session))
   for (const [session, gpu] of reserved) if (!known.has(session)) held.push({ session, gpu })
@@ -667,9 +771,9 @@ export function dockerRead(args: string[], timeoutMs = 10_000): Promise<{ code: 
   return run(args, timeoutMs)
 }
 
-/** Имя контейнера комнаты — тем, кто спрашивает docker о нём напрямую. */
-export function roomContainer(sessionId: string): string {
-  return containerFor(sessionId)
+/** Имя контейнера — тем, кто спрашивает docker о нём напрямую. */
+export function roomContainer(sessionId: string, role: KernelRole = 'room'): string {
+  return containerFor(sessionId, role)
 }
 
 /**
@@ -684,6 +788,16 @@ export function runArgs(opts: {
   sessionId: string
   env: string
   mount: string
+  /**
+   * Контейнер занятия или контейнер его личных тетрадей.
+   *
+   * У второго нет и не может быть ни `--gpus`, ни метки среза, ни `--shm-size`:
+   * карта занятия личным тетрадям не даётся, и это не настройка, а устройство —
+   * см. shared/rules.ts · bookHasOwnKernel. Всё остальное то же самое: тот же
+   * образ, та же сеть, тот же укреплённый профиль, та же папка занятия и те же
+   * числа памяти и ядер — но свой cgroup и свой токен.
+   */
+  role?: KernelRole
   /** Сеть комнаты: `colloq-rooms` на хосте, KERNEL_NETWORK в контейнерной форме. */
   network: string
   /**
@@ -713,7 +827,11 @@ export function runArgs(opts: {
    */
   cpus?: number | null
 }): string[] {
-  const { sessionId, env, mount, network, publish, gpu } = opts
+  const { sessionId, env, mount, network, publish } = opts
+  const role = opts.role ?? 'room'
+  // Срез — только у контейнера занятия. Не «если передали», а «если можно»:
+  // ошибка вызывающего не должна уметь отдать карту личным тетрадям.
+  const gpu = role === 'own' ? null : opts.gpu
   const memory = opts.memoryMb ? memSpec(opts.memoryMb) : memoryLimit(env)
   const cpus = opts.cpus && opts.cpus > 0 ? opts.cpus : defaultCpus()
   const threads = threadLimit(cpus)
@@ -721,7 +839,7 @@ export function runArgs(opts: {
     'run',
     '-d',
     '--name',
-    containerFor(sessionId),
+    containerFor(sessionId, role),
     /*
      * Своя сеть комнат (на хосте) или общая сеть compose (сервер сам в
      * контейнере) — и в любой из них действует запрет на локальные адреса
@@ -739,12 +857,12 @@ export function runArgs(opts: {
      * uid 1000, никаких capabilities, no-new-privileges, потолок процессов,
      * без IPv6, метка версии профиля (perimeter.ts · roomHardeningArgs).
      */
-    ...roomHardeningArgs(),
+    ...roomHardeningArgs(process.env, role),
     // Один срез, названный так, как его зовёт docker. Комната на обычном
     // окружении сюда не попадает и устройства не занимает.
     ...(gpu ? ['--gpus', `device=${gpu}`] : []),
     '-e',
-    `JUPYTER_TOKEN=${roomToken(sessionId)}`,
+    `JUPYTER_TOKEN=${roomToken(sessionId, role)}`,
     // Ядер у комнаты столько, сколько ей выдали, — и потоков столько же. Но
     // только на момент `docker run`: `docker update --cpus` меняет квоту живому
     // контейнеру, а его переменные окружения — нет (см. applyCpuLimit).
@@ -791,6 +909,17 @@ export function runArgs(opts: {
     `colloq.session=${sessionId}`,
     '--label',
     `colloq.environment=${env}`,
+    /*
+     * Чей это контейнер — занятия или его личных тетрадей.
+     *
+     * Ставится ОБОИМ, в том числе комнатному, где значение и так подразумевалось
+     * бы: метка нужна уборке, раздаче срезов и `colloq status`, а читают они
+     * `docker ps` — то есть и вчерашние контейнеры, поднятые процессом, которого
+     * больше нет. Отсутствие метки читается как `room` (см. `KernelRole`), так
+     * что живые контейнеры выкатку переживают без пересоздания.
+     */
+    '--label',
+    `colloq.role=${role}`,
     // Метка — источник правды о том, кто держит срез: она переживает
     // перезапуск сервера, а карта в памяти нет.
     ...(gpu ? ['--label', `colloq.gpu=${gpu}`] : []),
@@ -848,7 +977,6 @@ export type LimitOutcome = 'applied' | 'pending' | 'failed'
  * умолчанию сразу — ровно как сброс ядер.
  */
 export async function applyMemoryLimit(sessionId: string, mb: number | null): Promise<LimitOutcome> {
-  const container = containerFor(sessionId)
   if (!limitsInjected && kernelBackend() === 'broker') return resizeRoomPod(sessionId, { memoryMb: mb })
   // Сброс docker ждёт следующего `docker run` — и без похода к демону: до
   // брокерной правки маршрут с `null` сюда не звал вовсе.
@@ -859,18 +987,51 @@ export async function applyMemoryLimit(sessionId: string, mb: number | null): Pr
     if (!(await canIsolate())) return 'pending'
   }
   const spec = memSpec(mb)
-  const res = await limitsDocker(['update', `--memory=${spec}`, `--memory-swap=${spec}`, container], 30_000)
-  if (res.code === 0) {
-    console.log(`[kernel] комнате ${sessionId} выдано ${spec} памяти на живом контейнере`)
+  return bothContainers(sessionId, `${spec} памяти`, (container) =>
+    limitsDocker(['update', `--memory=${spec}`, `--memory-swap=${spec}`, container], 30_000),
+  )
+}
+
+/**
+ * Выданное число — ОБОИМ контейнерам комнаты, и одним исходом на двоих.
+ *
+ * Поле в форме занятия называется «Память» и говорит про комнату, а не про
+ * один из её контейнеров: преподаватель, поднявший семинару восемь гигабайт,
+ * вправе ожидать, что черновики его студентов не продолжат умирать на четырёх.
+ * cgroup при этом остаются раздельными — в том и смысл второго контейнера, — а
+ * это значит, что число применяется дважды, каждому своё.
+ *
+ * «Контейнера нет» — обычное дело и не отказ: личных тетрадей в занятии может
+ * не быть вовсе, комнату могли ещё не открывать сегодня. Исход считается по
+ * тому, что удалось: хоть один живой контейнер принял — `applied`; не нашлось
+ * ни одного — `pending`, то есть «возьмёт при пуске»; ответил ошибкой — `failed`,
+ * и она же уходит в журнал.
+ */
+async function bothContainers(
+  sessionId: string,
+  shown: string,
+  update: (container: string) => Promise<RunResult>,
+): Promise<LimitOutcome> {
+  let applied = false
+  let failed = false
+  for (const role of ['room', 'own'] as const) {
+    const container = containerFor(sessionId, role)
+    const res = await update(container)
+    if (res.code === 0) {
+      applied = true
+      continue
+    }
+    if (/no such container/i.test(res.out)) continue
+    failed = true
+    console.error(`[kernel] docker update для ${container} не удался: ${res.out.slice(-200)}`)
+  }
+  if (applied) {
+    console.log(`[kernel] комнате ${sessionId} выдано ${shown} на живых контейнерах`)
     return 'applied'
   }
-  // «No such container» — обычное дело: комнату ещё не открывали сегодня.
-  if (/no such container/i.test(res.out)) {
-    console.log(`[kernel] комнате ${sessionId} записано ${spec} памяти; контейнера нет, возьмёт при пуске`)
-    return 'pending'
-  }
-  console.error(`[kernel] docker update для ${sessionId} не удался: ${res.out.slice(-200)}`)
-  return 'failed'
+  if (failed) return 'failed'
+  console.log(`[kernel] комнате ${sessionId} записано ${shown}; контейнера нет, возьмёт при пуске`)
+  return 'pending'
 }
 
 /** Память или ядра живого Pod комнаты через брокер — ответ брокера в словах пула. */
@@ -920,24 +1081,16 @@ async function resizeRoomPod(
  * умолчание. Swap-подобной пары флагов тут нет: `--cpus` самодостаточен.
  */
 export async function applyCpuLimit(sessionId: string, own: number | null): Promise<LimitOutcome> {
-  const container = containerFor(sessionId)
   if (!limitsInjected && kernelBackend() === 'broker') return resizeRoomPod(sessionId, { cpus: own })
   const cpus = own ?? defaultCpus()
   if (!limitsInjected) {
     if (kernelBackend() !== 'docker') return 'pending'
     if (!(await canIsolate())) return 'pending'
   }
-  const res = await limitsDocker(['update', `--cpus=${cpus}`, container], 30_000)
-  if (res.code === 0) {
-    console.log(`[kernel] комнате ${sessionId} выдано ${cpus} ядер на живом контейнере`)
-    return 'applied'
-  }
-  if (/no such container/i.test(res.out)) {
-    console.log(`[kernel] комнате ${sessionId} записано ${cpus} ядер; контейнера нет, возьмёт при пуске`)
-    return 'pending'
-  }
-  console.error(`[kernel] docker update --cpus для ${sessionId} не удался: ${res.out.slice(-200)}`)
-  return 'failed'
+  // Обоим контейнерам комнаты, по доводу `bothContainers`.
+  return bothContainers(sessionId, `${cpus} ядер`, (container) =>
+    limitsDocker(['update', `--cpus=${cpus}`, container], 30_000),
+  )
 }
 
 /**
@@ -950,9 +1103,11 @@ export async function applyCpuLimit(sessionId: string, own: number | null): Prom
  */
 export async function containerLimits(
   sessionId: string,
+  /** По умолчанию — контейнер занятия: панель показывает комнату, а не черновики. */
+  role: KernelRole = 'room',
 ): Promise<{ memoryMb: number | null; cpus: number | null }> {
   const res = await limitsDocker(
-    ['inspect', containerFor(sessionId), '--format', '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'],
+    ['inspect', containerFor(sessionId, role), '--format', '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'],
     10_000,
   )
   if (res.code !== 0) return { memoryMb: null, cpus: null }
@@ -974,10 +1129,11 @@ function assertLocalRoomRunning(sessionId: string): void {
 async function startContainer(
   sessionId: string,
   env: string,
+  role: KernelRole = 'room',
   retried = false,
 ): Promise<KernelEndpoint> {
   assertLocalRoomRunning(sessionId)
-  const container = containerFor(sessionId)
+  const container = containerFor(sessionId, role)
   const image = `${IMAGE_PREFIX}:${env}`
   const network = roomNetwork()
   /*
@@ -985,8 +1141,12 @@ async function startContainer(
    * комнаты со своим контейнером это тот же срез, что и был, а у новой — либо
    * свободный, либо отказ, и отказать надо раньше, чем `docker start` поднимет
    * ядро без устройства.
+   *
+   * Контейнер личных тетрадей срезов не спрашивает и не занимает: карта
+   * занятия его студентам не даётся (shared/rules.ts · bookHasOwnKernel), и
+   * GPU-окружение он поднимает так же, как обычное, — на процессоре.
    */
-  const gpu = needsGpu(env) ? await takeGpu(sessionId, env) : null
+  const gpu = role !== 'own' && needsGpu(env) ? await takeGpu(sessionId, env) : null
   const state = await stateOf(container)
   assertLocalRoomRunning(sessionId)
 
@@ -1009,10 +1169,10 @@ async function startContainer(
      * и ни одной строки об этом нигде. `missing` не считается — там терять
      * нечего, контейнера и не было.
      */
-    if (state === 'running' || state === 'broken') announceRecreate(sessionId, why)
+    if (state === 'running' || state === 'broken') announceRecreate(sessionId, why, role)
     await run(['rm', '-f', container], 60_000)
-    endpoints.delete(sessionId)
-    return startContainer(sessionId, env, true)
+    endpoints.delete(slotFor(sessionId, role))
+    return startContainer(sessionId, env, role, true)
   }
 
   if (state === 'broken') {
@@ -1083,10 +1243,13 @@ async function startContainer(
       runArgs({
         sessionId,
         env,
+        role,
         mount,
         network,
         publish: publishes(),
         gpu,
+        // Те же числа, что у комнаты, — но свой cgroup: «Память» в форме
+        // занятия обещает столько каждому его Python, а не столько на двоих.
         memoryMb: sessionMemoryMb(sessionId),
         cpus: sessionCpus(sessionId),
       }),
@@ -1121,7 +1284,7 @@ async function startContainer(
     url = `http://127.0.0.1:${port}`
   }
 
-  const endpoint: KernelEndpoint = { url, token: roomToken(sessionId) }
+  const endpoint: KernelEndpoint = { url, token: roomToken(sessionId, role) }
 
   // Wait for Jupyter inside it to answer. `docker run` returns as soon as the
   // process is spawned, and connecting a second later fails with a bare
@@ -1156,9 +1319,14 @@ async function startContainer(
   throw new Error(tr("server.theRoomKernelDidNotRespondWithin.1324d5", { p0: lastError }))
 }
 
-/** Адреса, которые уже разрешили, чтобы занятая комната не звала docker на ячейку. */
+/**
+ * Адреса, которые уже разрешили, чтобы занятая комната не звала docker на ячейку.
+ *
+ * Ключ — слот (`slotFor`), а не занятие: контейнеров у комнаты два, и адрес у
+ * каждого свой, с разным портом и разным токеном.
+ */
 const endpoints = new Map<string, KernelEndpoint>()
-/** Один запуск за раз на комнату, общий для одновременных вызовов. */
+/** Один запуск за раз на СЛОТ, общий для одновременных вызовов. */
 const starting = new Map<string, Promise<KernelEndpoint>>()
 /**
  * Комнаты, которые закрыли, пока их контейнер ещё поднимался.
@@ -1180,12 +1348,23 @@ const brokerStarts = new Map<string, Set<Promise<KernelEndpoint>>>()
 export async function endpointForSession(
   sessionId: string,
   env: string | null,
+  /**
+   * Контейнер занятия или контейнер его личных тетрадей.
+   *
+   * Под брокером второго нет: Pod он заводит один на занятие, и завести рядом
+   * второй — это правка его протокола, его контроллера и его прав в кластере.
+   * Отказ честнее подмены: личная тетрадь, тихо посчитанная в ядре лекции,
+   * означала бы ровно то, ради чего второй контейнер и заводится, — чужую
+   * карту и чужой OOM. Отказ читается в kernel/index.ts.
+   */
+  role: KernelRole = 'room',
 ): Promise<KernelEndpoint> {
   requireKernelIsolation()
   assertLocalRoomRunning(sessionId)
   if (kernelRetirementInProgress(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
   const backend = kernelBackend()
   if (backend === 'test') return defaultEndpoint()
+  if (role === 'own' && backend !== 'docker') throw new OwnKernelUnavailable()
   if (backend === 'broker') {
     if (!sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarDoesNotExist.4f72c5"))
     sessionDir(sessionId)
@@ -1213,20 +1392,21 @@ export async function endpointForSession(
   if (!(await canIsolate())) throw new Error('Room isolation is unavailable. Execution is disabled; shared Jupyter fallback is not permitted')
 
   assertLocalRoomRunning(sessionId)
-  const cached = endpoints.get(sessionId)
+  const slot = slotFor(sessionId, role)
+  const cached = endpoints.get(slot)
   if (cached) return cached
 
-  const inFlight = starting.get(sessionId)
+  const inFlight = starting.get(slot)
   if (inFlight) return inFlight
 
   const name = (env ?? '').trim() || activeName()
-  const attempt = startContainer(sessionId, name)
+  const attempt = startContainer(sessionId, name, role)
     .then((endpoint) => {
-      endpoints.set(sessionId, endpoint)
+      endpoints.set(slot, endpoint)
       return endpoint
     })
     .finally(() => {
-      starting.delete(sessionId)
+      starting.delete(slot)
       // Бронь свою работу сделала: либо контейнер уже несёт метку со срезом,
       // либо контейнера нет и срез свободен. Пережить подъём она не должна —
       // иначе неудачная сборка окружения забирает срез у следующего семинара
@@ -1234,26 +1414,41 @@ export async function endpointForSession(
       reserved.delete(sessionId)
       // Комнату закрыли, пока это поднималось: контейнер (успешный или
       // недоделанный) убираем сами — за него больше некому.
-      if (abandoned.delete(sessionId)) void discardRoom(sessionId)
+      if (abandoned.delete(slot)) void discardSlot(slot)
     })
-  starting.set(sessionId, attempt)
+  starting.set(slot, attempt)
   return attempt
 }
 
-async function discardRoom(sessionId: string): Promise<void> {
-  endpoints.delete(sessionId)
+async function discardSlot(slot: string): Promise<void> {
+  endpoints.delete(slot)
+  const container = containerOfSlot(slot)
   try {
-    await run(['rm', '-f', containerFor(sessionId)], 60_000)
+    await run(['rm', '-f', container], 60_000)
   } catch (err) {
-    console.error(`[kernel] не удалось убрать контейнер ${containerFor(sessionId)}:`, err)
+    console.error(`[kernel] не удалось убрать контейнер ${container}:`, err)
   }
 }
 
+/** Имя контейнера по слоту — одной строкой, чтобы разбор ключа жил в одном месте. */
+const containerOfSlot = (slot: string): string =>
+  containerFor(sessionOfSlot(slot), slot.endsWith('#own') ? 'own' : 'room')
+
+/** Оба слота комнаты, в порядке «сначала занятие»: порядок виден в журнале. */
+const slotsOf = (sessionId: string): string[] => [
+  slotFor(sessionId, 'room'),
+  slotFor(sessionId, 'own'),
+]
+
 /**
- * Убрать контейнер комнаты насовсем.
+ * Убрать контейнеры комнаты насовсем — ОБА.
  *
  * Зовётся при удалении семинара и при уборке простоя. Файлы лежат на хосте, в
  * папке комнаты, и переживают это — уходит только Python со всеми переменными.
+ *
+ * Контейнер личных тетрадей уходит вместе с комнатным, и по той же причине:
+ * занятие кончилось. Отдельно его убирает `dropOwnKernel` — когда в нём не
+ * осталось ни одного живого ядра, а само занятие продолжается.
  */
 export async function dropRoomKernel(sessionId: string, permanent = false): Promise<void> {
   if (kernelBackend() === 'broker') {
@@ -1267,22 +1462,44 @@ export async function dropRoomKernel(sessionId: string, permanent = false): Prom
     return
   }
   if (kernelBackend() === 'test') return
-  endpoints.delete(sessionId)
+  for (const slot of slotsOf(sessionId)) endpoints.delete(slot)
   if (!(await canIsolate())) return
-  // Подъём, идущий прямо сейчас, положил бы контейнер обратно секундой позже:
-  // помечаем комнату, и подъём, закончившись, снесёт его сам.
-  if (starting.has(sessionId)) abandoned.add(sessionId)
-  await run(['rm', '-f', containerFor(sessionId)], 60_000)
+  for (const slot of slotsOf(sessionId)) {
+    // Подъём, идущий прямо сейчас, положил бы контейнер обратно секундой позже:
+    // помечаем слот, и подъём, закончившись, снесёт его сам.
+    if (starting.has(slot)) abandoned.add(slot)
+    await run(['rm', '-f', containerOfSlot(slot)], 60_000)
+  }
+}
+
+/**
+ * Убрать ТОЛЬКО контейнер личных тетрадей — занятие при этом продолжается.
+ *
+ * Зовётся, когда в нём погасло последнее ядро: держать пустой контейнер на
+ * каждое занятие, где кто-то однажды открыл черновик, значит копить их ровно
+ * так же, как копились комнатные до появления уборки простоя. Комнатный
+ * контейнер эта дорога не трогает НИКОГДА — ни его Python, ни его терминал.
+ */
+export async function dropOwnKernel(sessionId: string): Promise<void> {
+  if (kernelBackend() !== 'docker') return
+  const slot = slotFor(sessionId, 'own')
+  endpoints.delete(slot)
+  if (!(await canIsolate())) return
+  if (starting.has(slot)) abandoned.add(slot)
+  await run(['rm', '-f', containerFor(sessionId, 'own')], 60_000)
 }
 
 /** Забыть разрешённый адрес, чтобы следующее открытие перепроверило контейнер. */
-export function forgetSessionKernel(sessionId: string): void {
-  endpoints.delete(sessionId)
+export function forgetSessionKernel(sessionId: string, role: KernelRole = 'room'): void {
+  endpoints.delete(slotFor(sessionId, role))
 }
 
-/** Комнаты, для которых этот процесс поднял контейнер. Нужно панели. */
+/**
+ * Комнаты, для которых этот процесс поднял хоть один контейнер. Нужно панели и
+ * уборке — и обе считают ЗАНЯТИЯ, а не контейнеры.
+ */
 export function runningRoomKernels(): string[] {
-  return [...endpoints.keys()]
+  return [...new Set([...endpoints.keys()].map(sessionOfSlot))]
 }
 
 /** Local supervisor shutdown; independent of network readiness and never deletes files. */
@@ -1294,9 +1511,11 @@ export async function dropLocalRoomKernel(sessionId: string): Promise<void> {
   try {
     // A Docker create already sent to the daemon must settle before rm; checks
     // throughout startup prevent any later create or readiness retry.
-    await Promise.allSettled([starting.get(sessionId)])
-    endpoints.delete(sessionId)
-    const result = await run(['rm', '-f', containerFor(sessionId)], 60_000)
-    if (result.code !== 0 && !/No such container/i.test(result.out)) throw new Error(result.out)
+    await Promise.allSettled(slotsOf(sessionId).map((slot) => starting.get(slot)))
+    for (const slot of slotsOf(sessionId)) {
+      endpoints.delete(slot)
+      const result = await run(['rm', '-f', containerOfSlot(slot)], 60_000)
+      if (result.code !== 0 && !/No such container/i.test(result.out)) throw new Error(result.out)
+    }
   } finally { release() }
 }

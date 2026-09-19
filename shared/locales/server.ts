@@ -2270,8 +2270,24 @@ export const serverMessages: MessageCatalog = {
     "en": "This notebook is open to everyone: anyone may type and run in it"
   },
   "server.councilSharedKernel": {
-    "ru": "Решения выполняются по очереди в общем ядре, но каждое получает личные копии данных: таблицы, массивы, тензоры и списки после него остаются прежними. Новые переменные, созданные решением, удаляются после запуска, ядро завершить нельзя, а память решения ограничена. Общими остаются файлы и то, что не удалось скопировать, — о последнем решение читает в своём выводе. Не используйте этот режим для задач, требующих изолированного выполнения.",
-    "en": "Solutions run one at a time in the shared kernel, but each one gets personal copies of the data: tables, arrays, tensors and lists are left as they were. New variables created by a solution are removed after execution, a solution cannot shut the kernel down, and its memory is capped. Files and anything that could not be copied stay shared — a solution is told about the last of these in its own output. Do not use this mode for tasks requiring isolated execution."
+    "ru": "Решения выполняются по очереди в ядре этой тетради — у каждой тетради оно своё, — но каждое получает личные копии данных: таблицы, массивы, тензоры и списки после него остаются прежними. Новые переменные, созданные решением, удаляются после запуска, ядро завершить нельзя, а память решения ограничена. Общими остаются файлы и то, что не удалось скопировать, — о последнем решение читает в своём выводе. Не используйте этот режим для задач, требующих изолированного выполнения.",
+    "en": "Solutions run one at a time in this notebook's kernel — every notebook has its own — but each one gets personal copies of the data: tables, arrays, tensors and lists are left as they were. New variables created by a solution are removed after execution, a solution cannot shut the kernel down, and its memory is capped. Files and anything that could not be copied stay shared — a solution is told about the last of these in its own output. Do not use this mode for tasks requiring isolated execution."
+  },
+  "server.kernel.ownUnavailable": {
+    "ru": "На этом инстансе личные тетради пока без своего ядра — запуск в них недоступен",
+    "en": "On this instance personal notebooks have no kernel of their own yet — running in them is unavailable"
+  },
+  "server.kernel.ownFull": {
+    "ru": "Личных ядер в занятии уже {p0} — закройте неиспользуемые тетради или попросите преподавателя",
+    "en": "The class already has {p0} personal kernels — close the notebooks you are not using, or ask the teacher"
+  },
+  "server.kernel.bookAccessChanged": {
+    "ru": "Доступ к тетради изменился — её ядро перезапущено, переменные сброшены.",
+    "en": "This notebook’s access changed — its kernel was restarted and its variables are gone."
+  },
+  "server.kernel.ownRecreated": {
+    "ru": "Контейнер личных тетрадей пришлось пересоздать ({p0}). Переменные в личных тетрадях сброшены; файлы в панели не тронуты, запустите ячейки заново.",
+    "en": "The container for personal notebooks had to be recreated ({p0}). Variables in personal notebooks are gone; the files in the Files panel are untouched, run your cells again."
   },
   "server.defaultNotebook": {
     "ru": "Тетрадь.ipynb",

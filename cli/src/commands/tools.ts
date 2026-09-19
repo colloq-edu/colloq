@@ -173,8 +173,16 @@ function rowPrinter(ctx: Ctx, labels: string[]): (label: string, value: string) 
 
 // ------------------------------------------------------------------ status
 
-/** Один вызов docker на весь экран: метка комнаты, служба compose, состояние. */
-const PS_FORMAT = '{{.Label "colloq.kind"}}|{{.Label "com.docker.compose.service"}}|{{.State}}'
+/**
+ * Один вызов docker на весь экран: метка комнаты, служба compose, состояние — и
+ * ЗАНЯТИЕ, которому контейнер принадлежит.
+ *
+ * Занятие нужно потому, что контейнеров у него два: его собственный и тот, где
+ * считаются личные тетради его студентов. Считать строки значило бы написать
+ * «2 комнаты» там, где идёт одна пара.
+ */
+const PS_FORMAT =
+  '{{.Label "colloq.kind"}}|{{.Label "com.docker.compose.service"}}|{{.State}}|{{.Label "colloq.session"}}'
 
 type Status = {
   envName: string
@@ -253,15 +261,17 @@ async function statusFacts(ctx: Ctx): Promise<Status> {
     outside ? sh.capture('pgrep', ['-x', 'cloudflared'], { timeoutMs: 300 }) : missing(),
   ])
 
-  let rooms = 0
+  const seen = new Set<string>()
   let appRunning = false
   for (const line of docker.stdout.split('\n')) {
-    const [kind, compose, state] = line.split('|')
-    if ((kind ?? '') === 'room-kernel') rooms++
+    const [kind, compose, state, session] = line.split('|')
+    // По занятиям, а не по контейнерам: у одной пары их два.
+    if ((kind ?? '') === 'room-kernel') seen.add((session ?? '').trim() || line)
     if ((compose ?? '') === 'app' && (state ?? '').toLowerCase().includes('running')) {
       appRunning = true
     }
   }
+  const rooms = seen.size
   const dockerNote =
     docker.code === 0
       ? ''
