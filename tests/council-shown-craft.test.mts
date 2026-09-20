@@ -113,7 +113,19 @@ test('плашка стоит под своей ячейкой — и у сту�
 test('автору второй плашки нет: у него горит «ваш вариант на экране»', () => {
   assert.match(
     CELL,
-    /const showsOnScreen = \$derived\(\s*inCouncil && onScreen !== null && onScreen\.participantId !== session\.me\.id,\s*\)/,
+    /const showsOnScreen = \$derived\(\s*onScreen !== null && onScreen\.participantId !== session\.me\.id,\s*\)/,
+  )
+  /*
+   * И замка в условии нет — 20.09.2026. Преподаватель закрывает консилиум,
+   * чтобы остановить работу (правку листов, сдачу, очередь), а показанное
+   * решение при этом пропадало у всего класса вместе с разговором, ради
+   * которого его вывели. Снимает показ только «убрать с экрана»; сервер его
+   * хранит независимо от замка (control.ts · council:show:clear).
+   */
+  assert.doesNotMatch(
+    CELL,
+    /const showsOnScreen = \$derived\(\s*inCouncil/,
+    'показ снова умирает вместе с консилиумом',
   )
   // Зелёный чип автора остаётся на своём месте, в подвале листа.
   assert.match(SHEET, /\{#if mine\?\.shown\}/)

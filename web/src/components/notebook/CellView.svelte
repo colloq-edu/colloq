@@ -88,6 +88,7 @@
   import {
     beatsAlive,
     focusPult,
+    looksFullscreen,
     openPult,
     pultReach,
     watchPult,
@@ -303,8 +304,18 @@
    * подряд читаются как ошибка. Про себя он узнаёт раньше всех — по зелёному
    * «Ваш вариант на экране» в подвале своего листа.
    */
+  /*
+   * И замок тут ни при чём — это просьба с пары 20.09.2026.
+   *
+   * Преподаватель закрывает консилиум, чтобы остановить работу: чтобы перестали
+   * править листы, сдавать и занимать очередь. Показанное решение при этом
+   * пропадало у всего класса — вместе с разговором, ради которого его и
+   * вывели. Показ живёт своей жизнью: сервер его хранит и снимает только по
+   * «убрать с экрана» (control.ts · council:show:clear, замка не спрашивает),
+   * так что здесь условие было лишним, а не защитным.
+   */
   const showsOnScreen = $derived(
-    inCouncil && onScreen !== null && onScreen.participantId !== session.me.id,
+    onScreen !== null && onScreen.participantId !== session.me.id,
   )
   /*
    * Консилиум на этой ячейке закрыт — по замку или по слову сервера. Замок
@@ -973,7 +984,23 @@
   let blockedTimer: number | undefined
   const BLOCKED_MS = 6000
 
-  $effect(() => () => window.clearTimeout(blockedTimer))
+  /**
+   * «Открывается вкладкой» — та часть жалобы, которую кодом не чинят.
+   *
+   * В полноэкранном Chrome и Safari на macOS всплывающее окно ложится вкладкой
+   * в то же пространство, что бы ни стояло в `features`: система не выпускает
+   * из полноэкранного режима второе окно. Молчать об этом нельзя — владелец
+   * шарит одно окно и ждёт второго рядом, — а рисовать строку всегда тоже
+   * нельзя: она врёт в обычном режиме. Поэтому она появляется на нажатие и
+   * ровно тогда, когда это правда, и гаснет сама, как и отказ выше.
+   */
+  let pultFullscreen = $state(false)
+  let fullscreenTimer: number | undefined
+
+  $effect(() => () => {
+    window.clearTimeout(blockedTimer)
+    window.clearTimeout(fullscreenTimer)
+  })
 
   /**
    * Дотянуться до пульта этой ячейки: открыть, поднять или перевести.
@@ -1013,6 +1040,9 @@
     window.clearTimeout(blockedTimer)
     pultBlocked = opened === null
     if (opened === null) blockedTimer = window.setTimeout(() => (pultBlocked = false), BLOCKED_MS)
+    window.clearTimeout(fullscreenTimer)
+    pultFullscreen = opened !== null && looksFullscreen()
+    if (pultFullscreen) fullscreenTimer = window.setTimeout(() => (pultFullscreen = false), BLOCKED_MS)
   }
 
   let holdTimer: number | undefined
@@ -3404,6 +3434,13 @@
                 <!-- Браузер не дал открыть окно: молчащая кнопка читается как
                      сломанная, поэтому причина стоит строкой и гаснет сама. -->
                 <p class="basis-full text-2xs text-warning" role="status">{tr('room.ui.1402')}</p>
+              {/if}
+              {#if pultFullscreen}
+                <!-- Окно открылось, но легло вкладкой: из полноэкранного
+                     режима macOS второго окна не выпускает никто. -->
+                <p class="basis-full text-2xs text-muted" role="status" data-council-pult-fullscreen>
+                  {tr('room.pult.v3.fullscreen')}
+                </p>
               {/if}
             </div>
           {/if}
