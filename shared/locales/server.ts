@@ -2273,6 +2273,22 @@ export const serverMessages: MessageCatalog = {
     "ru": "Решения выполняются по очереди в ядре этой тетради — у каждой тетради оно своё, — но каждое получает личные копии данных: таблицы, массивы, тензоры и списки после него остаются прежними. Новые переменные, созданные решением, удаляются после запуска, ядро завершить нельзя, а память решения ограничена. Общими остаются файлы и то, что не удалось скопировать, — о последнем решение читает в своём выводе. Не используйте этот режим для задач, требующих изолированного выполнения.",
     "en": "Solutions run one at a time in this notebook's kernel — every notebook has its own — but each one gets personal copies of the data: tables, arrays, tensors and lists are left as they were. New variables created by a solution are removed after execution, a solution cannot shut the kernel down, and its memory is capped. Files and anything that could not be copied stay shared — a solution is told about the last of these in its own output. Do not use this mode for tasks requiring isolated execution."
   },
+  "server.cell.stoppedByLimit": {
+    "ru": "Остановлено: ячейка считалась дольше {p0}. Предел ставит преподаватель в правилах комнаты.",
+    "en": "Stopped: the cell ran longer than {p0}. The teacher sets this limit in the room rules."
+  },
+  "server.kernel.deafToInterrupt": {
+    "ru": "Ядро не отвечает на прерывание: два сигнала остановки ушли, а работа всё считается. Очередь этой тетради стоит — поможет только перезапуск ядра, и тогда переменные сбросятся у всех.",
+    "en": "The kernel is not answering the interrupt: two stop signals have gone out and the job is still running. This notebook's queue is stuck — only a kernel restart will move it, and that resets everyone's variables."
+  },
+  "server.council.runDropped": {
+    "ru": "Преподаватель снял ваш запуск с очереди. Текст попытки на месте — запустите её снова, когда будете готовы.",
+    "en": "The teacher took your run out of the queue. Your attempt is untouched — run it again when you are ready."
+  },
+  "server.council.alreadyQueuedHere": {
+    "ru": "Ваш запуск уже стоит в очереди этой тетради — {p0}-й. В очереди держится один запуск на человека: дождитесь своего.",
+    "en": "You already have a run in this notebook's queue — number {p0}. One run per person waits at a time: wait for yours."
+  },
   "server.kernel.ownUnavailable": {
     "ru": "На этом инстансе личные тетради пока без своего ядра — запуск в них недоступен",
     "en": "On this instance personal notebooks have no kernel of their own yet — running in them is unavailable"
@@ -2540,6 +2556,38 @@ export const serverMessages: MessageCatalog = {
   "server.council.noExit": {
     "ru": "В попытке нельзя завершать ядро: оно общее для всей комнаты. Уберите exit() или quit().",
     "en": "An attempt may not shut the kernel down: the whole room shares it. Remove exit() or quit()."
+  },
+  "server.kernel.diedOnAttempt": {
+    "ru": "В этот момент выполнялась попытка консилиума: {author}, ячейка {cell}.",
+    "en": "A Council attempt was running at that moment: {author}, cell {cell}."
+  },
+  "server.kernel.diedOnAttemptRunBy": {
+    "ru": "В этот момент выполнялась попытка консилиума: {author}, ячейка {cell}; запустил(а) {ran}.",
+    "en": "A Council attempt was running at that moment: {author}, cell {cell}; started by {ran}."
+  },
+  "server.kernel.diedOnAttemptNoAuthor": {
+    "ru": "В этот момент выполнялась попытка консилиума по ячейке {cell}.",
+    "en": "A Council attempt on cell {cell} was running at that moment."
+  },
+  "server.kernel.diedOnAttemptNoCell": {
+    "ru": "В этот момент выполнялась попытка консилиума: {author}.",
+    "en": "A Council attempt was running at that moment: {author}."
+  },
+  "server.kernel.diedOnCell": {
+    "ru": "В этот момент выполнялась ячейка {cell}.",
+    "en": "Cell {cell} was running at that moment."
+  },
+  "server.kernel.diedOnCellRunBy": {
+    "ru": "В этот момент выполнялась ячейка {cell}, запустил(а) {ran}.",
+    "en": "Cell {cell} was running at that moment, started by {ran}."
+  },
+  "server.kernel.diedAgain": {
+    "ru": "Ядро падает подряд: {count}-й раз за десять минут. Остановите очередь и запускайте ячейки по одной — падает, скорее всего, одна и та же.",
+    "en": "The kernel keeps dying: {count} times in ten minutes. Stop the queue and run cells one at a time — it is most likely the same one each time."
+  },
+  "server.council.noProcessExit": {
+    "ru": "В попытке нельзя завершать процесс ядра: оно общее для всей комнаты. Уберите os._exit() или os.abort().",
+    "en": "An attempt may not end the kernel process: the whole room shares it. Remove os._exit() or os.abort()."
   },
   "server.council.outOfMemory": {
     "ru": "[Colloq] Попытке не хватило памяти: ей было отведено {p0}. Ядро и данные остальных целы — уменьшите объём или считайте по частям.",

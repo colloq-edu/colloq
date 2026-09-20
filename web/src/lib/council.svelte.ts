@@ -35,6 +35,7 @@ import type {
   ControlServerMessage,
   CouncilAttempt,
   CouncilBoard,
+  CouncilKernel,
   CouncilMine,
   CouncilOracle,
   CouncilShown,
@@ -53,6 +54,7 @@ export type CouncilMessage = Extract<
       | 'council:count'
       | 'council:shown'
       | 'council:hint:state'
+      | 'council:kernel'
   }
 >
 
@@ -328,6 +330,16 @@ export class CouncilState {
    * убрали: плашка сворачивается, а ячейка помнит, что кадр по ней приезжал.
    */
   shown = $state.raw<Record<string, CouncilShown | null>>({})
+  /**
+   * Чем занято ядро ТЕТРАДИ каждой ячейки — только у преподавателя.
+   *
+   * Отдельно от стопки, хотя ключ тот же. Стопка — про попытки этой ячейки, а
+   * это про общее ядро: очередь у тетради одна, и держать её может обычная
+   * ячейка или попытка соседней ячейки консилиума. Из стопки такого не
+   * собрать, и пульт годами показывал «здесь ничего не выполняется» рядом с
+   * «в очереди: 12» (shared/protocol.ts · CouncilKernel).
+   */
+  kernels = $state.raw<Record<string, CouncilKernel>>({})
 
   readonly #send: (message: ControlClientMessage) => void
   readonly #outbox: DraftOutbox
@@ -393,6 +405,10 @@ export class CouncilState {
     }
     if (message.t === 'council:shown') {
       this.shown = { ...this.shown, [message.cellId]: message.shown }
+      return
+    }
+    if (message.t === 'council:kernel') {
+      this.kernels = { ...this.kernels, [message.cellId]: message.kernel }
       return
     }
     if (message.t === 'council:hint:state') {
@@ -519,6 +535,17 @@ export class CouncilState {
 
   declineRunRequest(cellId: string, participantId: string, requestId: string): void {
     this.#send({ t: 'council:run:decline', cellId, participantId, requestId })
+  }
+
+  /**
+   * Снять чужой ждущий запуск с очереди — не трогая человека.
+   *
+   * Отдельно от `cancelRunRequest`: та про ПРОСЬБУ («разрешите запустить»), а
+   * эта про уже поставленную в очередь работу. Автору сервер говорит об этом
+   * словом — молча исчезнувший запуск читается как поломка.
+   */
+  dropRun(cellId: string, participantId: string): void {
+    this.#send({ t: 'council:run:drop', cellId, participantId })
   }
 
   /* --------------------------------------------------------------- ведущий */

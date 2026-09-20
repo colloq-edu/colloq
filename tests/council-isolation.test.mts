@@ -463,6 +463,67 @@ test('exit() и quit() в попытке отказывают, а не гася�
   assert.deepEqual(out.after.names, [], 'exit/quit остались в пространстве после выхода')
 })
 
+/**
+ * Тот самый `os._exit(0)`, который 20.09 девять раз унёс ядро у тридцати человек.
+ *
+ * Тест устроен так, что мимо него эта беда не проходит физически: если
+ * `os._exit` сработает, python кончится молча, до `print('@@'...)` дело не
+ * дойдёт, и `drive` упадёт на «нет ответа». То есть проверяется не форма
+ * отказа, а ровно то, что процесс ЖИВ — единственное, что в тот день имело
+ * значение. `os.abort()` рядом: он гасит так же, только через SIGABRT.
+ *
+ * И вторая половина, не менее важная: после выхода `os._exit` обязан быть
+ * НАСТОЯЩИМ. Оставить в общем модуле `os` наш отказ значило бы сломать
+ * `multiprocessing` всей комнате — и не на попытке, а навсегда.
+ */
+test('os._exit() в попытке отказывает, а не гасит ядро комнате', { skip: noPython }, () => {
+  const out = drive({
+    setup: 'df = [1]',
+    // Ровно та попытка, что стояла в комнате d8uf9ewe 20.09 — две строки.
+    attempt: 'import os\nos._exit(0)',
+    probe: "{'alive': True, 'df': df}",
+  })
+  // Дошли сюда — значит, python досчитал до печати ответа, то есть выжил.
+  assert.equal(out.after.alive, true, 'попытка унесла процесс с собой')
+  assert.deepEqual(out.after.df, [1], 'данные комнаты не пережили попытку')
+  // Имя отказа — то, по которому сервер печатает одну строку вместо трейсбека.
+  assert.match(out.failure ?? '', /^ColloqRefused: /, `вместо отказа: ${out.failure}`)
+  assert.match(out.failure ?? '', /os\._exit/)
+})
+
+test('os.abort() в попытке отказывает так же', { skip: noPython }, () => {
+  const out = drive({
+    setup: 'df = [1]',
+    attempt: 'import os\nos.abort()',
+    probe: "{'alive': True}",
+  })
+  assert.equal(out.after.alive, true, 'os.abort() унёс процесс с собой')
+  assert.match(out.failure ?? '', /^ColloqRefused: /, `вместо отказа: ${out.failure}`)
+})
+
+/**
+ * После выхода `os._exit` обязан быть НАСТОЯЩИМ, а `os.kill` — нетронутым.
+ *
+ * Первое: оставить в общем модуле `os` наш отказ значило бы сломать
+ * `multiprocessing` всей комнате — и не на попытке, а навсегда.
+ *
+ * Второе: `os.kill` не закрыт намеренно, а не по недосмотру. Им управляют
+ * дочерними процессами (`subprocess`, пулы), и отказ там сломал бы работающие
+ * тетради ради дыры, которую всё равно обходят через `ctypes`. Строка стоит
+ * здесь, чтобы следующий, кто решит «закроем заодно и kill», знал, что об
+ * этом уже думали.
+ */
+test('после выхода os._exit настоящий, а os.kill не трогали вовсе', { skip: noPython }, () => {
+  const out = drive({
+    setup: 'import os\nreal = (os._exit, os.abort, os.kill)',
+    attempt: 'import os\nseen_kill = os.kill is real[2]',
+    probe: "{'restored': os._exit is real[0] and os.abort is real[1], 'kill': os.kill is real[2]}",
+  })
+  assert.equal(out.failure, null, out.failure ?? '')
+  assert.equal(out.after.restored, true, 'os._exit остался подменённым — это сломает multiprocessing')
+  assert.equal(out.after.kill, true, 'os.kill подменили — это сломает управление дочерними процессами')
+})
+
 test('состояние процесса возвращается: ГСЧ, потоки вывода, путь, окружение', { skip: noPython }, () => {
   const out = drive({
     setup: 'import random, sys, os, warnings, decimal\n'

@@ -34,7 +34,7 @@ import {
   setOracle,
   submitAttempt,
 } from '../server/src/council.js'
-import { groupsOf, idleOracle } from '../server/src/ai/council.js'
+import { idleOracle } from '../server/src/ai/council.js'
 import { normalizeAttempt, DEFAULT_COUNCIL } from '@shared/notebook'
 import type { CouncilRun } from '@shared/protocol'
 
@@ -179,24 +179,22 @@ test('пустая ячейка — четыре нуля, а не отказ', 
 
 /* ------------------------------------------------------------ группировка */
 
-test('представитель группы у стопки и у оракула — один и тот же', () => {
+test('стопка складывает одинаковые решения общей функцией и без оракула', () => {
   const id = room()
-  // Сдали в одну миллисекунду: ничью решает время последней правки, и раньше
-  // оракул её не знал вовсе — разрыв у него шёл по id, то есть представитель
-  // мог оказаться не тем, что на карточке, и черновик лёг бы на чужую группу.
+  // Сдали в одну миллисекунду: ничью решает время последней правки. У оракула
+  // групп больше нет вовсе — он читает класс поимённо, — но стопка по ним
+  // по-прежнему живёт, и разрыв у неё должен быть тот же, что у пульта.
   saveDraft(id, CELL, 'p_zzz', 'x = 1', 1_000)
   saveDraft(id, CELL, 'p_aaa', 'x = 1', 2_000)
   submitAttempt(id, CELL, 'p_zzz', 5_000)
   submitAttempt(id, CELL, 'p_aaa', 5_000)
 
   const board = boardFor(id, CELL, SHEET)
-  const oracle = groupsOf(attemptsOf(id, CELL))
   assert.equal(board.groups.length, 1)
-  assert.equal(oracle.length, 1)
   assert.equal(board.groups[0].representative, 'p_zzz', 'раньше писал — он и представитель')
-  assert.equal(oracle[0].representative, board.groups[0].representative)
-  assert.equal(oracle[0].key, board.groups[0].key)
-  assert.deepEqual(oracle[0].members, board.groups[0].members)
+  assert.deepEqual(board.groups[0].members, ['p_zzz', 'p_aaa'])
+  // Подписей от оракула у групп больше нет: он их не раздаёт.
+  assert.equal(board.groups[0].label, null)
 })
 
 /* --------------------------------------------------------- снесённая комната */
@@ -204,8 +202,16 @@ test('представитель группы у стопки и у оракул
 test('сводка не воскрешает удалённый семинар', () => {
   const id = room()
   saveDraft(id, CELL, 'p_petya', 'x = 1', 1_000)
-  setOracle(id, CELL, { ...idleOracle(), state: 'ready', summary: ['было'] })
-  assert.equal(oracleOf(id, CELL)?.summary[0], 'было')
+  const said = (text: string) => ({
+    id: text,
+    question: 'Как класс?',
+    text,
+    askedAt: 1,
+    basedOn: { submitted: 0, drafts: 1 },
+    people: {},
+  })
+  setOracle(id, CELL, { ...idleOracle(), state: 'ready', answers: [said('было')] })
+  assert.equal(oracleOf(id, CELL)?.answers[0].text, 'было')
 
   /*
    * Ровно тот порядок, в котором семинар сносят: сперва закрывается комната
@@ -221,7 +227,7 @@ test('сводка не воскрешает удалённый семинар',
   // семинар живым для всех, кто спрашивает «а он ещё есть?».
   forgetRules(id)
 
-  setOracle(id, CELL, { ...idleOracle(), state: 'ready', summary: ['опоздал'] })
+  setOracle(id, CELL, { ...idleOracle(), state: 'ready', answers: [said('опоздал')] })
   assert.equal(oracleOf(id, CELL), null, 'строка удалённого семинара воскресла')
   const rows = db
     .prepare('SELECT COUNT(*) AS n FROM council_oracle WHERE session_id = ?')

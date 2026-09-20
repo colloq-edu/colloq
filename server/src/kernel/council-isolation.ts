@@ -38,6 +38,12 @@ import { tr, formatNumber } from '@shared/i18n'
  *     процесса. Воспроизведено на живом ядре — после такой попытки переменных
  *     нет ни у кого. Теперь отвечают отказом; `sys.exit()` ядро переживает и
  *     без нас, его не трогаем;
+ *   · `os._exit()` и `os.abort()`: конец процесса без единого слова — ни
+ *     трассировки, ни стека, ни сигнала в dmesg, ни счётчика в cgroup. 20.09
+ *     занятие на тридцать человек потеряло ядро девять раз за одиннадцать
+ *     минут на попытке в две строки; воспроизведено в одноразовом контейнере.
+ *     Теперь отвечают отказом — кроме ребёнка после `fork()`, где `_exit` и
+ *     есть правильный конец (`_guard_kill`);
  *   · жадность: `np.ones((40000, 40000))` или неудачное декартово соединение
  *     звали OOM-killer, и он убивал ядро тетради. Проверено контрольным
  *     опытом. Теперь попытке ставится потолок адресного пространства от
@@ -49,9 +55,11 @@ import { tr, formatNumber } from '@shared/i18n'
  *
  * Чего здесь НЕТ и не будет, пока не решат иначе: файлы на диске (chmod на
  * время попытки ломает редактор файлов и терминал, перехват `open` ломает
- * обычное «каждый пишет out.csv»), защита от умысла (`os._exit`, снос этого
- * модуля из `sys.modules`) и модули, которые попытка импортировала.
- * Консилиум — приём преподавания, а не экзаменационная песочница.
+ * обычное «каждый пишет out.csv»), песочница против умысла (`ctypes`,
+ * `signal.raise_signal`, снос этого модуля из `sys.modules` проходят мимо) и
+ * модули, которые попытка импортировала. Консилиум — приём преподавания, а не
+ * экзаменационная песочница: закрыт тот способ погасить пару, которым её
+ * гасят на самом деле, а не все мыслимые.
  *
  * Чистый модуль: исходники на Python, сборка и разбор отчёта, ни сети, ни Yjs
  * — ради теста (тот же приём, что в council.ts).
@@ -715,6 +723,80 @@ def _unguard_exit(current, ns):
             pass
 
 
+def _kill_refusal(mine, real, text):
+    """Отказ вместо конца процесса — но только В ТОМ САМОМ процессе.
+
+    Ребёнку после \`fork()\` настоящий \`_exit\` возвращается, и это не
+    послабление, а обязательство: \`multiprocessing\` и joblib заканчивают
+    дочерний процесс именно им, и отказ в ребёнке пустил бы копию попытки
+    бежать дальше вторым ядром — беда крупнее той, от которой защищаемся.
+    """
+    def refuse(*args, **kwargs):
+        try:
+            child = os.getpid() != mine
+        except Exception:
+            child = False
+        if child:
+            return real(*args, **kwargs)
+        raise ColloqRefused(text)
+    return refuse
+
+
+def _guard_kill(text):
+    """\`os._exit()\` в попытке гасит ядро ВСЕЙ комнате — и молча.
+
+    20.09.2026, занятие на тридцать человек: попытка в две строки —
+    \`import os\` и \`os._exit(0)\` — убила ядро комнаты девять раз за
+    одиннадцать минут. Эту смерть не отличить от исправной работы ничем:
+    процесс исчезает мгновенно, БЕЗ трассировки, без строки в stderr, без
+    сигнала в dmesg и без счётчика \`oom_kill\` в cgroup. Jupyter поднимает
+    ядро заново (\`AsyncIOLoopKernelRestarter\`), а тридцать человек теряют
+    переменные и очередь — и никто, включая преподавателя, не видит причины.
+    Воспроизведено в одноразовом контейнере на том же образе.
+
+    \`exit()\` к тому дню был закрыт (_guard_exit), \`os._exit\` — нет: модуль
+    считал защиту от умысла не своим делом. Одного занятия хватило, чтобы
+    передумать: цена здесь не «студент схитрил», а «пара остановилась».
+
+    Закрыты ровно два имени, у которых нет другого смысла, кроме «кончить
+    этот процесс сейчас»: \`os._exit\` и \`os.abort\`. \`os.kill\` остаётся —
+    им управляют дочерними процессами, и отказ там сломал бы больше, чем
+    закрыл.
+
+    Это не песочница, а та же планка, что у \`exit()\`: \`ctypes\`,
+    \`signal.raise_signal\`, перезагрузка \`os\` через importlib проходят мимо.
+    Закрыт тот способ, которым ядро гасят на самом деле.
+    """
+    try:
+        mine = os.getpid()
+    except Exception:
+        return None
+    saved = {}
+    for name in ('_exit', 'abort'):
+        real = _getattr(os, name, None)
+        if real is None:
+            continue
+        try:
+            _setattr(os, name, _kill_refusal(mine, real, text))
+        except Exception:
+            continue
+        saved[name] = real
+    return saved or None
+
+
+def _unguard_kill(current):
+    saved = current.get('kill') if current else None
+    if not saved:
+        return
+    for name in ('_exit', 'abort'):
+        if name not in saved:
+            continue
+        try:
+            _setattr(os, name, saved[name])
+        except Exception:
+            pass
+
+
 def _read_int(path):
     try:
         with open(path) as handle:
@@ -809,6 +891,24 @@ def _memory_cap(floor, headroom):
     занято (данными преподавателя в том числе) и запас на само ядро; меньше
     пола не опускаемся — потолок, под которым не работает даже импорт, хуже,
     чем никакого.
+
+    ЗАМЕРЕНО 20.09 на том же образе, том же железе и настоящих данных занятия
+    (три HistGradientBoostingClassifier на 240 000 строк, OMP_NUM_THREADS=10):
+
+        без потолка   VmPeak 2,37 ГБ   VmHWM 0,45 ГБ
+        с потолком    VmPeak 2,33 ГБ   VmHWM 0,46 ГБ, запас под потолком 14,2 ГБ
+
+    Два вывода, и оба важны. Первый: потолок НЕ убивает процесс — проверено и
+    на жадности (\`np.ones((40000, 40000))\`, декартово соединение), и на самой
+    попытке под тесным потолком; наверх приходит честный \`MemoryError\`, а не
+    \`std::bad_alloc\` и не сигнал. Второй, неприятный: адресное пространство
+    больше настоящего потребления В ПЯТЬ РАЗ, а бюджет считается от ЗАНЯТОГО,
+    то есть от настоящего. На 16 ГБ комнате разница тонет в запасе, а на
+    маленькой (пол 512 МБ) обычный \`fit\` упирается в потолок и отвечает
+    \`RuntimeError: can't allocate read lock\` — ошибкой, из которой автор
+    попытки ничего не поймёт. Это известный недочёт, а не причина смертей ядра
+    20.09: те были от \`os._exit(0)\` в попытке (см. \`_guard_kill\`), при
+    нетронутом cgroup (\`oom_kill 0\`, пик 5,2 из 16 ГБ).
     """
     if not sys.platform.startswith('linux'):
         return None
@@ -1248,6 +1348,7 @@ def leave(ns):
     # иначе чужой np.set_printoptions отменится из-за нехватки адресов.
     _disarm_memory(current.get('memory'))
     _unguard_exit(current, ns)
+    _unguard_kill(current)
     saved = current.get('saved')
     if saved is not None:
         for key in saved:
@@ -1328,6 +1429,7 @@ def enter(ns, budget, settings=None):
         # не должно оставить попытке половину подмены без пути назад.
         state = {'saved': saved, 'cwd': cwd, 'rc': rc, 'process': _snapshot(),
                  'exit': _guard_exit(ns, settings.get('exit') or 'exit() is not allowed here'),
+                 'kill': _guard_kill(settings.get('kill') or 'os._exit() is not allowed here'),
                  'memory': None}
 
         copies = {}
@@ -1471,6 +1573,7 @@ export function councilEnterSource(
    */
   const settings = [
     `{'exit': ${JSON.stringify(tr('server.council.noExit'))}`,
+    `'kill': ${JSON.stringify(tr('server.council.noProcessExit'))}`,
     `'memory': ${options.memoryGuard === true ? 'True' : 'False'}`,
     `'floor': ${COUNCIL_MEMORY_FLOOR_BYTES}`,
     `'headroom': ${COUNCIL_MEMORY_HEADROOM_BYTES}}`,

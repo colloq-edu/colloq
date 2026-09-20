@@ -138,6 +138,8 @@ import {
   purgeCouncilRunsOf,
   councilQueuePosition,
   councilQueuePositions,
+  kernelWorkOf,
+  onKernelQueueChanged,
   queueIsOnly,
   requestCouncilRun,
   retimeCouncilRun,
@@ -1100,6 +1102,15 @@ onBooksWritten((sessionId) => {
  */
 onBookRulesChanged((sessionId) => broadcast(sessionId, { t: 'rules', rules: storedRules(sessionId) }))
 
+/*
+ * Очередь ядра сдвинулась — пультам про это знать.
+ *
+ * Отдельной подпиской, а не из наблюдателя документа: зеркало очереди в
+ * документе знает только про ЯЧЕЙКИ (попытки консилиума в него не едут
+ * нарочно), так что целая очередь из попыток двигалась бы, не разбудив никого.
+ */
+onKernelQueueChanged((sessionId) => nudgeKernel(sessionId))
+
 // Registered once, at import: the kernel runtime has no idea who is listening.
 onWorkspaceChanged((sessionId) => {
   // Файл тетради могли убрать мимо дерева — `os.remove` в ячейке. Тетрадь без
@@ -1594,6 +1605,72 @@ function tellQueued(sessionId: string): void {
 }
 
 /**
+ * Чем занято ядро тетради этой ячейки — одному пульту, одним маленьким кадром.
+ *
+ * Собирается здесь, а не в ядре, ровно потому, что ядро не знает имён и не
+ * умеет считать номер ячейки: у него есть `participantId` и `cellId`, а пульту
+ * нужны «Петя» и «ячейка 7». Всё, что ядро знает само, приезжает из
+ * `kernelWorkOf` неизменным — включая признак «не отвечает на прерывание».
+ *
+ * Имена здесь настоящие всегда: кадр едет одному преподавателю, а прятать их
+ * за «Вариант 12» при выключенной ручке — дело пульта, как и у стопки.
+ */
+function kernelMessage(sessionId: string, cellId: string): ControlServerMessage | null {
+  const work = kernelWorkOf(sessionId, cellId)
+  // Область ещё не заводили — в этой тетради ничего не запускали ни разу.
+  if (!work) return { t: 'council:kernel', cellId, kernel: { busy: null, queued: 0 } }
+  const busy = work.busy
+  if (!busy) return { t: 'council:kernel', cellId, kernel: { busy: null, queued: work.queued } }
+  const found = findCell(getSessionDoc(sessionId).doc, busy.cellId)
+  return {
+    t: 'council:kernel',
+    cellId,
+    kernel: {
+      queued: work.queued,
+      busy: {
+        kind: busy.kind,
+        index: found ? found.index + 1 : null,
+        // У попытки называется её АВТОР, а не тот, кто нажал: преподаватель,
+        // запустивший чужое решение у доски, — не тот, чья это работа.
+        name: displayName(sessionId, busy.participantId ?? busy.runById),
+        participantId: busy.participantId,
+        here: busy.kind === 'attempt' && busy.cellId === cellId,
+        startedAt: busy.startedAt,
+        limitSec: busy.limitSec,
+        stuck: busy.stuck,
+      },
+    },
+  }
+}
+
+function kernelOut(sessionId: string, cellId: string): void {
+  const message = kernelMessage(sessionId, cellId)
+  if (message) toTeachers(sessionId, message)
+}
+
+/**
+ * Очередь тетради сдвинулась — сказать пультам, но не чаще окна.
+ *
+ * По всем ячейкам со стопкой, а не по одной: пульт открыт на одной ячейке, но
+ * какой именно — сервер не знает и знать не должен (вкладку переключают без
+ * него). Ячеек консилиума в занятии единицы, кадр — полсотни байт, и окно у
+ * него то же, что у номеров очереди: очередь дёргается дважды на каждую
+ * работу.
+ *
+ * Нет ни одного пульта — не собираем вовсе: на потоке очередь дёргается
+ * непрерывно, а слушать её некому.
+ */
+function nudgeKernel(sessionId: string): void {
+  if (!teachersOnline(sessionId)) return
+  onTick(sessionId, 'ядро тетради', QUEUE_EVERY_MS, () => {
+    if (!teachersOnline(sessionId)) return
+    for (const id of new Set([...councilCells(sessionId), ...cellsWithAttempts(sessionId)])) {
+      kernelOut(sessionId, id)
+    }
+  })
+}
+
+/**
  * Очередь дёрнулась — сказать ждущим новый номер, но не чаще окна.
  *
  * Раньше номера пересылались только на конце ЧУЖОЙ ПОПЫТКИ консилиума. Очередь
@@ -1704,6 +1781,10 @@ function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload)
         // первое, что он получает.
         board: withinBudget(boardFor(sessionId, id, councilCellOf(sessionId, id))),
       })
+      // И чем занято ядро тетради: пульт, вернувшийся после обрыва, обязан
+      // увидеть чужую работу, которая держит очередь, а не пустую карточку.
+      const kernel = kernelMessage(sessionId, id)
+      if (kernel) send(ws, kernel)
     }
   }
   const mine = new Set<string>([...open, ...cellsOfParticipant(sessionId, payload.participantId)])
@@ -4436,6 +4517,41 @@ export function dispatch(
       return
     }
 
+    case 'council:run:drop': {
+      /*
+       * Снять чужой ждущий запуск — не трогая человека.
+       *
+       * Раньше единственной кнопкой у чужой записи в очереди было «убрать с
+       * занятия»: освободить очередь от запуска, поставленного по ошибке,
+       * можно было только вместе с автором. Здесь снимается работа и ничего
+       * больше — текст попытки остаётся, автор остаётся, право запускать
+       * остаётся.
+       */
+      if (!mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayLeadCouncil.745e70"))
+        return
+      }
+      const id = optionalId(message.cellId)
+      const target = optionalId(message.participantId)
+      if (!id || !target) return
+      if (!cancelCouncilRun(sessionId, id, target)) {
+        // Ушедшую в ядро отсюда не достать: её останавливает «Прервать», и
+        // сказать об этом надо тем же словом, что написано на кнопке.
+        send(ws, { t: 'error', message: tr("server.theAttemptIsAlreadyRunningOrQueued.fc3fa7") })
+        return
+      }
+      /*
+       * Автору — словом. Запуск, исчезнувший с карточки молча, читается как
+       * поломка: человек нажал, увидел «в очереди», а через минуту очереди
+       * нет и вывода нет.
+       */
+      tell(sessionId, target, { t: 'error', message: tr('server.council.runDropped') })
+      mineOut(sessionId, id, target)
+      boardOut(sessionId, id, [target])
+      tellQueued(sessionId)
+      return
+    }
+
     case 'council:run:approve':
     case 'council:run': {
       const approving = message.t === 'council:run:approve'
@@ -4540,6 +4656,15 @@ export function dispatch(
         payload.participantId,
       )
       if (!outcome.queued) {
+        /*
+         * Отказ говорит, ЧТО именно занято. Три случая и три разные фразы:
+         * эта же попытка уже считается, эта же стоит в очереди — и, с недавних
+         * пор, в очереди стоит его работа по ДРУГОЙ ячейке этой тетради
+         * (kernel/index.ts · потолок «один запуск на человека в полёте»).
+         * Одна фраза на все три отправляла бы человека искать свою попытку
+         * там, где её нет.
+         */
+        const here = councilQueuePosition(sessionId, id, target)
         send(ws, {
           t: 'error',
           message:

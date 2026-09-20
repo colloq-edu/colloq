@@ -813,6 +813,170 @@ test('ячейка, убившая ядро по памяти, кончаетс�
   }
 })
 
+/*
+ * --------------------------------------------------------------------------
+ * 20.09.2026. Комната на тридцать человек потеряла ядро девять раз за
+ * одиннадцать минут. Журнал девять раз сказал «restarted itself — oom», а
+ * вскрытие СТРОКОЙ НИЖЕ возразило: «завершился не по памяти, занято 5,2 ГБ из
+ * 16». Убивал `os._exit(0)` в попытке консилиума; cgroup был не тронут
+ * (`oom_kill 0`), dmesg чист. Слово «oom» было догадкой нашего кода — и оно
+ * отправило искать прожорливую ячейку, которой не существовало.
+ *
+ * Ниже — три вещи, которых в тот день не хватило: честное слово в журнале,
+ * имя того, что выполнялось, и счёт падений вместо девяти одинаковых заметок.
+ * -------------------------------------------------------------------------- */
+
+/** Числа того самого контейнера: предел 16 ГБ, пик 5,2 ГБ, cgroup никого не убивал. */
+function notMemoryDocker() {
+  return async (args: string[]) => {
+    if (args[0] === 'exec') {
+      return { code: 0, out: 'limit 17179869184\npeak 5559595008\ncurrent 5559595008\nkills 0' }
+    }
+    if (args[0] === 'logs') return { code: 0, out: 'kernel 24c0b107 restarted\n' }
+    return { code: 0, out: 'running 0 false 17179869184' }
+  }
+}
+
+/** Перехватить журнал машины на время одного прогона. */
+async function withWarnings<T>(body: (lines: string[]) => Promise<T>): Promise<T> {
+  const lines: string[] = []
+  const original = console.warn
+  console.warn = (...args: unknown[]) => {
+    lines.push(args.map(String).join(' '))
+  }
+  try {
+    return await body(lines)
+  } finally {
+    console.warn = original
+  }
+}
+
+test('журнал не говорит «oom», когда ядро умерло не от памяти', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
+  useDockerForPostmortem(notMemoryDocker())
+  try {
+    const room = await seminar()
+    const warned = await withWarnings(async (lines) => {
+      room.type('OOM: import os; os._exit(0)')
+      requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
+      assert.ok(await until(() => room.state() === 'error'), `ячейка кончилась как ${String(room.state())}`)
+      // Вскрытие приезжает вторым, через docker: ждём именно его строку.
+      assert.ok(await until(() => lines.some((line) => /] (oom|died):/.test(line))), `вскрытие не напечаталось: ${JSON.stringify(lines)}`)
+      return lines
+    })
+    const said = warned.filter((line) => line.includes(room.id))
+    const restart = said.find((line) => /restarted itself/.test(line)) ?? ''
+    assert.ok(restart, `нет строки о перезапуске: ${JSON.stringify(said)}`)
+    /*
+     * Вот она, та самая ложь. Строка печатается ДО похода к docker, то есть
+     * когда про память ещё ничего не известно, — и говорить «oom» ей нечем.
+     */
+    assert.doesNotMatch(restart, /oom/i, `журнал снова угадывает причину: ${restart}`)
+    assert.match(restart, /cause unknown/, `журнал не сказал, что причина неизвестна: ${restart}`)
+    // А вскрытие, которому есть что сказать, говорит `died:`, а не `oom:`.
+    const why = said.find((line) => /] (oom|died):/.test(line)) ?? ''
+    assert.match(why, /] died:/, `вскрытие назвало это нехваткой памяти: ${why}`)
+    assert.doesNotMatch(why, /] oom:/, `вскрытие назвало это нехваткой памяти: ${why}`)
+  } finally {
+    useDockerForPostmortem(null)
+  }
+})
+
+test('заметка комнате называет ячейку и того, кто её запустил', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { upsertParticipant } = await import('../server/src/db.js')
+  const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
+  useDockerForPostmortem(notMemoryDocker())
+  try {
+    const room = await seminar()
+    upsertParticipant({ sessionId: room.id, id: 'p_maria', name: 'Мария', role: 'participant', avatar: null })
+    room.type('OOM: x = 1')
+    requestRun(room.id, [room.cellId], 'Мария', 'p_maria')
+    assert.ok(await until(() => room.state() === 'error'), `ячейка кончилась как ${String(room.state())}`)
+    /*
+     * Тетрадь здесь — markdown и код, то есть номер выполнявшейся ячейки 2:
+     * тот же, что нарисован в комнате слева от неё.
+     */
+    assert.ok(
+      await until(() => room.notes().some((note) => /(ячейка|Cell) 2\b/.test(note))),
+      `комната не узнала, что выполнялось: ${JSON.stringify(room.notes())}`,
+    )
+    const said = room.notes().find((note) => /(ячейка|Cell) 2\b/.test(note)) ?? ''
+    assert.match(said, /Мария/, `в заметке нет имени запустившего: ${said}`)
+  } finally {
+    useDockerForPostmortem(null)
+  }
+})
+
+test('когда умирает попытка консилиума, комната узнаёт ЧЬЯ', async () => {
+  const { requestCouncilRun } = await import('../server/src/kernel/index.js')
+  const { upsertParticipant } = await import('../server/src/db.js')
+  const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
+  useDockerForPostmortem(notMemoryDocker())
+  try {
+    const room = await seminar()
+    upsertParticipant({ sessionId: room.id, id: 'p_chel', name: 'Чел', role: 'participant', avatar: null })
+    upsertParticipant({ sessionId: room.id, id: 'p_host', name: 'Aleksandr K.', role: 'host', avatar: null })
+    /*
+     * Именно так это и было: попытку запускает ПРЕПОДАВАТЕЛЬ, перебирая
+     * консилиум пультом, а написал её студент. Без обоих имён заметка
+     * отправляет разбираться не к тому человеку.
+     */
+    requestCouncilRun(
+      room.id,
+      {
+        cellId: room.cellId,
+        participantId: 'p_chel',
+        source: 'OOM: import os; os._exit(0)',
+        by: 'host',
+        limitSec: null,
+        onChange() {},
+      },
+      'Aleksandr K.',
+      'p_host',
+    )
+    assert.ok(
+      await until(() => room.notes().some((note) => /Чел/.test(note))),
+      `комната не узнала, чья попытка убила ядро: ${JSON.stringify(room.notes())}`,
+    )
+    const said = room.notes().find((note) => /Чел/.test(note)) ?? ''
+    assert.match(said, /(консилиум|Council)/i, `заметка не сказала, что это была попытка: ${said}`)
+    assert.match(said, /(ячейк|cell) 2\b/i, `заметка не назвала ячейку консилиума: ${said}`)
+  } finally {
+    useDockerForPostmortem(null)
+  }
+})
+
+test('падения подряд считаются, а не повторяются девять раз одинаково', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
+  useDockerForPostmortem(notMemoryDocker())
+  try {
+    const room = await seminar()
+    room.type('OOM: x = 1')
+    requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
+    assert.ok(await until(() => room.state() === 'error'), 'первая смерть не дошла')
+    const first = room.notes().length
+    // Первый раз про счёт молчим: «1-й раз за десять минут» — это не новость.
+    assert.ok(
+      room.notes().every((note) => !/десять минут|ten minutes/.test(note)),
+      `о счёте сказали уже на первой смерти: ${JSON.stringify(room.notes())}`,
+    )
+    requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
+    assert.ok(
+      await until(() => room.notes().length > first && room.notes().some((note) => /десять минут|ten minutes/.test(note))),
+      `вторая смерть не сказала, что она вторая: ${JSON.stringify(room.notes())}`,
+    )
+    const said = room.notes().find((note) => /десять минут|ten minutes/.test(note)) ?? ''
+    assert.match(said, /2/, `в заметке нет счёта: ${said}`)
+    // И предложение, которое можно выполнить, не заходя на машину.
+    assert.match(said, /(очеред|queue)/i, `заметка не предложила остановить очередь: ${said}`)
+  } finally {
+    useDockerForPostmortem(null)
+  }
+})
+
 /* ------------------------------------------------- who may stop the kernel */
 
 /**

@@ -35,6 +35,16 @@
     pending: number
     /** Как долго считают запуски этой ячейки; null — законченных ещё не было. */
     stats: RunStats | null
+    /**
+     * Предел ОБЫЧНОЙ ячейки этой комнаты в секундах; `null` — без предела.
+     *
+     * Правило комнаты, а не ячейки, и отсюда его не меняют — оно лежит в
+     * правилах занятия. Но сказать о нём надо именно здесь: очередь у тетради
+     * одна, и предел запуска, выставленный в этом листе, не спасает ни от чего,
+     * пока в той же тетради может идти обычная ячейка без предела. Это ровно та
+     * дыра, из-за которой «предел не работает» было правдой.
+     */
+    cellLimit: number | null
     /** Нет связи или пульт не ведёт занятие: смотреть можно, менять нечего. */
     disabled: boolean
     /** Низ шапки: отсюда лист начинается, ниже него — затемнение. */
@@ -43,7 +53,7 @@
     onclose: () => void
   }
 
-  let { settings, rule, pending, stats, disabled, top, onchange, onclose }: Props = $props()
+  let { settings, rule, pending, stats, cellLimit, disabled, top, onchange, onclose }: Props = $props()
 
   let sheet = $state<HTMLElement | null>(null)
 
@@ -117,17 +127,35 @@
           return {
             rule: each,
             title: tr('room.pult.v2.rules.pauseTitle'),
-            // Строка остаётся на месте и при выключенных запусках: исчезнув,
-            // она унесла бы с собой и то, что пауза настроена, — а вернуть
-            // запуски студентам можно одним нажатием соседней кнопки.
+            /*
+             * Строка остаётся на месте и при выключенных запусках: исчезнув,
+             * она унесла бы с собой и то, что пауза настроена, — а вернуть
+             * запуски студентам можно одним нажатием соседней кнопки.
+             *
+             * При «все по очереди» подпись другая, и это не украшение. Пауза по
+             * умолчанию ноль, а «все по очереди» преподаватель включает за
+             * минуту до дела и про паузу не вспоминает — очередь общего ядра
+             * тут же набивается повторными нажатиями после каждой правки.
+             * Единственное место, где об этом можно сказать вовремя, — здесь,
+             * в соседней строке того же листа.
+             */
             why: settings.studentRun === false
               ? tr('room.pult.v2.rules.pauseOff')
-              : tr('room.pult.v2.rules.pauseWhy'),
+              : settings.studentRun === true
+                ? tr('room.pult.v2.rules.pauseWhyEveryone')
+                : tr('room.pult.v2.rules.pauseWhy'),
             note: '',
+            /*
+             * Кнопки живые всегда, когда студентам запуск разрешён. Раньше они
+             * гасли по `studentRun === false`, то есть пауза настраивалась
+             * только после того, как запуск уже открыли, — а порядок «сперва
+             * поставить паузу, потом открыть запуск» и есть тот, при котором
+             * очередь не успевает набиться.
+             */
             segments: pauseOptions(settings.rerunPauseSec).map((value) => ({
               label: value === 0 ? tr('room.pult.v2.rules.pauseNowOption') : pultDuration(value),
               on: settings.rerunPauseSec === value,
-              off: disabled || settings.studentRun === false,
+              off: disabled,
               pick: () => onchange({ rerunPauseSec: value }),
             })),
           }
@@ -224,6 +252,18 @@
       </div>
     {/each}
 
+    <!--
+      Предел ОБЫЧНОЙ ячейки — рядом с подписью про общее ядро, и это одно и то
+      же знание, досказанное до конца: ядро общее, а значит общая и очередь, и
+      предел запуска в этом листе сторожит только попытки. Строка стоит под
+      правилами, а не строкой среди них: менять её отсюда нельзя, она живёт в
+      правилах занятия.
+    -->
+    <p class="rules-kernel" class:rules-warn={cellLimit === null} data-pult-cell-limit>
+      {cellLimit === null
+        ? tr('room.pult.v3.rules.cellLimitOff')
+        : tr('room.pult.v3.rules.cellLimitOn', { duration: pultDuration(cellLimit) })}
+    </p>
     <p class="rules-kernel">{tr(COUNCIL_SHARED_KERNEL_NOTE)}</p>
   </div>
 </div>
@@ -257,6 +297,7 @@
   .rules-options .pult-button[aria-pressed='true'] { color:rgb(var(--primary)); font-weight:700; }
   .rules-why { flex:1; min-width:0; margin:0; color:rgb(var(--muted)); font-size:13px; line-height:18px; }
   .rules-note { display:block; margin-top:4px; color:rgb(var(--accent-text)); font-weight:600; }
+  .rules-warn { color:rgb(var(--warning)); font-weight:600; }
   .rules-kernel { margin:0; padding:14px var(--pult-pad) 18px; border-top:1px solid rgb(var(--line)); color:rgb(var(--faint)); font-size:13px; line-height:18px; }
   @media (max-width:1000px) {
     .rules-row { flex-wrap:wrap; gap:10px 16px; }

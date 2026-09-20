@@ -4,7 +4,16 @@
   /** Private teacher console: work, execution queue and class summary share
    * the room connection. Only explicit projection actions change the class screen. */
   import { tick, untrack } from 'svelte'
-  import { DEFAULT_COUNCIL, findCell, type CouncilSettings } from '@shared/notebook'
+  import {
+    DEFAULT_COUNCIL,
+    allBooks,
+    allCellArrays,
+    cellId as idOf,
+    findCell,
+    rootOfCell,
+    type CouncilSettings,
+  } from '@shared/notebook'
+  import { baseOf } from '@shared/paths'
   import type { CouncilAttempt } from '@shared/protocol'
   import { api } from '@/lib/api'
   import { askToBan, banTargetOf } from '@/lib/bans'
@@ -158,7 +167,9 @@
   const groups = $derived(groupAttempts(attempts, board?.oracle?.groupLabels ?? {}))
   const sizes = $derived(new Map(groups.map((group) => [group.key, group.count])))
   const variants = $derived(variantNumbers(attempts))
-  const kernel = $derived(kernelView(attempts))
+  // Стопка отвечает про ЭТУ ячейку, кадр ядра — про очередь всей тетради: без
+  // второго пульт писал «здесь ничего не выполняется» рядом с «в очереди: 12».
+  const kernel = $derived(kernelView(attempts, session.council.kernels[cellId] ?? null))
   const counts = $derived(board?.counts ?? { attempts: 0, submitted: 0, writing: 0, groups: 0 })
   const offline = $derived(!session.connected)
   const disabled = $derived(offline || !host)
@@ -423,6 +434,24 @@
   function interrupt(): void {
     if (disabled) return
     session.send({ t: 'interrupt', cellId })
+  }
+
+  /**
+   * Перезапуск ядра — ядра ТОЙ тетради, в которой стоит эта ячейка.
+   *
+   * Ядро на тетрадь, а не на комнату (kernel/index.ts), и перезапуск из пульта
+   * обязан попасть в то же, что считает попытки этой ячейки: иначе он унёс бы
+   * переменные у соседней тетради, которой ничего не мешало.
+   */
+  function restartKernel(): void {
+    if (disabled) return
+    session.send({ t: 'restart', book: rootOfCell(session.doc, cellId) ?? undefined })
+  }
+
+  /** Снять ждущий запуск с очереди — не трогая человека и его текст. */
+  function dropRun(attempt: CouncilAttempt): void {
+    if (disabled || attempt.run?.state !== 'queued') return
+    session.council.dropRun(cellId, attempt.participantId)
   }
 
   function mark(correct: boolean): void {
@@ -818,8 +847,8 @@
     </section>
     {#if tab === 'queue'}
       <PultQueueStrip {kernel} {settings} {attempts} {names} {now} open={true} {disabled}
-        ontoggle={() => {}} oninterrupt={interrupt} onapprove={letThrough}
-        ondecline={declineRun} onapproveall={approveAll} onopen={open} onremove={remove} />
+        ontoggle={() => {}} oninterrupt={interrupt} onrestart={restartKernel} onapprove={letThrough}
+        ondecline={declineRun} onapproveall={approveAll} onopen={open} ondrop={dropRun} onremove={remove} />
     {:else if tab === 'oracle'}
       <PultOracleTab oracle={board.oracle} {attempts} submitted={counts.submitted} {names} {variants}
         askWhy={offline ? tr(OFFLINE_REASON) : null} onask={(question) => void askOracle(false, question)}
@@ -842,6 +871,7 @@
         rule={rulesRule}
         pending={kernel.pending.length}
         {stats}
+        cellLimit={session.session.rules.cellLimitSec}
         {disabled}
         top={headHeight}
         onchange={setRule}

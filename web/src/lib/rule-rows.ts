@@ -33,7 +33,7 @@ import { tr } from '@shared/i18n'
  * же тест.
  */
 import { LIMITS } from '@shared/admin'
-import type { RoomRules } from '@shared/rules'
+import { MAX_CELL_LIMIT_SEC, type RoomRules } from '@shared/rules'
 
 export interface RuleOption {
   value: string
@@ -71,7 +71,8 @@ export interface ChoiceRow {
  */
 export interface LimitRow {
   kind: 'limit'
-  key: keyof RoomRules & ('questionsPerHour' | 'slowModeSeconds' | 'agentSteps')
+  key: keyof RoomRules &
+    ('questionsPerHour' | 'slowModeSeconds' | 'agentSteps' | 'cellLimitSec')
   title: string
   note: string
   /** Подпись у поля — чтобы число не осталось голым. */
@@ -79,12 +80,17 @@ export interface LimitRow {
   min: number
   max: number
   /**
-   * Как назвать действующее значение инстанса.
+   * Как назвать действующее значение инстанса — и `undefined`, когда его нет.
    *
-   * Функция, а не шаблон: у обоих полей ноль значит не «ноль», а особое
+   * Функция, а не шаблон: у потолков оракула ноль значит не «ноль», а особое
    * состояние, и «0 в час» рядом с полем ввода — это загадка, а не подсказка.
+   *
+   * Необязательная с тех пор, как числовой строкой стал не только потолок
+   * оракула: у предела ячейки инстансового значения нет вовсе, и пустое поле
+   * там значит «без предела», а не «как на сервере». Выдуманная строка «как на
+   * сервере: —» отвечала бы на вопрос, которого никто не задавал.
    */
-  atInstance: (value: number) => string
+  atInstance?: (value: number) => string
 }
 
 export type RuleRow = ChoiceRow | LimitRow
@@ -123,6 +129,26 @@ export const RULE_ROWS: RuleRow[] = [
     get title() { return tr('room.ui.1134') },
     get note() { return tr('room.ui.1135') },
     options: [EVERYONE, { value: 'single', get label() { return tr('room.ui.1136') } }, TEACHER],
+  },
+  {
+    /*
+     * Сразу ПОСЛЕ «кто запускает», и место выбрано так же, как у личных
+     * тетрадей под файлами: два правила читаются вместе. Первое — кому можно
+     * нажать, второе — сколько нажатому дано считать. Ядро у тетради одно, и
+     * второе правило есть единственное, что мешает одному запуску занять его
+     * до конца пары — включая очередь попыток консилиума, у которой свой предел
+     * есть, а толку от него нет, пока впереди стоит обычная ячейка без предела.
+     */
+    kind: 'limit',
+    key: 'cellLimitSec',
+    get title() { return tr('room.rules.cellLimit.title') },
+    // Подсказка называет и умолчание («пусто — никогда»), и то, что предел
+    // касается преподавательских ячеек тоже: без второго он читается как
+    // ограничение для студентов, а это не так.
+    get note() { return tr('room.rules.cellLimit.note') },
+    get unit() { return tr('room.rules.cellLimit.unit') },
+    min: 1,
+    max: MAX_CELL_LIMIT_SEC,
   },
   {
     kind: 'choice',

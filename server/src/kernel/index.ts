@@ -68,7 +68,7 @@ import {
 import { config } from '../config.js'
 import { appendActivity } from '../activity.js'
 import type { ActivityDetails, ActivityKind, ActivityOutcome } from '@shared/activity'
-import { sessionEnvironment, storedRules } from '../db.js'
+import { getParticipant, sessionEnvironment, storedRules } from '../db.js'
 import { bookHasOwnKernel } from '@shared/rules'
 import { activeName } from '../environments.js'
 import { formatNotebook, type FormatOutcome } from './format.js'
@@ -208,23 +208,52 @@ interface ActiveJob {
   run: CouncilRun
   /** Отложенный кадр вывода — см. `touchJob`. */
   timer: NodeJS.Timeout | null
+}
+
+/**
+ * Будильник предела на то, что ядро считает СЕЙЧАС, — один на ячейку и на
+ * попытку.
+ *
+ * Живёт у среды исполнения, а не у попытки, и это главное решение здесь.
+ * Предел был свойством ячейки консилиума и сторожил только попытки — а очередь
+ * у тетради одна и общая (`Runtime.queue`): один бесконечный запуск ОБЫЧНОЙ
+ * ячейки держал весь консилиум до конца пары, и преподаватель, выставивший
+ * «все по очереди» и предел 30 с, честно читал это как «предел не работает».
+ * Вторая копия будильника под ячейки разошлась бы с первой на первом же
+ * повороте — на пересчёте от начала запуска, на `restamp`, на «сигналов не
+ * больше двух», — поэтому здесь одна запись и один набор функций.
+ *
+ * В каждый момент считается ровно одна работа (насос строго последовательный),
+ * так что запись одна и она же называет свою цель.
+ */
+interface RunLimit {
+  /** Запись очереди, которую сторожим: ячейка или попытка. */
+  item: QueueItem
+  /** Откуда отсчитывать, если среда не помнит начала (см. `startOfLimit`). */
+  startedAt: number
   /**
-   * Предел ЭТОГО запуска в секундах и его будильник — две разные вещи.
+   * Предел в секундах; `null` — без предела, будильник не заводится.
    *
-   * Число живёт отдельно от `job.limitSec`, потому что регламент можно
-   * поменять посреди запуска, и «правила действуют сразу» значит, что новый
-   * предел считается от начала уже идущей попытки (`retimeCouncilRun`).
-   * Будильник — отдельное поле от `timer`: тот раз в 400 мс отправляет кадр
-   * вывода и переставляется десятки раз за запуск, а этот стоит один раз до
-   * конца. Одно поле на двоих означало бы, что первый же `print` отменяет
-   * предел.
+   * Отдельно от `CouncilJob.limitSec`, потому что регламент можно поменять
+   * посреди запуска, и «правила действуют сразу» значит, что новый предел
+   * считается от начала уже идущей работы (`retimeCouncilRun`).
    */
-  limitSec: number | null
-  limitTimer: NodeJS.Timeout | null
-  /** Предел, который СРАБОТАЛ: он поедет в `CouncilRun.timedOut`. */
-  timedOut: number | null
+  sec: number | null
+  timer: NodeJS.Timeout | null
+  /** Предел, который СРАБОТАЛ: он поедет в `CouncilRun.timedOut` и в вывод ячейки. */
+  firedSec: number | null
   /** Сколько раз мы уже просили ядро остановиться по этому пределу. */
   interrupts: number
+  /**
+   * Два сигнала ушли, а работа всё считается.
+   *
+   * Питон, ушедший в C, SIGINT не видит до возврата в интерпретатор, и дальше
+   * сигналить бессмысленно (см. `fireLimit`). Раньше на этом месте наступала
+   * тишина: попытка навсегда «считается», насос стоит, очередь замерзает — и
+   * никто об этом не сказал ни слова. Признак читает пульт и предлагает
+   * единственное, что помогает, — перезапуск ядра тетради.
+   */
+  stuck: boolean
 }
 
 /**
@@ -345,6 +374,8 @@ interface Runtime {
   writerHold: (() => void) | null
   /** Считается попытка консилиума, а не ячейка; `currentCell` при этом — её синтетическое имя. */
   job: ActiveJob | null
+  /** Будильник предела на текущую работу — общий у ячейки и у попытки. См. `RunLimit`. */
+  limit: RunLimit | null
   /**
    * Which environment this room's kernel actually came up on.
    *
@@ -400,6 +431,26 @@ function roleOfBook(sessionId: string, root: string): KernelRole {
   }
 }
 
+/**
+ * Через сколько секунд ячейка этой комнаты останавливается сама; `null` — никогда.
+ *
+ * По ХРАНИМЫМ правилам, и разницы с действующими тут нет по построению:
+ * `rulesAfterClass` это число переносит как есть (конец занятия — про права, а
+ * не про то, сколько ядру дано считать). Спрашивается у правил КОМНАТЫ, а не
+ * тетради: `rulesForBook` предела не трогает, и личная тетрадь студента живёт
+ * под тем же потолком — ядро у неё своё, но процессор общий на машину.
+ *
+ * Строки занятия в базе нет (тест, удалённая комната) — без предела: это
+ * прежнее поведение, и ошибаться здесь можно только в эту сторону.
+ */
+function cellLimitOf(sessionId: string): number | null {
+  try {
+    return storedRules(sessionId).cellLimitSec
+  } catch {
+    return null
+  }
+}
+
 function getRuntime(sessionId: string, root: string): Runtime {
   let scopes = runtimes.get(sessionId)
   if (!scopes) {
@@ -427,6 +478,7 @@ function getRuntime(sessionId: string, root: string): Runtime {
       writer: null,
       writerHold: null,
       job: null,
+      limit: null,
       environment: null,
       retired: false,
     }
@@ -624,8 +676,42 @@ export function queueDelta(
   }
 }
 
+/**
+ * Кто хочет знать, что очередь тетради сдвинулась, — и сколько раз ни на что.
+ *
+ * Зеркало очереди в документе (ниже) отвечает только про ЯЧЕЙКИ: попытки
+ * консилиума в него не попадают нарочно, у них нет ячейки, которую комната
+ * могла бы подсветить. Поэтому пульт преподавателя, глядя на очередь тетради,
+ * не видел ни чужой ячейки, занявшей ядро, ни длины настоящей очереди — и
+ * писал «в этой ячейке ничего не выполняется» рядом с «в очереди: 12».
+ * Подписка — единственная точка, из которой это видно целиком.
+ *
+ * Зовётся ИЗ `syncQueue`, то есть на каждый сдвиг очереди и каждую смену
+ * работы, до всех его проверок «а изменилось ли зеркало»: зеркало могло не
+ * измениться (попытки в него не едут), а очередь — измениться. Сгущать кадры
+ * — дело подписчика.
+ */
+const queueWatchers: Array<(sessionId: string, root: string) => void> = []
+
+export function onKernelQueueChanged(cb: (sessionId: string, root: string) => void): void {
+  queueWatchers.push(cb)
+}
+
+function tellQueueWatchers(runtime: Runtime): void {
+  for (const cb of queueWatchers) {
+    try {
+      cb(runtime.sessionId, runtime.root)
+    } catch (err) {
+      // Чужой обработчик не должен уметь уронить насос — тот же довод, что у
+      // `tellJob`.
+      console.error(`[kernel] queue watcher failed for ${runtime.sessionId}:`, errText(err))
+    }
+  }
+}
+
 function syncQueue(runtime: Runtime): void {
   if (runtime.retired) return
+  tellQueueWatchers(runtime)
   const { doc } = getSessionDoc(runtime.sessionId)
   const meta = getMeta(doc)
   const mirrored = runtime.root === CELLS_KEY
@@ -734,10 +820,12 @@ function restamp(runtime: Runtime): void {
   if (!cellId) return
   const at = Date.now()
   runtime.started = { cellId, at }
-  // И предел попытки отсчитывается заново по тому же доводу, что и секундомер:
-  // полторы минуты подъёма холодного ядра — не время запуска, и сгорать в них
-  // тридцатисекундному пределу нечестно.
-  if (runtime.job?.item.cellId === cellId) armLimit(runtime, runtime.job)
+  // И предел отсчитывается заново по тому же доводу, что и секундомер: полторы
+  // минуты подъёма холодного ядра — не время запуска, и сгорать в них
+  // тридцатисекундному пределу нечестно. Касается и ячейки, и попытки: запись
+  // предела одна на обеих (`RunLimit`), и `startOfLimit` читает ту же отметку,
+  // которую строка выше только что переставила.
+  if (runtime.limit?.item.cellId === cellId) armLimit(runtime)
   const { doc } = getSessionDoc(runtime.sessionId)
   const found = findCell(doc, cellId)
   if (found) doc.transact(() => found.cell.set('startedAt', at), ORIGIN)
@@ -991,6 +1079,111 @@ function churnReason(): string | null {
   return churn.reason
 }
 
+/** Что считалось в секунду смерти: фраза для комнаты и номер ячейки для вскрытия. */
+interface DeathScene {
+  /** «попытка Кирилла по ячейке 21» / «ячейка 21, запустил Тимур»; `null` — ядро простаивало. */
+  what: string | null
+  /** Ячейка, к которой это относится, — для `explainDeath`; у попытки это ячейка консилиума. */
+  cellId: string | null
+}
+
+/**
+ * Назвать то, что выполнялось, когда ядра не стало.
+ *
+ * 20.09 комната теряла ядро девять раз за одиннадцать минут, и заметка каждый
+ * раз говорила ровно одно: «переменные сброшены». В ней не было единственного,
+ * что решало дело, — ЧТО выполнялось. Убивала одна и та же попытка консилиума
+ * в две строки (`import os` / `os._exit(0)`), и узнать это можно было только
+ * запросом в базу на следующий день. У сервера это знание есть в ту же
+ * секунду: `runtime.job` — чья попытка и по какой ячейке, `currentCell` и
+ * `currentRunById` — какая ячейка и кто нажал.
+ *
+ * Номер ячейки — порядковый в своей тетради, считая markdown: тот же, что
+ * нарисован в комнате слева от неё. Иначе преподаватель идёт искать «ячейку
+ * 11» там, где на экране написано 21.
+ *
+ * Имени может не быть (участник ушёл, запуск не от человека) — тогда фраза
+ * короче на имя, а не подменяется выдумкой.
+ */
+function whatWasRunning(runtime: Runtime): DeathScene {
+  const job = runtime.job
+  const cellId = job ? job.job.cellId : runtime.currentCell
+  if (!cellId) return { what: null, cellId: null }
+  const doc = (() => {
+    try {
+      return peekSessionDoc(runtime.sessionId)?.doc ?? null
+    } catch {
+      return null
+    }
+  })()
+  const found = doc ? findCell(doc, cellId) : null
+  const cell = found ? found.index + 1 : null
+  const nameOf = (id: string | null | undefined): string | null => {
+    if (!id) return null
+    try {
+      return getParticipant(runtime.sessionId, id)?.name || null
+    } catch {
+      return null
+    }
+  }
+  if (job) {
+    const author = nameOf(job.job.participantId)
+    const ran = nameOf(job.item.runById)
+    return {
+      cellId,
+      what:
+        cell === null
+          ? tr('server.kernel.diedOnAttemptNoCell', { author: author ?? '—' })
+          : author === null
+            ? tr('server.kernel.diedOnAttemptNoAuthor', { cell })
+            : ran !== null && ran !== author
+              ? tr('server.kernel.diedOnAttemptRunBy', { author, cell, ran })
+              : tr('server.kernel.diedOnAttempt', { author, cell }),
+    }
+  }
+  const ran = nameOf(runtime.currentRunById)
+  return {
+    cellId,
+    what:
+      cell === null
+        ? null
+        : ran === null
+          ? tr('server.kernel.diedOnCell', { cell })
+          : tr('server.kernel.diedOnCellRunBy', { cell, ran }),
+  }
+}
+
+/**
+ * Сколько раз эта область теряла ядро подряд — и не повторять одно и то же.
+ *
+ * Девять одинаковых заметок за одиннадцать минут не сказали преподавателю
+ * ничего сверх первой, зато утопили в себе строку про ячейку, которая только и
+ * была нужна. Со второго раза заметка говорит счёт («третий раз за десять
+ * минут») и предлагает действие — остановить очередь, — потому что при смерти
+ * подряд виновата не случайность, а то, что комната запускает снова и снова.
+ *
+ * Окно скользящее: полчаса тишины — и счёт начинается заново, потому что
+ * «третий раз» про падения, разнесённые на пару, — это не про одну беду.
+ */
+const DEATH_WINDOW_MS = 10 * 60_000
+const deaths = new Map<string, { count: number; at: number }>()
+
+function countDeath(runtime: Runtime): number {
+  const key = `${runtime.sessionId}/${runtime.root}`
+  const now = Date.now()
+  const seen = deaths.get(key)
+  const count = seen && now - seen.at <= DEATH_WINDOW_MS ? seen.count + 1 : 1
+  deaths.set(key, { count, at: now })
+  return count
+}
+
+/** Комнату закрыли или ядро сменили — счёт падений к новому отношения не имеет. */
+export function forgetDeaths(sessionId: string): void {
+  for (const key of [...deaths.keys()]) {
+    if (key === sessionId || key.startsWith(`${sessionId}/`)) deaths.delete(key)
+  }
+}
+
 /**
  * Досказать комнате, ПОЧЕМУ ядра не стало.
  *
@@ -1047,6 +1240,9 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
    */
   if (phase === 'restarting' && !expected) {
     const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
+    // Что выполнялось — снимается ДО `dropQueue`: она и уносит с собой попытку,
+    // а без неё от самого важного вопроса («чья ячейка?») не остаётся ничего.
+    const scene = whatWasRunning(runtime)
     dropQueue(runtime)
     setStatus(runtime, 'restarting')
     /*
@@ -1060,27 +1256,42 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
     resetAllCells(runtime, runtime.currentCell)
     const known = churnReason()
     /*
-     * В журнал — отдельной строкой, и словом «oom».
+     * В журнал — отдельной строкой, и БЕЗ угаданной причины.
      *
-     * Комнате об этом говорят её же словами (kernelNote ниже), но те слова
-     * живут в тетради и умирают вместе с ней. Тому, кто через день выясняет,
-     * почему у семинара пропали переменные, нужна строка с идентификатором
-     * комнаты и временем — а по `oom` её ещё и найдут одним grep. Слово это
-     * ставится только там, где причина неизвестна: пересборку окружения из
-     * панели ядро переживает так же, и объявить её нехваткой памяти значило бы
-     * отправить искать несуществующую прожорливую ячейку.
+     * До 20.09 здесь стояло слово «oom», когда причина неизвестна: удобный
+     * grep и, как оказалось, неправда. В тот день комната теряла ядро девять
+     * раз подряд, журнал девять раз сказал «oom», а вскрытие тут же, строкой
+     * ниже, возражало: «завершился не по памяти, занято 5,2 ГБ из 16». Убивал
+     * `os._exit(0)` в попытке консилиума — cgroup не тронут, dmesg чист. Одна
+     * ложная строка стоила полдня поисков прожорливой ячейки, которой не было.
+     *
+     * Теперь строка говорит ровно то, что известно СЕЙЧАС: ядро перезапустило
+     * себя само, причина ещё выясняется. Настоящую причину печатает вскрытие
+     * (`tellWhyItDied`) — словом `oom` только там, где cgroup это подтвердил,
+     * и словом `died` во всех остальных случаях. Grep по `[kernel` и по `oom:`
+     * остались, а врать перестали.
      */
-    console.warn(`[kernel ${runtime.sessionId}] restarted itself — ${known ? 'churn' : 'oom'}`)
+    const again = known ? 0 : countDeath(runtime)
+    console.warn(
+      `[kernel ${runtime.sessionId}] restarted itself — ${known ? `churn: ${known}` : 'cause unknown'}` +
+        `${scene.what ? ` · ${scene.what}` : ''}${again > 1 ? ` · ${again} in 10 min` : ''}`,
+    )
     kernelNote(
       runtime.sessionId,
       known
         ? tr("server.everyVariableIsGone.eff831", { p0: known, p1: hadWork ? '; whatever was queued was dropped' : '' })
-        : hadWork
-          ? tr("server.theKernelRestartedUnexpectedlyVariablesWereReset.f87dd9")
-          : tr("server.theKernelRestartedUnexpectedlyVariablesWereReset.a76c88"),
+        : [
+            hadWork
+              ? tr("server.theKernelRestartedUnexpectedlyVariablesWereReset.f87dd9")
+              : tr("server.theKernelRestartedUnexpectedlyVariablesWereReset.a76c88"),
+            scene.what,
+            again > 1 ? tr('server.kernel.diedAgain', { count: again }) : null,
+          ]
+            .filter((part): part is string => part !== null)
+            .join(' '),
     )
     // Пересборка окружения объяснена и без docker; всё остальное объясняет он.
-    if (!known) tellWhyItDied(runtime, runtime.currentCell)
+    if (!known) tellWhyItDied(runtime, scene.cellId)
     return
   }
   if (phase === 'dead') {
@@ -1101,25 +1312,34 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
       return
     }
     const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
+    // Как и при перезапуске: кто и что считал — только до `dropQueue`.
+    const scene = whatWasRunning(runtime)
     dropQueue(runtime)
     setStatus(runtime, 'dead')
-    // A kernel usually dies because a cell asked for more memory than the
-    // container has. Saying so beats a room staring at a notebook that stopped.
+    // Почему ядра не стало, честно говорит вскрытие ниже; здесь — что случилось.
     const known = churnReason()
+    const again = known ? 0 : countDeath(runtime)
     // Смерть ядра — то, из-за чего пара останавливается; в журнале это обязано
     // быть строкой, а не только заметкой в тетради, которая уедет вместе с ней.
     console.warn(
-      `[kernel ${runtime.sessionId}] died${hadWork ? ' mid-run' : ''}${known ? ' — churn' : ''}`,
+      `[kernel ${runtime.sessionId}] died${hadWork ? ' mid-run' : ''}${known ? ` — churn: ${known}` : ''}` +
+        `${scene.what ? ` · ${scene.what}` : ''}${again > 1 ? ` · ${again} in 10 min` : ''}`,
     )
     kernelNote(
       runtime.sessionId,
       known
         ? tr("server.runACellToStartAFresh.ffee95", { p0: known, p1: hadWork ? tr("server.whateverWasQueuedWasDropped.752abc") : '' })
-        : hadWork
-          ? tr("server.theKernelStoppedDuringExecutionQueuedCells.74ec64")
-          : tr("server.theKernelStoppedRestartItToRun.911803"),
+        : [
+            hadWork
+              ? tr("server.theKernelStoppedDuringExecutionQueuedCells.74ec64")
+              : tr("server.theKernelStoppedRestartItToRun.911803"),
+            scene.what,
+            again > 1 ? tr('server.kernel.diedAgain', { count: again }) : null,
+          ]
+            .filter((part): part is string => part !== null)
+            .join(' '),
     )
-    if (!known) tellWhyItDied(runtime, runtime.currentCell)
+    if (!known) tellWhyItDied(runtime, scene.cellId)
     return
   }
   // A cell mid-run keeps the room's status honest even between kernel messages.
@@ -1526,6 +1746,9 @@ export async function shutdownSession(sessionId: string, permanent = false): Pro
   // больше нет, а запомненное число пережило бы его и объявило бы первую же
   // смерть в новом контейнере «не по памяти».
   forgetKills(sessionId)
+  // Счёт падений подряд — про ТО ядро; новому «третий раз за десять минут» не
+  // принадлежит, и переносить его значило бы пугать комнату чужой бедой.
+  forgetDeaths(sessionId)
 }
 
 /* ------------------------------------------------- переезд и снос областей */
@@ -2398,6 +2621,21 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   flushToDisk(runtime.sessionId)
 
   const unwatch = stopIfDeleted(runtime, doc, item.cellId)
+  /*
+   * Будильник комнаты — на обычную ячейку, тем же механизмом, что у попытки.
+   *
+   * Заводится ДО первой строки, ушедшей в ядро, и после проверки на пустую
+   * ячейку: пустую считать нечего, а всё остальное — уже время, которое
+   * очередь стоит. Число читается ЗДЕСЬ, а не при постановке в очередь, и это
+   * не случайность: «правила действуют сразу» — обещание всей комнаты, а между
+   * нажатием Run All и сороковой ячейкой проходит полпары.
+   */
+  beginLimit(runtime, item, cellLimitOf(runtime.sessionId), startedAt)
+  /** Сказали ли мы уже, что остановил предел: строка об этом нужна одна. */
+  let saidStopped = false
+  /** Число сработавшего предела — спрашивается у записи, пока она жива. */
+  const firedNow = (): number | null =>
+    runtime.limit?.item === item ? runtime.limit.firedSec : null
   let state: CellState = 'idle'
   try {
     /*
@@ -2415,7 +2653,30 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
       },
       onStream: (name, text) => writer.stream(name, text),
       onData: (mimebundle, execCount) => writer.data(mimebundle, execCount),
-      onError: (ename, evalue, traceback) => writer.error(ename, evalue, traceback),
+      /*
+       * Остановку пределом объясняет одна строка, а не трейсбек.
+       *
+       * SIGINT приходит в Python как `KeyboardInterrupt`, и по умолчанию в
+       * ячейке остался бы его трейсбек: десяток кадров чужой библиотеки и
+       * строка про клавиатуру, которой никто не нажимал. Комната читает это
+       * как «кто-то нажал стоп». Подмена делается ЗДЕСЬ, на входе, а не правкой
+       * уже записанного: вывод ячейки живёт в общем документе, и вычёркивать
+       * из него задним числом — это лишние надгробия у всех и лишний обход
+       * истории. У попытки та же строка получается иначе, буфером в памяти
+       * (kernel/council.ts · stopped) — там правка задним числом ничего не
+       * стоит.
+       */
+      onError: (ename, evalue, traceback) => {
+        const fired = firedNow()
+        if (fired !== null && (ename === 'KeyboardInterrupt' || ename === 'Interrupted')) {
+          // Имя исключения пустое нарочно: ячейка рисует «имя: текст», и
+          // английское слово перед русской фразой ничего не добавляет.
+          writer.error('', tr('server.cell.stoppedByLimit', { p0: durationWords(fired) }), [])
+          saidStopped = true
+          return
+        }
+        writer.error(ename, evalue, traceback)
+      },
       // wait=True — обещание заменить, wait=False — стереть сейчас. См. OutputWriter.
       onClear: (wait) => (wait ? writer.supersede() : writer.clear()),
       /*
@@ -2455,6 +2716,26 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
     state = 'error'
   } finally {
     unwatch()
+    /*
+     * Будильник гасится ЗДЕСЬ, на единственном выходе ячейки, и потому гасится
+     * на всех исходах: обычный конец, падение, прерывание, смерть ядра, снос
+     * ячейки. Переживи он свою ячейку хоть на миг — сигнал ушёл бы в следующую
+     * запись очереди, то есть в чужую ячейку или в чью-то попытку.
+     */
+    const fired = clearLimit(runtime, item)
+    /*
+     * И слово об остановке — если его ещё не сказали.
+     *
+     * Обычный случай ловит `onError` выше: ядро отвечает `KeyboardInterrupt`, и
+     * вместо трейсбека встаёт строка. Сюда доходят те, у кого его не было:
+     * ячейка поймала прерывание своим `except` и упала чем-то другим, или
+     * `execute` вообще не ответил ошибкой. Молчать про остановку в этих
+     * случаях — значит оставить преподавателя с ячейкой, которая оборвалась
+     * без причины.
+     */
+    if (fired !== null && state === 'error' && !saidStopped) {
+      writer.error('', tr('server.cell.stoppedByLimit', { p0: durationWords(fired) }), [])
+    }
     dropWriter(runtime)
     runtime.currentCell = null
     runtime.currentBatch = null
@@ -2528,6 +2809,11 @@ const COUNCIL_REPORT_MS = 400
  *     процесса и потеря переменных у ВСЕХ; проверено на живом ядре. На время
  *     попытки они отвечают отказом одной строкой. `sys.exit()` ядро переживает
  *     и без нас — его не трогаем;
+ *   · `os._exit()` и `os.abort()` — конец процесса без единого слова: ни
+ *     трассировки, ни сигнала в dmesg, ни счётчика в cgroup. 20.09 комната на
+ *     тридцать человек потеряла ядро девять раз за одиннадцать минут на
+ *     попытке в две строки. На время попытки отвечают отказом; ребёнку после
+ *     `fork()` настоящий `_exit` остаётся, иначе ломается multiprocessing;
  *   · жадность: попытке ставится потолок адресного пространства от предела
  *     контейнера (`COUNCIL_MEMORY_GUARD`), и `np.ones((40000, 40000))` теперь
  *     кончается `MemoryError` у автора, а не OOM-killer'ом на всю комнату;
@@ -2551,8 +2837,10 @@ const COUNCIL_REPORT_MS = 400
  *   · потоки, которые попытка оставила работать: остановить их в Python
  *     нечем, поэтому выход их считает и говорит о них в выводе;
  *   · GPU: память карты и её контексты у комнаты одни;
- *   · умысел: `os._exit`, `os.kill`, снос служебного модуля из `sys.modules`.
- *     Консилиум — приём преподавания, а не экзаменационная песочница.
+ *   · умысел в обход отказов: `ctypes`, `signal.raise_signal`, `os.kill`, снос
+ *     служебного модуля из `sys.modules`. Консилиум — приём преподавания, а не
+ *     экзаменационная песочница: закрыт тот способ погасить пару, которым её
+ *     гасят на самом деле, а не все мыслимые.
  */
 function councilEnterSourceNow(): string {
   /*
@@ -2730,6 +3018,22 @@ export function requestCouncilRun(
     tellJob(job, queuedRun(job))
     return { queued: true, position: already }
   }
+  /*
+   * Один запуск на человека в полёте — по всей тетради, а не по ячейке.
+   *
+   * Потолок, а не право (тот же вид границы, что `runQueueCap` у ячеек): он
+   * ничего не запрещает нажать и никого не делит на роли. Без него ожидание не
+   * ограничено ничем: ячеек консилиума в листе несколько, и один человек
+   * занимал очередь общего ядра сразу тремя своими попытками, пока класс стоял
+   * за ними. Подмена текста в уже стоящей записи (ветка выше) при этом
+   * остаётся: за опечатку по-прежнему не наказывают, место в очереди своё.
+   *
+   * Преподаватель под потолок тоже попадает, и это нарочно: он запускает
+   * ЧУЖУЮ попытку, и в очереди она стоит от имени автора — иначе разбор у
+   * доски ставил бы студенту вторую работу поверх той, что он уже ждёт.
+   */
+  const elsewhere = councilQueuePositionsOf(runtime, job.participantId)
+  if (elsewhere !== null) return { queued: false, position: elsewhere }
   const item: QueueItem = {
     cellId: councilQueueId(job.cellId, job.participantId),
     runBy,
@@ -2744,6 +3048,23 @@ export function requestCouncilRun(
   syncQueue(runtime)
   void pump(runtime)
   return { queued: true, position }
+}
+
+/**
+ * Где в очереди ЭТОЙ тетради стоит попытка этого человека — любая, из любой
+ * ячейки. `0` — считается сейчас, `null` — его в очереди нет.
+ *
+ * Отдельно от `councilQueuePosition`, потому что вопрос другой: та отвечает
+ * «где моя попытка по ЭТОЙ ячейке» (её задаёт карточка), а эта — «занято ли
+ * уже его место в очереди» (её задаёт потолок). Номер считается по той же
+ * формуле, вместе с ячейками впереди: ждать человеку придётся их всех.
+ */
+function councilQueuePositionsOf(runtime: Runtime, participantId: string): number | null {
+  const running = runtime.job
+  if (running?.job.participantId === participantId) return 0
+  const index = runtime.queue.findIndex((item) => item.council?.participantId === participantId)
+  if (index < 0) return null
+  return index + 1 + (runtime.currentCell ? 1 : 0)
 }
 
 /**
@@ -2807,7 +3128,7 @@ export function purgeCouncilRunsOf(
     const active = runtime.job
     if (active?.job.participantId === participantId) {
       running = true
-      stopRunningJob(runtime, active)
+      stopRunningItem(runtime, active.item)
     }
   }
   return { running, queued }
@@ -2826,24 +3147,24 @@ function councilScope(sessionId: string, cellId: string): Runtime | undefined {
 }
 
 /**
- * Прервать ИМЕННО эту попытку — и не дать SIGINT догнать следующую.
+ * Прервать ИМЕННО эту работу — и не дать SIGINT догнать следующую.
  *
- * Два повода прервать попытку, которую никто не просил останавливать: автора
- * забанили и запуск перебрал предел регламента. Граница у них одна, потому что
- * опасность одна: `interrupt` уходит в Jupyter по HTTP и отвечает не мгновенно,
- * а очередь за это время успевает взять следующую работу — и сигнал, посланный
- * Пете, останавливал Машу. Поэтому обещание кладётся в `beforeNext`: насос
- * ждёт на нём ровно на границе между работами, ничего не выбрасывая из очереди.
- * Прошлый барьер не теряется — два бана подряд дают два сигнала, и ждать надо
- * обоих.
+ * Три повода остановить то, чего никто не просил останавливать: автора попытки
+ * забанили, попытка перебрала предел регламента, ячейка перебрала предел
+ * комнаты. Граница у них одна, потому что опасность одна: `interrupt` уходит в
+ * Jupyter по HTTP и отвечает не мгновенно, а очередь за это время успевает
+ * взять следующую работу — и сигнал, посланный Пете, останавливал Машу.
+ * Поэтому обещание кладётся в `beforeNext`: насос ждёт на нём ровно на границе
+ * между работами, ничего не выбрасывая из очереди. Прошлый барьер не теряется
+ * — два бана подряд дают два сигнала, и ждать надо обоих.
  *
  * `interruptSession` с именем записи очереди, а не без него: без имени он
- * разбирает очередь ВСЕЙ комнаты (там ветка комнатной кнопки Interrupt), а
- * пачка у попытки своя и единственная — `stopBatchOf` по ней не найдёт ничего
- * чужого.
+ * разбирает очередь ВСЕЙ комнаты (там ветка комнатной кнопки Interrupt). У
+ * попытки пачка своя и единственная, у ячейки — её собственный Run, и
+ * `stopBatchOf` по ней не найдёт ничего чужого.
  */
-function stopRunningJob(runtime: Runtime, active: ActiveJob): void {
-  const interrupt = interruptSession(runtime.sessionId, active.item.cellId)
+function stopRunningItem(runtime: Runtime, item: QueueItem): void {
+  const interrupt = interruptSession(runtime.sessionId, item.cellId, runtime.root)
   const prior = runtime.beforeNext
   const barrier = prior ? Promise.all([prior, interrupt]).then(() => {}) : interrupt
   runtime.beforeNext = barrier
@@ -2898,6 +3219,79 @@ export function councilQueuePositions(
   return out
 }
 
+/** Что ядро тетради считает прямо сейчас — для пульта преподавателя. */
+export interface KernelBusy {
+  /** Обычная ячейка тетради или попытка консилиума. */
+  kind: 'cell' | 'attempt'
+  /** Ячейка ДОКУМЕНТА: у обычного запуска своя, у попытки — её ячейка консилиума. */
+  cellId: string
+  /** Кто нажал — по серверной записи очереди, а не по полю документа. */
+  runById: string
+  /** Чья попытка; `null` у обычной ячейки. */
+  participantId: string | null
+  startedAt: number
+  /** Под каким пределом идёт, в секундах; `null` — без предела. */
+  limitSec: number | null
+  /** Два сигнала остановки ушли, а работа считается: очередь тетради стоит. */
+  stuck: boolean
+}
+
+/**
+ * Ядро ТОЙ тетради, где живёт эта ячейка: чем занято и сколько ждёт.
+ *
+ * Заведено ради пульта консилиума, и ради одной его беды. Пульт собирал
+ * «выполняется/в очереди» из попыток СВОЕЙ ячейки — единственного, что до него
+ * доезжало, — и когда ядро держала обычная ячейка или попытка соседней ячейки,
+ * честно писал «в этой ячейке сейчас ничего не выполняется» рядом с «в
+ * очереди: 12». Кнопки «Прервать» в этот момент не было вовсе: её рисовали
+ * внутри ветки «идёт запуск». То есть ровно в ту минуту, когда преподавателю
+ * надо действовать, пульт показывал, что действовать не над чем.
+ *
+ * `peekRuntime`, а не `getRuntime`: вопрос задаёт каждый кадр пульта, и
+ * заводить от него комнате Python нельзя. `null` — области ещё не было, то
+ * есть в этой тетради ничего и не запускали.
+ */
+export function kernelWorkOf(
+  sessionId: string,
+  cellId: string,
+): { busy: KernelBusy | null; queued: number } | null {
+  const runtime = councilScope(sessionId, cellId)
+  if (!runtime) return null
+  // Длина очереди — ВСЯ: и ячейки, и попытки любых ячеек этой тетради. Очередь
+  // одна, и ждать студенту придётся всех, кто в ней стоит.
+  const queued = runtime.queue.length
+  const active = runtime.job
+  const limit = runtime.limit
+  if (active) {
+    return {
+      queued,
+      busy: {
+        kind: 'attempt',
+        cellId: active.job.cellId,
+        runById: active.item.runById,
+        participantId: active.job.participantId,
+        startedAt: active.run.startedAt,
+        limitSec: limit?.item === active.item ? limit.sec : null,
+        stuck: limit?.item === active.item ? limit.stuck : false,
+      },
+    }
+  }
+  const current = runtime.currentCell
+  if (!current) return { busy: null, queued }
+  return {
+    queued,
+    busy: {
+      kind: 'cell',
+      cellId: current,
+      runById: runtime.currentRunById ?? '',
+      participantId: null,
+      startedAt: runtime.started?.at ?? Date.now(),
+      limitSec: limit?.item.cellId === current ? limit.sec : null,
+      stuck: limit?.item.cellId === current ? limit.stuck : false,
+    },
+  }
+}
+
 /** Чьи попытки ждут в очереди — чтобы после каждого сдвига сказать им новый номер. */
 export function councilQueued(sessionId: string): { cellId: string; participantId: string }[] {
   const out: { cellId: string; participantId: string }[] = []
@@ -2921,70 +3315,125 @@ function touchJob(runtime: Runtime, active: ActiveJob): void {
   active.timer.unref?.()
 }
 
-/** Когда эта попытка началась по часам сервера — с поправкой на `restamp`. */
-function startOfJob(runtime: Runtime, active: ActiveJob): number {
+/** Когда сторожимая работа началась по часам сервера — с поправкой на `restamp`. */
+function startOfLimit(runtime: Runtime, limit: RunLimit): number {
   // По записи среды, а не по своей: `restamp` переставляет начало, когда ядро
-  // пришлось поднимать заново, и полторы минуты его подъёма — не время попытки.
-  return runtime.started?.cellId === active.item.cellId
-    ? runtime.started.at
-    : active.run.startedAt
+  // пришлось поднимать заново, и полторы минуты его подъёма — не время работы.
+  return runtime.started?.cellId === limit.item.cellId ? runtime.started.at : limit.startedAt
 }
 
 /**
- * Завести будильник предела на идущую попытку — или снять его.
+ * Завести будильник на работу, которая только что пошла в ядро.
+ *
+ * Одна дверь для обоих путей: `runOne` приносит предел комнаты
+ * (rules.ts · RoomRules.cellLimitSec), `runCouncilOne` — предел регламента
+ * ячейки (notebook.ts · CouncilSettings.runLimitSec). Всё, что дальше —
+ * отсчёт, повтор сигнала, признак «не берёт», — у них общее, и разойтись им
+ * негде.
+ */
+function beginLimit(runtime: Runtime, item: QueueItem, sec: number | null, startedAt: number): void {
+  runtime.limit = { item, startedAt, sec, timer: null, firedSec: null, interrupts: 0, stuck: false }
+  armLimit(runtime)
+}
+
+/**
+ * Снять будильник и сказать, сработал ли он.
+ *
+ * Зовётся на ЕДИНСТВЕННОМ выходе каждого из двух путей — `finishCouncil` у
+ * попытки и `finally` у ячейки, — и потому снимается на всех исходах разом:
+ * обычный конец, падение, прерывание, смерть ядра, снос ячейки. Переживи
+ * будильник свою работу хоть на миг — сигнал ушёл бы в следующую запись
+ * очереди, то есть в чужую попытку или в ячейку преподавателя.
+ */
+function clearLimit(runtime: Runtime, item: QueueItem): number | null {
+  const limit = runtime.limit
+  if (!limit || limit.item !== item) return null
+  if (limit.timer) {
+    clearTimeout(limit.timer)
+    limit.timer = null
+  }
+  runtime.limit = null
+  return limit.firedSec
+}
+
+/**
+ * Переставить будильник на текущую работу — или снять его.
  *
  * Считается от НАЧАЛА запуска, а не от «сейчас»: иначе преподаватель, дважды
  * тронувший регламент за минуту, продлевал бы зависшему циклу жизнь каждым
  * нажатием. Отсюда же и «опустили предел ниже уже прошедшего» — остаток
  * отрицательный, ноль в `setTimeout`, сигнал на следующем такте.
  */
-function armLimit(runtime: Runtime, active: ActiveJob): void {
-  if (active.limitTimer) {
-    clearTimeout(active.limitTimer)
-    active.limitTimer = null
+function armLimit(runtime: Runtime): void {
+  const limit = runtime.limit
+  if (!limit) return
+  if (limit.timer) {
+    clearTimeout(limit.timer)
+    limit.timer = null
   }
-  const limit = active.limitSec
-  if (limit === null) return
-  const left = startOfJob(runtime, active) + limit * limitTickMs - Date.now()
-  active.limitTimer = setTimeout(() => {
-    active.limitTimer = null
-    fireLimit(runtime, active)
+  if (limit.sec === null) return
+  const left = startOfLimit(runtime, limit) + limit.sec * limitTickMs - Date.now()
+  limit.timer = setTimeout(() => {
+    limit.timer = null
+    fireLimit(runtime, limit)
   }, Math.max(0, left))
-  active.limitTimer.unref?.()
+  limit.timer.unref?.()
 }
 
 /**
- * Предел сработал: остановить запуск и запомнить, какой именно предел это был.
+ * Предел сработал: остановить работу и запомнить, какой именно предел это был.
  *
  * Ядро НЕ перезапускается, даже если SIGINT не помог. Питон, ушедший в C
  * (`np.linalg.inv` на матрице не того размера), сигнала не увидит до возврата
- * в интерпретатор — но ядро в комнате одно, и в нём лежит весь разбор
- * преподавателя: `df`, модель, полчаса подготовки. Снести это ради одной
- * попытки — цена выше беды. Поэтому попытка остаётся «считается», а у
- * преподавателя по-прежнему есть «Прервать» и «Перезапустить».
+ * в интерпретатор — но ядро в тетради одно, и в нём лежит весь разбор
+ * преподавателя: `df`, модель, полчаса подготовки. Снести это за него, по
+ * таймеру и молча — цена выше беды. Решает он: у него есть «Прервать» и
+ * «Перезапустить», а с этого дня ещё и слово о том, что случилось.
  *
  * И потому же сигналов не больше двух: один сразу и один через пять «секунд»
  * предела — на случай, когда первый пришёл ровно в чужой `except
- * KeyboardInterrupt`. Дальше молча: SIGINT в тугом цикле раз в секунду — это
- * шторм HTTP-запросов к Jupyter до конца пары, а помочь он не может.
+ * KeyboardInterrupt`. Дальше молча сигналить нельзя: SIGINT в тугом цикле раз
+ * в секунду — это шторм HTTP-запросов к Jupyter до конца пары, а помочь он не
+ * может. Но и МОЛЧАТЬ нельзя: с этой секунды очередь тетради стоит намертво, и
+ * до сих пор об этом не узнавал никто — ни автор, чья попытка «считается»
+ * вечно, ни те двенадцать, кто за ней стоит. Поэтому здесь ставится признак
+ * `stuck`, по нему пульт рисует перезапуск ядра с честной ценой, а в журнал
+ * ядра уходит строка.
  */
-function fireLimit(runtime: Runtime, active: ActiveJob): void {
-  // Попытка успела кончиться сама ровно в этот миг — трогать нечего: очередь
-  // уже могла взять следующую работу, и сигнал попал бы в неё.
-  if (runtime.job !== active) return
+function fireLimit(runtime: Runtime, limit: RunLimit): void {
+  // Работа успела кончиться сама ровно в этот миг — трогать нечего: очередь
+  // уже могла взять следующую, и сигнал попал бы в неё.
+  if (runtime.limit !== limit) return
   // И семинар, закрытый за эти миллисекунды, не будит `getRuntime` внутри
   // `interruptSession`: тот заводит среду заново, а с ней и документ комнаты,
   // которой больше нет (та же осторожность, что у `retired` в `shutdownSession`).
   if (runtime.retired || peekRuntime(runtime.sessionId, runtime.root) !== runtime) return
-  if (active.limitSec !== null) active.timedOut = active.limitSec
-  active.interrupts += 1
-  stopRunningJob(runtime, active)
-  if (active.interrupts >= 2) return
-  active.limitTimer = setTimeout(() => {
-    active.limitTimer = null
-    fireLimit(runtime, active)
+  if (limit.sec !== null) limit.firedSec = limit.sec
+  limit.interrupts += 1
+  stopRunningItem(runtime, limit.item)
+  if (limit.interrupts < 2) {
+    limit.timer = setTimeout(() => {
+      limit.timer = null
+      fireLimit(runtime, limit)
+    }, LIMIT_RETRY_TICKS * limitTickMs)
+    limit.timer.unref?.()
+    return
+  }
+  /*
+   * Второй сигнал ушёл. Через те же пять «секунд» смотрим, взял ли он: работа,
+   * которая к этому времени всё ещё считается, не остановится уже никогда, и
+   * очередь тетради за ней не двинется. Проверка отложенная, а не сразу
+   * следом, потому что `interrupt` уходит по HTTP и отвечает не мгновенно —
+   * объявить ядро глухим в ту же миллисекунду значило бы оболгать половину
+   * нормальных остановок.
+   */
+  const check = setTimeout(() => {
+    if (runtime.limit !== limit || limit.stuck) return
+    limit.stuck = true
+    tellQueueWatchers(runtime)
+    kernelNote(runtime.sessionId, tr('server.kernel.deafToInterrupt'))
   }, LIMIT_RETRY_TICKS * limitTickMs)
-  active.limitTimer.unref?.()
+  check.unref?.()
 }
 
 /**
@@ -3015,12 +3464,15 @@ export function retimeCouncilRun(sessionId: string, cellId: string, limitSec: nu
   }
   const active = runtime.job
   if (!active || active.job.cellId !== cellId) return
-  if (active.limitSec === limitSec) return
-  active.limitSec = limitSec
+  const limit = runtime.limit
+  // Будильник сторожит ИМЕННО эту попытку, а не «что-то в этой тетради»: между
+  // концом попытки и следующей работой очередь успевает шагнуть.
+  if (!limit || limit.item !== active.item || limit.sec === limitSec) return
+  limit.sec = limitSec
   // Сигнал уже посылали — второй раз по новому пределу не шлём: остановка одна,
-  // и её число (`timedOut`) уже названо.
-  if (active.timedOut !== null) return
-  armLimit(runtime, active)
+  // и её число (`firedSec`) уже названо.
+  if (limit.firedSec !== null) return
+  armLimit(runtime)
 }
 
 /**
@@ -3033,16 +3485,17 @@ function finishCouncil(runtime: Runtime, active: ActiveJob, state: 'ok' | 'error
     active.timer = null
   }
   /*
-   * Будильник предела гасится ЗДЕСЬ, на единственном выходе, и потому гасится
-   * на всех: обычный конец, падение, прерывание, смерть ядра, снос ячейки.
-   * Переживи он попытку хоть на миг — сигнал ушёл бы в следующую работу
-   * очереди, то есть в чужую попытку или в ячейку преподавателя.
+   * Будильник предела гасится ЗДЕСЬ, на единственном выходе попытки, и потому
+   * гасится на всех исходах: обычный конец, падение, прерывание, смерть ядра,
+   * снос ячейки. Переживи он попытку хоть на миг — сигнал ушёл бы в следующую
+   * работу очереди, то есть в чужую попытку или в ячейку преподавателя.
+   * `clearLimit` заодно и отвечает, сработал ли он.
    */
-  if (active.limitTimer) {
-    clearTimeout(active.limitTimer)
-    active.limitTimer = null
-  }
-  const startedAt = startOfJob(runtime, active)
+  // По записи среды, а не по своей: `restamp` переставляет начало, когда ядро
+  // пришлось поднимать заново, и полторы минуты его подъёма — не время попытки.
+  const startedAt =
+    runtime.started?.cellId === active.item.cellId ? runtime.started.at : active.run.startedAt
+  const fired = clearLimit(runtime, active.item)
   /*
    * Отметка «остановлено по пределу» ставится только на упавший запуск.
    *
@@ -3051,7 +3504,7 @@ function finishCouncil(runtime: Runtime, active: ActiveJob, state: 'ok' | 'error
    * отняли. Назвать такой запуск остановленным — соврать на карточке и в
    * списке работ, а стоит это дороже, чем пропущенная секунда предела.
    */
-  const limitFired = state === 'error' ? active.timedOut : null
+  const limitFired = state === 'error' ? fired : null
   if (limitFired !== null) {
     active.buffer.stopped(
       tr("server.stoppedTheRunTookLongerThanThe.87bfc0", { p0: durationWords(limitFired) }),
@@ -3090,10 +3543,6 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
     buffer: new CouncilOutputBuffer(),
     run: { state: 'running', outputs: [], execCount: null, ranMs: null, startedAt, by: job.by },
     timer: null,
-    limitSec: job.limitSec,
-    limitTimer: null,
-    timedOut: null,
-    interrupts: 0,
   }
   runtime.currentCell = item.cellId
   runtime.currentBatch = item.batch
@@ -3118,8 +3567,12 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
    * пустую попытку: пустую считать нечего, а всё остальное — уже время,
    * которое очередь стоит. Личные копии данных (вход ниже) идут в счёт предела
    * намеренно: они тоже занимают общее ядро.
+   *
+   * Число снято с ячейки в секунду нажатия и приехало с заданием
+   * (kernel/council.ts · CouncilJob.limitSec); регламент, поменянный посреди
+   * запуска, доезжает отдельно — `retimeCouncilRun`.
    */
-  armLimit(runtime, active)
+  beginLimit(runtime, item, job.limitSec, startedAt)
   const { buffer } = active
   let state: 'ok' | 'error' = 'ok'
   // Личные копии данных попытки. См. councilEnterSourceNow.

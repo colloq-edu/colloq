@@ -157,6 +157,19 @@
    * SessionScreen), и «2» по дороге к «20» — это лишнее правило, которое
    * успеет доехать до класса и развернуть чей-то вопрос.
    */
+  /**
+   * Число, которое действует на инстансе, — и `undefined`, когда его там нет.
+   *
+   * Не всякая числовая строка спрашивает инстанс: у предела ячейки серверного
+   * значения не существует, и пустое поле в ней значит «без предела», а не
+   * «как на сервере». Поэтому вопрос задаётся отдельной функцией, а не
+   * индексом по `OracleLimits`: у того ключа `cellLimitSec` просто нет.
+   */
+  function atInstance(row: LimitRow): number | undefined {
+    if (!instance) return undefined
+    return (instance as unknown as Record<string, number | undefined>)[row.key]
+  }
+
   function commit(row: LimitRow, field: HTMLInputElement): void {
     const current = rules[row.key]
     /*
@@ -197,8 +210,8 @@
       <div class="min-w-0 flex-1 basis-56">
         <p class="text-ui font-semibold text-ink">{row.title}</p>
         <p class="mt-0.5 text-2xs leading-snug text-muted">{row.note}</p>
-        {#if row.kind === 'limit' && instance && instance[row.key] !== undefined}
-          <p class="mt-0.5 text-2xs font-semibold leading-snug text-muted"> {tr('room.ui.5')} {row.atInstance(instance[row.key]!)}
+        {#if row.kind === 'limit' && row.atInstance && atInstance(row) !== undefined}
+          <p class="mt-0.5 text-2xs font-semibold leading-snug text-muted"> {tr('room.ui.5')} {row.atInstance(atInstance(row)!)}
           </p>
         {/if}
         <!--
@@ -249,7 +262,7 @@
             max={row.max}
             step="1"
             value={rules[row.key] ?? ''}
-            placeholder={instance?.[row.key] !== undefined ? String(instance[row.key]) : '—'}
+            placeholder={atInstance(row) !== undefined ? String(atInstance(row)) : '—'}
             aria-label={row.title}
             disabled={busy}
             onchange={(event) => commit(row, event.currentTarget)}

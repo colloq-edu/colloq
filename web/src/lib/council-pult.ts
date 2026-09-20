@@ -20,8 +20,19 @@
  * бывают ответы» против «кто только что сдал»).
  */
 import { formatNumber, tr } from '@shared/i18n'
-import { COUNCIL_RERUN_PAUSES, COUNCIL_RUN_LIMITS, type CouncilSettings } from '@shared/notebook'
-import type { CouncilAttempt, CouncilGroup, CouncilStatus } from '@shared/protocol'
+import {
+  COUNCIL_RERUN_PAUSES,
+  COUNCIL_RUN_LIMITS,
+  type CellLock,
+  type CouncilSettings,
+} from '@shared/notebook'
+import type {
+  CouncilAttempt,
+  CouncilBoard,
+  CouncilGroup,
+  CouncilKernel,
+  CouncilStatus,
+} from '@shared/protocol'
 import { groupTitle } from './council-board'
 
 export type PultPresence = 'online' | 'offline' | 'unknown'
@@ -685,12 +696,30 @@ export function requestReason(attempt: CouncilAttempt): string | null {
 
 /** Кто сейчас в ядре по этой ячейке и кто ждёт — из той же стопки. */
 export interface KernelView {
+  /** Попытка ЭТОЙ ячейки, которую ядро считает сейчас. */
   running: CouncilAttempt | null
   queued: CouncilAttempt[]
   pending: CouncilAttempt[]
+  /**
+   * Ядро ТЕТРАДИ: чем занято и сколько всего ждёт.
+   *
+   * Из отдельного кадра (`council:kernel`), а не из стопки, и это не удвоение
+   * `running`. Очередь у тетради одна, и держать её может обычная ячейка или
+   * попытка СОСЕДНЕЙ ячейки консилиума — ни того ни другого в стопке этой
+   * ячейки нет. Пока этого поля не было, пульт писал «в этой ячейке сейчас
+   * ничего не выполняется» и «в очереди: 12» одновременно, а кнопку «Прервать»
+   * прятал: она жила внутри ветки `running`.
+   *
+   * `null` — кадра ещё не приходило (старый сервер, пульт только открылся).
+   * Тогда всё читается как раньше, по одной стопке.
+   */
+  book: CouncilKernel | null
 }
 
-export function kernelView(attempts: readonly CouncilAttempt[]): KernelView {
+export function kernelView(
+  attempts: readonly CouncilAttempt[],
+  book: CouncilKernel | null = null,
+): KernelView {
   const running = attempts.find((attempt) => attempt.run?.state === 'running') ?? null
   const queued = attempts
     .filter((attempt) => attempt.run?.state === 'queued')
@@ -702,7 +731,31 @@ export function kernelView(attempts: readonly CouncilAttempt[]): KernelView {
         (a.runRequest?.requestedAt ?? 0) - (b.runRequest?.requestedAt ?? 0) ||
         a.participantId.localeCompare(b.participantId),
     )
-  return { running, queued, pending }
+  return { running, queued, pending, book }
+}
+
+/**
+ * Сколько работ ждёт своей очереди — по всей тетради, а не по этой ячейке.
+ *
+ * Число из кадра ядра считает всё: обычные ячейки, попытки этой ячейки и
+ * попытки соседних. Пока его не было, пульт называл «в очереди» длину своего
+ * списка — и преподаватель, читавший там «3», ждал минуту вместо десяти.
+ * Кадра ещё нет (старый сервер) — остаётся прежнее число: врать про тетрадь
+ * хуже, чем честно сказать про ячейку.
+ */
+export function queuedInBook(kernel: KernelView): number {
+  return kernel.book?.queued ?? kernel.queued.length
+}
+
+/**
+ * Есть ли что прерывать: ядро тетради занято — своей попыткой или чужой работой.
+ *
+ * Кнопка «Прервать» рисуется по этому ответу, а не по `running`. Раньше она
+ * жила внутри карточки своей попытки, то есть исчезала ровно тогда, когда
+ * очередь держала чужая работа, — в единственную минуту, когда она и нужна.
+ */
+export function kernelIsBusy(kernel: KernelView): boolean {
+  return kernel.running !== null || kernel.book?.busy != null
 }
 
 /* ---------------------------------------------------------- регламент */

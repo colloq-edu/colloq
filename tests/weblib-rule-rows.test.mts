@@ -106,18 +106,40 @@ test('у каждой строки есть и название, и объясн
   }
 })
 
+/*
+ * Числовые строки бывают двух видов, и это не небрежность.
+ *
+ * У потолков оракула за спиной стоит настройка ИНСТАНСА: пустое поле значит
+ * «как на сервере», и подпись обязана назвать серверное число. У предела ячейки
+ * (`cellLimitSec`) серверного числа нет вовсе — пустое поле значит «без
+ * предела», — и выдуманная строка «как на сервере: —» отвечала бы на вопрос,
+ * которого никто не задавал. Поэтому `atInstance` необязательна, а список
+ * строк без инстанса — здесь, списком, а не молчанием: строка, потерявшая
+ * подсказку по недосмотру, выглядит так же, как строка, которой она не
+ * положена.
+ */
+const NO_INSTANCE: Record<string, string> = {
+  cellLimitSec: 'предел ячейки: у инстанса такого числа нет, пусто значит «без предела»',
+}
+
 test('числовые строки меряются той же линейкой, что и настройка инстанса', () => {
   for (const row of RULE_ROWS) {
     if (row.kind !== 'limit') continue
-    const ceiling = LIMITS[row.key]
+    assert.ok(row.unit.trim().length > 0, `${row.key}: число осталось голым`)
+    if (NO_INSTANCE[row.key]) {
+      assert.equal(row.atInstance, undefined, `${row.key}: ${NO_INSTANCE[row.key]}`)
+      assert.ok(row.min >= 1, `${row.key}: ноль секунд — это «останавливать сразу»`)
+      assert.ok(row.max > row.min, `${row.key}: линейка без длины`)
+      continue
+    }
+    const ceiling = LIMITS[row.key as keyof typeof LIMITS]
     assert.ok(ceiling, `${row.key}: у комнаты есть поле, а у инстанса линейки нет`)
     assert.ok(row.min >= ceiling.min, `${row.key}: комната просит меньше, чем умеет инстанс`)
     assert.equal(row.max, ceiling.max, `${row.key}: комната просит больше, чем умеет инстанс`)
-    assert.ok(row.unit.trim().length > 0, `${row.key}: число осталось голым`)
     // Ноль — не число, а особое состояние, и подпись обязана сказать словами
     // какое: «0 в час» рядом с полем ввода — это загадка, а не подсказка.
-    assert.doesNotMatch(row.atInstance(0), /^0/, `${row.key}: ноль показан числом`)
-    assert.match(row.atInstance(5), /5/, `${row.key}: значение инстанса не названо`)
+    assert.doesNotMatch(row.atInstance!(0), /^0/, `${row.key}: ноль показан числом`)
+    assert.match(row.atInstance!(5), /5/, `${row.key}: значение инстанса не названо`)
   }
 })
 
@@ -127,7 +149,17 @@ test('край линейки принимается комнатой, а за �
     const read = readRules({ [row.key]: row.max }) as unknown as Record<string, unknown>
     assert.equal(read[row.key], row.max, `${row.key}: панель предлагает край, а комната его режет`)
     const over = readRules({ [row.key]: row.max + 1 }) as unknown as Record<string, unknown>
-    assert.equal(over[row.key], row.max, `${row.key}: комната приняла больше, чем умеет инстанс`)
+    /*
+     * За краем — по-разному, и разница осмысленная. Потолок оракула зажимается:
+     * «меньше, чем просили» здесь безопасная сторона. Предел ячейки падает в
+     * `null`, то есть «без предела»: безопасная сторона у него ровно обратная —
+     * оборвать чужой разбор из-за мусора в поле хуже, чем не оборвать.
+     */
+    assert.equal(
+      over[row.key],
+      NO_INSTANCE[row.key] ? null : row.max,
+      `${row.key}: комната приняла число за краем линейки`,
+    )
   }
 })
 
@@ -153,8 +185,9 @@ test('подписи правил остаются в языке комнаты 
       for (const option of row.options) assert.match(option.label, ROOM_LANGUAGE, twoNames)
     } else {
       assert.match(row.unit, ROOM_LANGUAGE, twoNames)
-      // Ноль называется словами, и эти слова тоже читают в комнате.
-      assert.match(row.atInstance(0), ROOM_LANGUAGE, twoNames)
+      // Ноль называется словами, и эти слова тоже читают в комнате. У строки
+      // без инстанса называть нечего — см. NO_INSTANCE.
+      if (row.atInstance) assert.match(row.atInstance(0), ROOM_LANGUAGE, twoNames)
     }
   }
 })

@@ -890,7 +890,8 @@ export class SessionState {
         message.t === 'council:oracle' ||
         message.t === 'council:count' ||
         message.t === 'council:shown' ||
-        message.t === 'council:hint:state'
+        message.t === 'council:hint:state' ||
+        message.t === 'council:kernel'
       ) {
         // Семь кадров консилиума — одному разборщику: он знает, кому какой
         // адресован, и хранит их по ячейкам.
