@@ -40,6 +40,7 @@ import { banRoutes } from './routes/bans.js'
 import { councilRoutes } from './routes/council.js'
 import { courseRoutes } from './routes/courses.js'
 import { blobRoutes } from './routes/blobs.js'
+import { plotlyRoutes } from './routes/plotly.js'
 import { fileRoutes } from './routes/files.js'
 import { historyRoutes } from './routes/history.js'
 import { activityRoutes } from './routes/activity.js'
@@ -491,6 +492,9 @@ app.use(activityRoutes())
 app.use(fileRoutes())
 // Картинки вывода лежат рядом с комнатой, а не в её документе (server/blobs.ts).
 app.use(blobRoutes())
+// Рамка графика plotly: единственный ответ со своей политикой — и без
+// удостоверения, потому что охранять в ней нечего (routes/plotly.ts).
+app.use(plotlyRoutes())
 app.use(aiRoutes())
 // Консилиум — за оракулом: его единственная REST-дверь спрашивает ту же модель
 // и тратит тот же лимит вопросов комнаты (routes/council.ts).

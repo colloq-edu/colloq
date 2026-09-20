@@ -265,7 +265,12 @@ function filesBelow(root: string, relative: string): string[] {
       if (
         ['node_modules', 'dist', '.git', '.vite'].includes(name) ||
         name.endsWith('.built') ||
-        path.join(relative, name) === 'web/public/pdf'
+        // Копии чужих бандлов, которые раскладывает сам шаг сборки (`npm run
+        // assets` в web/package.json): воркер pdf.js и plotly.js. Они не
+        // исходники — их содержимое уже посчитано через package-lock.json, а
+        // считать их отдельно значило бы пересобирать фронтенд всякий раз,
+        // когда копия появилась или пропала.
+        ['web/public/pdf', 'web/public/plotly'].includes(path.join(relative, name))
       )
         return []
       return filesBelow(root, path.join(relative, name))

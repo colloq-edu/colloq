@@ -78,7 +78,11 @@ at <https://colloq.ru/docs/en/security.html> (Russian original:
   runtime tokens, AI provider keys, `SESSION_SECRET`, the setup token.
 - **Script or style injection that runs in other participants' browsers**,
   through notebook cells, Markdown or HTML, outputs, file previews, published
-  pages or link cards.
+  pages or link cards. Interactive `plotly` figures are the one piece of cell
+  output a third-party library renders, and they are confined to a frame with
+  an opaque origin, no cookies, no storage, no access to the page and no
+  network (`server/src/plotly-frame.ts`). Anything escaping that frame — into
+  the application's origin, or out to the network — is in scope.
 - **Oracle tool calls that exceed the requesting participant's permissions**
   in the room.
 - **The production runtime broker.** Examples: accepting pod templates, images

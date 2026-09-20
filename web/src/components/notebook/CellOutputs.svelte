@@ -83,10 +83,20 @@
   import type { CellOutput } from '@shared/notebook'
   import Icon from '@/components/ui/Icon.svelte'
   import ScopedOutput from './ScopedOutput.svelte'
+  import PlotlyOutput from './PlotlyOutput.svelte'
   import { getSessionState } from '@/lib/session.svelte'
+  import { PLOTLY_MIME } from '@shared/plotly'
   // Что показывать картинкой, что разметкой, что текстом — в своём модуле:
   // список растровых типов там связан с публикацией, а не переписан от руки.
-  import { asImage, imageSrc, isPicture, pickMime, withBlobs } from './output-mimes'
+  import {
+    asImage,
+    hasVisibleMarkup,
+    imageSrc,
+    isAddress,
+    isPicture,
+    pickMime,
+    withBlobs,
+  } from './output-mimes'
   import { loadRenderers, renderers, stripAnsi } from '@/lib/render.svelte'
   import { withoutEcho } from '@/lib/traceback'
   import { cn, collapseCarriage } from '@/lib/utils'
@@ -252,7 +262,14 @@
           {:else}
             {@const mime = pickMime(output.data, render !== null)}
             {@const payload = mime ? output.data[mime] : ''}
-            {#if mime && asImage(mime, payload)}
+            {#if mime === PLOTLY_MIME}
+              <!-- Интерактивный график — в песочнице, см. PlotlyOutput. -->
+              <PlotlyOutput
+                {payload}
+                address={isAddress(payload)}
+                onstale={() => retry(raw)}
+              />
+            {:else if mime && asImage(mime, payload)}
               <!-- Plots are drawn for paper: a transparent figure needs a light
                    backing or its black axes vanish into the canvas. -->
               <img
@@ -269,11 +286,25 @@
                 class="max-w-full overflow-x-auto bg-white/95 p-1"
               />
             {:else if mime === 'text/html' && render}
-              <ScopedOutput
-                kind="html"
-                markup={render.html(payload)}
-                class="overflow-x-auto px-2 py-1 text-code text-ink"
-              />
+              {@const markup = render.html(payload)}
+              {#if hasVisibleMarkup(markup)}
+                <ScopedOutput
+                  kind="html"
+                  markup={markup}
+                  class="overflow-x-auto px-2 py-1 text-code text-ink"
+                />
+              {:else}
+                <!--
+                  Санитайзер вынес всё, что там было, — значит, весь вывод
+                  лежал в скрипте. Bokeh, folium, altair без картинки,
+                  ipywidgets, plotly со старым рендерером: библиотека
+                  присылает разметку, вся работа которой в `<script>`, а
+                  скрипты из вывода Colloq не исполняет и исполнять не будет
+                  (SECURITY.md). Молчать об этом нельзя: пустое место под
+                  «Out [7]» читается как «ячейка ничего не вывела».
+                -->
+                <div class="px-2 py-1 text-code text-muted">{tr('room.output.interactive')}</div>
+              {/if}
             {:else if mime === 'text/markdown' && render}
               <!--
                 Разметка вывода рисуется тем же отрисовщиком, что и заметка, и
@@ -296,6 +327,14 @@
               <div
                 class="output-stream px-2 py-1 text-ink/90"
               >{#if render}{@html render.ansi(payload)}{:else}{stripAnsi(payload)}{/if}</div>
+            {:else if Object.keys(output.data).length > 0}
+              <!--
+                Показать нечем: в наборе нет ни одного знакомого типа. Так
+                выглядит вывод библиотеки, у которой всё представление —
+                собственный mime плюс скрипт (ipywidgets, vega). Та же строка,
+                что и у вычищенной разметки выше, и по той же причине.
+              -->
+              <div class="px-2 py-1 text-code text-muted">{tr('room.output.interactive')}</div>
             {/if}
           {/if}
           <!-- eslint-enable svelte/no-at-html-tags -->

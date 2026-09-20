@@ -49,6 +49,15 @@ already fall back to system fonts.
 6.2.108 by `npm run pdf:worker` (Copyright Mozilla Foundation). The file keeps
 its license header. License: <https://www.apache.org/licenses/LICENSE-2.0>.
 
+### plotly.js strict bundle: MIT
+
+`web/public/plotly/plotly.min.js` is copied unmodified from
+`plotly.js-strict-dist-min` 4.1.1 by `npm run plotly:dist` (Copyright Plotly,
+Inc.) and keeps its license header. It is **not** committed — the copy step runs
+on every build, and the file is ignored in `.gitignore`. The strict bundle is the
+one without function constructors, so the sandboxed frame that renders a figure
+needs no `unsafe-eval` in its policy (`server/src/plotly-frame.ts`).
+
 ## Components shipped in builds under non-MIT licenses
 
 npm installs these; they are not committed. Each package carries its own license
@@ -88,7 +97,7 @@ files under `/usr/share/doc` in the image.
 Room kernel images install Python packages from PyPI at build time:
 
 - `kernel/requirements.txt`: Jupyter Server, ipykernel, NumPy, pandas,
-  Matplotlib, scikit-learn, requests and Black;
+  Matplotlib, Plotly, scikit-learn, requests and Black;
 - `kernel/environments/*.txt`, for example seaborn, PyTorch (the CPU build in
   `cv`, the CUDA build in `base-gpu`), torchvision, timm, OpenCV and
   Transformers.

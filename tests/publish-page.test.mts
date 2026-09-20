@@ -141,11 +141,37 @@ test('вывод, который показать нечем, называет �
   // напечатал» — а вывод был.
   const html = page([
     cell({
-      outputs: [{ kind: 'data', data: { 'application/vnd.plotly.v1+json': '{}' }, execCount: 7 }],
+      outputs: [{ kind: 'data', data: { 'application/vnd.bokehjs_exec.v0+json': '{}' }, execCount: 7 }],
     }),
   ])
-  assert.match(html, /application\/vnd\.plotly\.v1\+json/)
+  assert.match(html, /application\/vnd\.bokehjs_exec\.v0\+json/)
   assert.match(html, /не показывается/)
+})
+
+test('график plotly на выгруженной странице назван графиком, а не форматом', () => {
+  /*
+   * У фигуры есть имя и есть место, где её ПОКАЗЫВАЮТ, — живая страница
+   * занятия: там она рисуется в рамке-песочнице (server/src/plotly-frame.ts).
+   * Статический каталог живёт без сервера, отдать рамку с её заголовком там
+   * некому, — но сказать «вывод в формате application/vnd.plotly.v1+json на
+   * странице не показывается» значит отправить читателя гадать.
+   */
+  const html = page([
+    cell({
+      outputs: [
+        {
+          kind: 'data',
+          data: { 'application/vnd.plotly.v1+json': '{"data":[],"layout":{}}' },
+          execCount: 7,
+        },
+      ],
+    }),
+  ])
+  assert.match(html, /интерактивный график plotly/)
+  assert.ok(!/application\/vnd\.plotly/.test(html), 'имя типа читателю ни о чём не говорит')
+  // И сама фигура в статическую страницу не уезжает: чужие данные плюс чужой
+  // код на origin, где лежат и другие занятия.
+  assert.ok(!/"layout"/.test(html), 'JSON фигуры уехал в выгруженную страницу')
 })
 
 test('пустой каркас plotly, bokeh и ipywidgets — это не содержимое', () => {

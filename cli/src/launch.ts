@@ -36,6 +36,37 @@ import {
   renderShareBlock,
 } from './launch-share.js'
 import { leaseUrl } from '../../shared/local-public-url-lease.js'
+import { createRequire } from 'node:module'
+
+/**
+ * Чужие бандлы, которые фронтенд отдаёт как есть, — на место, до старта Vite.
+ *
+ * Воркер pdf.js и plotly.js не импортируются исходниками: это статические файлы
+ * в `web/public`, и раскладывает их шаг `npm run assets` (web/package.json), то
+ * есть `npm run dev` и `npm run build`. Эта команда зовёт Vite НАПРЯМУЮ, минуя
+ * npm, — и на свежем клоне plotly.js (его нет в git: пять мегабайт, выводимых из
+ * package-lock) не оказалось бы на месте: график вместо рисунка писал бы, что
+ * не смог загрузиться. Копия — только когда её нет или она другого размера;
+ * неудача не роняет запуск: без этих файлов не работают две вещи, а не всё.
+ */
+function layOutWebAssets(root: string): void {
+  const from = createRequire(path.join(root, 'web/package.json'))
+  const copies: Array<[string, string]> = [
+    ['pdfjs-dist/build/pdf.worker.min.mjs', 'web/public/pdf/pdf.worker.min.mjs'],
+    ['plotly.js-strict-dist-min/plotly-strict.min.js', 'web/public/plotly/plotly.min.js'],
+  ]
+  for (const [module, target] of copies) {
+    try {
+      const source = from.resolve(module)
+      const to = path.join(root, target)
+      if (fs.existsSync(to) && fs.statSync(to).size === fs.statSync(source).size) continue
+      fs.mkdirSync(path.dirname(to), { recursive: true })
+      fs.copyFileSync(source, to)
+    } catch (error) {
+      console.warn(`[colloq] ${target}: ${error instanceof Error ? error.message : String(error)} — npm ci?`)
+    }
+  }
+}
 
 /*
  * Два корня вместо одного: root — где приложение, home — где занятие.
@@ -471,6 +502,7 @@ async function runSession(options: LaunchOptions): Promise<number> {
     receipt.phase = 'starting'
     writeJson(receiptFile, receipt)
     const dev = options.action === 'dev'
+    if (dev) layOutWebAssets(root)
     const server = dev
       ? processes.start('Dev server', process.execPath, [
           path.join(root, 'node_modules/tsx/dist/cli.mjs'),

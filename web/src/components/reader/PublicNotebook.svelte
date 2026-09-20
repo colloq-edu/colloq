@@ -14,7 +14,7 @@
   import { copyText } from '@/lib/clipboard'
   import Code from '@/components/ui/Code.svelte'
   import { loadRenderers, renderers } from '@/lib/render.svelte'
-  import { BLOB_MIMES, BLOB_PREFIX, type PublicCell } from '@shared/publish'
+  import { BLOB_PREFIX, SPILL_MIMES, type PublicCell } from '@shared/publish'
   import type { CellOutput } from '@shared/notebook'
 
   interface Props {
@@ -36,8 +36,10 @@
    * чтобы шесть шагов не несли шесть копий одного графика. Хэш и есть версия,
    * поэтому адрес раздаётся с вечным кэшем.
    *
-   * Адрес получают только растровые mime (`BLOB_MIMES`) — те, что рисуются
-   * <img>. Ставить его всем ключам подряд значило отдать путь в ветку SVG, а
+   * Адрес получают только те mime, которые сервер и выносит (`SPILL_MIMES`):
+   * растровые картинки и фигура plotly — первые рисуются `<img>`, вторая
+   * уезжает в рамку, которая забирает её этим же адресом. Ставить адрес всем
+   * ключам подряд значило отдать путь в ветку SVG, а
    * та санитайзит его как разметку и печатает строкой: на месте графика
    * graphviz читатель видел «/api/p/x9tb4kwm/blob/6f1c…». Ссылка на запись,
    * которую нечем показать, из набора убирается совсем: тогда выбор дойдёт до
@@ -49,7 +51,7 @@
     const data: Record<string, string> = {}
     for (const [mime, value] of Object.entries(output.data)) {
       if (!value.startsWith(BLOB_PREFIX)) data[mime] = value
-      else if (BLOB_MIMES.has(mime))
+      else if (SPILL_MIMES.has(mime))
         data[mime] = `/api/p/${publication}/blob/${value.slice(BLOB_PREFIX.length)}`
     }
     return { ...output, data }

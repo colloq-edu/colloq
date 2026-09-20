@@ -18,6 +18,12 @@ import { tr } from '@shared/i18n'
  */
 import type { CellOutput, StreamName } from '@shared/notebook'
 import type { CouncilRun } from '@shared/protocol'
+import {
+  figureChars,
+  figureTooBigNotice,
+  withoutDeadPlotlyHtml,
+  withoutFigure,
+} from './figures.js'
 
 /** Столько текста в попытке ещё читается на карточке; дальше — совет писать в файл. */
 export const MAX_ATTEMPT_OUTPUT_CHARS = 64 * 1024
@@ -92,7 +98,27 @@ export class CouncilOutputBuffer {
 
   data(mimebundle: Record<string, string>, execCount: number | null): void {
     this.settle()
-    const size = JSON.stringify(mimebundle).length
+    /*
+     * График plotly в попытке — целиком или строкой, третьего нет.
+     *
+     * Полки записей у попытки нет и быть не может: её вывод живёт в памяти и
+     * уезжает хосту по управляющему сокету вместе со всей стопкой (см. шапку
+     * файла). Значит, фигура либо укладывается в потолок карточки и едет как
+     * есть, либо не едет вовсе — и тогда вместо неё та же честная строка, что
+     * в комнате. Обрезать JSON нельзя: это не «часть графика», а битый кадр.
+     *
+     * Мёртвая разметка plotly снимается тем же правилом, что и в комнате, и до
+     * взвешивания: иначе бюджет карточки съедал бы скрипт, который никто
+     * никогда не исполнит.
+     */
+    let bundle = withoutDeadPlotlyHtml(mimebundle)
+    const figure = figureChars(bundle)
+    if (figure > 0 && figure > MAX_ATTEMPT_DATA_CHARS) {
+      bundle = withoutFigure(bundle)
+      this.outputs.push({ kind: 'stream', name: 'stderr', text: figureTooBigNotice(figure) })
+      if (Object.keys(bundle).length === 0) return
+    }
+    const size = JSON.stringify(bundle).length
     if (this.dataTruncated || this.usedData + size > MAX_ATTEMPT_DATA_CHARS) {
       if (!this.dataTruncated) {
         this.outputs.push({
@@ -105,7 +131,7 @@ export class CouncilOutputBuffer {
       return
     }
     this.usedData += size
-    this.outputs.push({ kind: 'data', data: mimebundle, execCount })
+    this.outputs.push({ kind: 'data', data: bundle, execCount })
   }
 
   error(ename: string, evalue: string, traceback: string[]): void {

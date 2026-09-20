@@ -4,12 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "npm run pdf:worker && vite",
-    "build": "npm run pdf:worker && vite build",
+    "dev": "npm run assets && vite",
+    "build": "npm run assets && vite build",
     "build:optimized": "npm run build && node scripts/precompress.mjs",
     "preview": "vite preview",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json --threshold error",
-    "pdf:worker": "node -e \"const{copyFileSync,mkdirSync}=require('fs');mkdirSync('public/pdf',{recursive:true});copyFileSync(require.resolve('pdfjs-dist/build/pdf.worker.min.mjs'),'public/pdf/pdf.worker.min.mjs')\""
+    "assets": "npm run pdf:worker && npm run plotly:dist",
+    "pdf:worker": "node -e \"const{copyFileSync,mkdirSync}=require('fs');mkdirSync('public/pdf',{recursive:true});copyFileSync(require.resolve('pdfjs-dist/build/pdf.worker.min.mjs'),'public/pdf/pdf.worker.min.mjs')\"",
+    "plotly:dist": "node -e \"const{copyFileSync,mkdirSync}=require('fs');mkdirSync('public/plotly',{recursive:true});copyFileSync(require.resolve('plotly.js-strict-dist-min/plotly-strict.min.js'),'public/plotly/plotly.min.js')\""
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.4",
@@ -29,6 +31,7 @@
     "katex": "^0.18.7",
     "marked": "^15.0.4",
     "pdfjs-dist": "^6.2.108",
+    "plotly.js-strict-dist-min": "^4.1.1",
     "y-codemirror.next": "^0.3.5",
     "y-indexeddb": "^9.0.12",
     "y-protocols": "^1.0.6",

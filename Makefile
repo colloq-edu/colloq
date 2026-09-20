@@ -652,7 +652,7 @@ env-new: ## Завести окружение. NAME=cv [PYTHON=3.12]
 	@test -z "$(PYTHON)" || test "$(PYTHON)" = "$(PY_DEFAULT)" || \
 	  printf '# colloq: python $(PYTHON)\n#\n' >> $(ENV_DIR)/$(NAME).txt
 	@printf '# Окружение «$(NAME)». Ставится поверх базы из kernel/requirements.txt,\n' >> $(ENV_DIR)/$(NAME).txt
-	@printf '# поэтому numpy/pandas/matplotlib/scikit-learn перечислять не нужно.\n#\n' >> $(ENV_DIR)/$(NAME).txt
+	@printf '# поэтому numpy/pandas/matplotlib/plotly/scikit-learn перечислять не нужно.\n#\n' >> $(ENV_DIR)/$(NAME).txt
 	@printf '# Один пакет на строку, как в обычном requirements.txt:\n#\n' >> $(ENV_DIR)/$(NAME).txt
 	@printf '#   transformers>=4.44\n#   datasets>=2.20\n' >> $(ENV_DIR)/$(NAME).txt
 	@printf '$(BOLD)создан$(OFF) $(ENV_DIR)/$(NAME).txt\n'

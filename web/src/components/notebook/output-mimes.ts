@@ -10,6 +10,7 @@
  * рисоваться вовсе — `pickMime` его бы не выбрал.
  */
 import { BLOB_MIMES } from '@shared/publish'
+import { PLOTLY_MIME } from '@shared/plotly'
 import type { CellOutput, OutputBlob } from '@shared/notebook'
 
 /**
@@ -38,8 +39,21 @@ export const IMG_MIMES: readonly string[] = [...BLOB_MIMES]
  * Ниже `text/html`: если библиотека прислала и то и другое, готовая разметка
  * точнее — её собрал тот, кто знает, как это должно выглядеть.
  */
-const MIME_ORDER = [...IMG_MIMES, 'image/svg+xml', 'text/html', 'text/markdown', 'text/plain']
-const MIME_ORDER_PLAIN = [...IMG_MIMES, 'text/plain']
+/*
+ * Фигура plotly — впереди всего, и это не «интерактивное лучше статического».
+ *
+ * Ядро присылает её ОДНУ: в наборе от нынешнего plotly нет ни `text/plain`, ни
+ * картинки — только `application/vnd.plotly.v1+json`. Пока этой строки тут не
+ * было, `pickMime` не находил знакомого и возвращал `null`, а `null` рисуется
+ * пустым местом: ячейка с `px.histogram(...)` не выводила ничего.
+ *
+ * Впереди картинок она стоит на случай набора, где есть и то и другое
+ * (`pio.renderers.default = "plotly_mimetype+png"`): график, который можно
+ * повертеть, — это то, ради чего его и писали, а снимок того же графика
+ * показывает меньше.
+ */
+const MIME_ORDER = [PLOTLY_MIME, ...IMG_MIMES, 'image/svg+xml', 'text/html', 'text/markdown', 'text/plain']
+const MIME_ORDER_PLAIN = [PLOTLY_MIME, ...IMG_MIMES, 'text/plain']
 
 export function pickMime(data: Record<string, string>, rich: boolean): string | null {
   for (const mime of rich ? MIME_ORDER : MIME_ORDER_PLAIN) if (data[mime]) return mime
@@ -104,6 +118,10 @@ export function isAddress(payload: string): boolean {
  * по адресу, показывается что угодно из вынесенного.
  */
 export function asImage(mime: string, payload: string): boolean {
+  // Фигура plotly тоже уезжает по ссылке (`SPILL_MIMES`), и адрес у неё точно
+  // такой же. Картинкой её показывать нечем: по адресу лежит JSON, и `<img>`
+  // нарисовал бы битую рамку на месте графика. Тип старше формы значения.
+  if (mime === PLOTLY_MIME) return false
   return IMG_MIMES.includes(mime) || isAddress(payload)
 }
 
@@ -126,5 +144,33 @@ export function imageSrc(mime: string, payload: string): string {
 export function isPicture(output: CellOutput, rich: boolean): boolean {
   if (output.kind !== 'data') return false
   const mime = pickMime(output.data, rich)
-  return mime !== null && (IMG_MIMES.includes(mime) || mime === 'image/svg+xml')
+  if (mime === null) return false
+  // График plotly — тоже не строки: подрезать его кромкой значит спрятать
+  // нижнюю ось под кнопкой «Show more», за которой якобы ещё вывод.
+  if (mime === PLOTLY_MIME) return true
+  return IMG_MIMES.includes(mime) || mime === 'image/svg+xml'
+}
+
+/**
+ * Осталось ли после санитайзера что-то, что человек УВИДИТ.
+ *
+ * Вопрос не праздный и не про plotly одну. Bokeh, folium, altair без картинки,
+ * ipywidgets, plotly со старым рендерером — все они присылают `text/html`, всё
+ * содержимое которого лежит в `<script>`, а скрипты из вывода Colloq не
+ * исполняет (SECURITY.md: вывод ячейки формирует любой, кому разрешён запуск).
+ * После санитайзера от такой записи остаётся пустой `<div>` — и на экране
+ * пустое место, которое читается как «ячейка ничего не вывела».
+ *
+ * Пустое место — единственный ответ, которого тут быть не должно; что именно
+ * сказать вместо него, решает CellOutputs.
+ *
+ * Считается по тому же правилу, что и на опубликованной странице
+ * (`server/src/publish/render.ts · hasVisible`), плюс теги, которые видно и
+ * без текста внутри.
+ */
+const VISIBLE_TAGS = /<(?:img|svg|canvas|video|audio|iframe|table|hr|input|object|embed)\b/i
+
+export function hasVisibleMarkup(markup: string): boolean {
+  if (VISIBLE_TAGS.test(markup)) return true
+  return /\S/.test(markup.replace(/<[^>]*>/g, ''))
 }

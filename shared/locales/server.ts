@@ -2673,6 +2673,10 @@ export const serverMessages: MessageCatalog = {
     "ru": "вывод в формате {format} на странице не показывается",
     "en": "output in {format} format cannot be displayed on this page"
   },
+  "server.ssr.plotlyFigure": {
+    "ru": "интерактивный график plotly — он показывается на странице занятия",
+    "en": "an interactive plotly figure — it is shown on the class page"
+  },
   "server.ssr.notRun": {
     "ru": "не запускалась",
     "en": "not run"
@@ -2952,6 +2956,10 @@ export const serverMessages: MessageCatalog = {
   "server.itsSizeFigsizeDpi.24640a": {
     "ru": "его размер (figsize/dpi).\n",
     "en": "its size (figsize/dpi).\n"
+  },
+  "server.output.plotlyTooBig": {
+    "ru": "\n[colloq] График слишком большой для общей тетради ({p0} МБ): уменьшите число точек или сохраните его в файл — fig.write_html('plot.html')\n",
+    "en": "\n[colloq] This figure is too large for a shared notebook ({p0} MB): use fewer points, or save it to a file — fig.write_html('plot.html')\n"
   },
   "server.dockerStart.e0ac13": {
     "ru": "docker start: {p0}",

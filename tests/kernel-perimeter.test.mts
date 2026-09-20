@@ -95,6 +95,12 @@ test('комната на хосте: своя сеть, порт на петл�
     '-e', 'MKL_NUM_THREADS=2',
     '-e', 'OPENBLAS_NUM_THREADS=2',
     '-e', 'NUMEXPR_NUM_THREADS=2',
+    // Чем plotly отдаёт фигуру: без этой переменной он решает сам и решает
+    // по-разному в разных версиях — 5.x добавляет к фигуре `text/html`, а
+    // первым кадром высылает весь бандл plotly.js, пять мегабайт скрипта,
+    // который в общем документе не нужен никому (kernel/pool.ts · runArgs).
+    // Умолчание, а не запрет: `pio.renderers.default` в ячейке его перебивает.
+    '-e', 'PLOTLY_RENDERER=plotly_mimetype',
     '-v', '/srv/workspace/r1:/workspace/r1',
     '--memory=4g',
     '--memory-swap=4g',

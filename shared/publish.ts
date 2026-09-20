@@ -13,6 +13,7 @@ import { tr } from './i18n.js'
  * закладки: его дают классу в первую неделю и больше не дают ничего.
  */
 import type { CellOutput, CellType } from './notebook.js'
+import { PLOTLY_MIME } from './plotly.js'
 
 /** Восемь символов, как у семинара, но своего пространства имён. */
 export type CourseId = string
@@ -371,6 +372,42 @@ export const BLOB_MIMES: ReadonlySet<string> = new Set([
   'image/gif',
   'image/webp',
 ])
+
+/**
+ * Что вообще может уехать из документа в отдельную запись.
+ *
+ * Шире, чем `BLOB_MIMES`, ровно на одну строку — фигуру plotly, — и отдельным
+ * набором, а не строкой в том списке, по двум причинам сразу. Первая:
+ * `BLOB_MIMES` — это ещё и список того, что рисуется элементом `<img>`
+ * (web/src/components/notebook/output-mimes.ts · IMG_MIMES), и график, попавший
+ * туда, приехал бы битой картинкой. Вторая: записи хранят РАСКОДИРОВАННЫЕ
+ * байты, а кодировка у них разная — картинка приходит base64, фигура приходит
+ * текстом JSON (см. `spillEncoding`).
+ *
+ * Фигура выносится по той же причине, что и график matplotlib: `px.scatter` на
+ * десятки тысяч точек — это мегабайты, и в документе комнаты они стоили бы
+ * столько же каждому зрителю, каждому снимку и каждому кадру истории.
+ */
+export const SPILL_MIMES: ReadonlySet<string> = new Set([...BLOB_MIMES, PLOTLY_MIME])
+
+/** Чем такой кусок лежит в наборе ядра: base64 или обычный текст. */
+export function spillEncoding(mime: string): 'base64' | 'utf8' {
+  return BLOB_MIMES.has(mime) ? 'base64' : 'utf8'
+}
+
+/**
+ * Чем вынесенный кусок отдавать браузеру — и это НЕ то, что сказало ядро.
+ *
+ * `content-type` решает, чем ответ станет при переходе по прямой ссылке, а
+ * набор `display_data` формирует библиотека в коде студента. Картинке
+ * возвращается её собственный тип, фигуре — `application/json`: он точен и
+ * документом не становится. `null` — незнакомое, такое уходит вложением.
+ */
+export function spillContentType(mime: string): string | null {
+  if (BLOB_MIMES.has(mime)) return mime
+  if (mime === PLOTLY_MIME) return 'application/json'
+  return null
+}
 
 /** Ссылка на такое содержимое внутри mime-набора вывода. */
 export const BLOB_PREFIX = 'blob:'

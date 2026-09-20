@@ -13,7 +13,7 @@ import { ownerOnly, requireStaff, currentStaff } from '../admin/auth.js'
 import { getSession, renameSession } from '../db.js'
 import { visitSessionDoc } from './doc-visit.js'
 import {
-  BLOB_MIMES,
+  spillContentType,
   MAX_COURSE_BLURB,
   MAX_COURSE_NAME,
   MAX_PLANNED_WHEN,
@@ -660,9 +660,15 @@ export function courseRoutes(): Router {
     if (!pub || pub.state !== 'published') return res.status(404).end()
     const blob = readBlob(pub.id, req.params.hash)
     if (!blob) return res.status(404).end()
-    const known = BLOB_MIMES.has(blob.mime)
-    res.setHeader('content-type', known ? blob.mime : 'application/octet-stream')
-    res.setHeader('content-disposition', known ? 'inline' : 'attachment; filename="output.bin"')
+    /*
+     * Тип — из белого списка, и не обязательно тот, что записан в строке:
+     * фигура plotly отдаётся `application/json`. Документом ни то ни другое не
+     * становится, а `application/vnd.plotly.v1+json` в заголовке ничего не
+     * добавляет и в чужих руках читается хуже.
+     */
+    const type = spillContentType(blob.mime)
+    res.setHeader('content-type', type ?? 'application/octet-stream')
+    res.setHeader('content-disposition', type ? 'inline' : 'attachment; filename="output.bin"')
     res.setHeader('content-security-policy', "sandbox; default-src 'none'")
     res.setHeader('cache-control', 'public, max-age=31536000, immutable')
     res.send(blob.body)

@@ -20,6 +20,7 @@ import { tr, getLocale, formatNumber } from '@shared/i18n'
  * размен; за ним следит `tests/render.test.mts`.
  */
 import { BLOB_PREFIX, ROBOTS_TAG, type PublicCell, type PublicCourseView } from '@shared/publish'
+import { PLOTLY_MIME } from '@shared/plotly'
 import { plural } from '@shared/plural'
 import { safeStyle } from '@shared/note-css'
 import type { CellOutput } from '@shared/notebook'
@@ -516,6 +517,22 @@ function outputHtml(output: CellOutput, depth: number): string {
     const head = output.ename + (output.evalue ? ': ' + output.evalue : '')
     const body = tracebackBody(output.traceback, output.ename, output.evalue)
     return `<pre class="out err">${esc([plain(head), body].filter(Boolean).join('\n\n'))}</pre>`
+  }
+  /*
+   * Интерактивный график — и честная строка вместо него.
+   *
+   * Выгруженный каталог живёт на статическом хостинге: сервера за ним нет, а
+   * рамка, в которой рисуется plotly, — это ответ с особым заголовком
+   * (`server/src/plotly-frame.ts`), и отдать его там некому. Рисовать фигуру
+   * прямо в странице нельзя тем более: это чужие данные и пять мегабайт чужого
+   * кода на origin, где лежат и другие занятия.
+   *
+   * Поэтому строка, а не пустое место: «Out [7]» без ничего под ним читается
+   * как «код ничего не напечатал», и это враньё. Живая читалка инстанса тот же
+   * график показывает целиком — про неё в строке и сказано.
+   */
+  if (output.data[PLOTLY_MIME] !== undefined) {
+    return `<p class="quiet">${esc(tr('server.ssr.plotlyFigure'))}</p>`
   }
   const image = Object.entries(output.data).find(([mime]) => mime.startsWith('image/'))
   if (image) {

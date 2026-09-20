@@ -11,7 +11,7 @@
  */
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { BLOB_PREFIX } from '@shared/publish'
+import { BLOB_MIMES, BLOB_PREFIX } from '@shared/publish'
 import { blobHref, renderCourse, renderRedirect, renderStep, renderWithdrawn } from './render.js'
 import {
   formerSlugs,
@@ -223,6 +223,16 @@ export function exportSite(root: string, base: string): ExportReport {
           if (output.kind !== 'data') continue
           for (const [mime, value] of Object.entries(output.data)) {
             if (!value.startsWith(BLOB_PREFIX)) continue
+            /*
+             * Только то, что выгруженная страница умеет показать, — картинки.
+             *
+             * Фигура plotly в записях тоже лежит (её рисует читалка живого
+             * инстанса), но статический каталог рисует на её месте заглушку:
+             * рамки там нет, потому что нет и сервера, который отдал бы её с
+             * нужным заголовком. Выгружать ради заглушки мегабайт JSON — это
+             * мегабайт, который никто никогда не запросит.
+             */
+            if (!BLOB_MIMES.has(mime)) continue
             const blob = readBlob(pub.id, value.slice(BLOB_PREFIX.length))
             if (!blob) continue
             write(path.join(dir, blobHref(value, mime)), blob.body)

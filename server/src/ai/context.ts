@@ -27,6 +27,7 @@ import {
   type YCell,
   type YOutput,
 } from '@shared/notebook'
+import { PLOTLY_MIME, figureShape, normalizeFigure, type PlotlyFigure } from '@shared/plotly'
 import { getOracleSettings } from '../admin/settings.js'
 import { getSessionDoc } from '../collab/index.js'
 import { getSession } from '../db.js'
@@ -456,7 +457,14 @@ function renderData(output: DataOutput, limit: number): string {
 
   for (const [mime, value] of Object.entries(output.data)) {
     if (mime === 'text/plain') continue
-    if (mime.startsWith('image/')) {
+    if (mime === PLOTLY_MIME) {
+      // Координаты модели не нужны и не поместились бы: `px.scatter` на сто
+      // тысяч точек — это два мегабайта JSON, то есть весь бюджет контекста за
+      // одну ячейку. А «здесь был график, и вот какой» — нужно: иначе ячейка с
+      // одним `px.histogram(...)` выглядит как ячейка, которая ничего не
+      // вывела. Тот же довод, что у картинок строкой выше.
+      parts.push(figureNote(value))
+    } else if (mime.startsWith('image/')) {
       // Base64 pixels are pure noise to the model and would eat the whole budget.
       parts.push(`[${mime}, ~${Math.max(1, Math.round((value.length * 0.75) / 1024))} KB image]`)
     } else if (parts.length === 0) {
@@ -472,9 +480,36 @@ function renderData(output: DataOutput, limit: number): string {
    * выглядит для оракула как ячейка, которая ничего не вывела.
    */
   for (const blob of output.blobs ?? []) {
-    parts.push(`[${blob.mime}, ~${Math.max(1, Math.round(blob.bytes / 1024))} KB image]`)
+    const kilobytes = Math.max(1, Math.round(blob.bytes / 1024))
+    // Вынесенная фигура — это тоже график, и называть его картинкой нельзя:
+    // оракул подсказывает по `plt.savefig` там, где речь про plotly.
+    parts.push(
+      blob.mime === PLOTLY_MIME
+        ? `[plotly figure, ~${kilobytes} KB]`
+        : `[${blob.mime}, ~${kilobytes} KB image]`,
+    )
   }
   return parts.length ? parts.join('\n') : '(no data)'
+}
+
+/**
+ * Пересказ фигуры для модели: чем она является, без её содержимого.
+ *
+ * Битый или незнакомый JSON — не повод молчать: «здесь был график» остаётся
+ * правдой, даже если разобрать его не вышло.
+ */
+function figureNote(json: string): string {
+  let figure: PlotlyFigure | null = null
+  try {
+    figure = normalizeFigure(JSON.parse(json))
+  } catch {
+    figure = null
+  }
+  if (!figure) return '[plotly figure]'
+  const shape = figureShape(figure)
+  const traces = `${shape.traces} trace${shape.traces === 1 ? '' : 's'}`
+  const points = shape.points > 0 ? `, ${shape.points} points` : ''
+  return `[plotly figure: ${shape.kind}, ${traces}${points}]`
 }
 
 function elide(entry: Entry): string {

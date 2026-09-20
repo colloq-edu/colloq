@@ -20,9 +20,10 @@ import { createHash } from 'node:crypto'
 import * as Y from 'yjs'
 import { readNotebook, type CellOutput, type CellSnapshot } from '@shared/notebook'
 import {
-  BLOB_MIMES,
   BLOB_MIN_BYTES,
   BLOB_PREFIX,
+  SPILL_MIMES,
+  spillEncoding,
   type PublicCell,
   type SkipReason,
 } from '@shared/publish'
@@ -39,7 +40,14 @@ import { openReplay } from './replay.js'
 
 /** Крупные куски выводов, вынесенные по хэшу. Наполняется по ходу сборки. */
 export interface BlobBag {
-  put(mime: string, base64: string): string
+  /**
+   * Кусок набора вывода — в том виде, в каком его прислало ядро.
+   *
+   * Кодировку спрашивает `spillEncoding`: картинка приходит base64, фигура
+   * plotly — текстом JSON. Разбирать текст как base64 — это мусор в записи и
+   * пустая рамка на странице, ровно та беда, из-за которой SVG сюда не кладут.
+   */
+  put(mime: string, value: string): string
   /** То же самое, но байтами: у комнаты картинка уже раскодирована. */
   putBytes(mime: string, body: Buffer): string
   all(): { hash: string; mime: string; body: Buffer }[]
@@ -53,8 +61,8 @@ export function newBlobBag(): BlobBag {
     return `${BLOB_PREFIX}${hash}`
   }
   return {
-    put(mime, base64) {
-      return keep(mime, Buffer.from(base64, 'base64'))
+    put(mime, value) {
+      return keep(mime, Buffer.from(value, spillEncoding(mime)))
     },
     putBytes: keep,
     all() {
@@ -74,8 +82,9 @@ export function newBlobBag(): BlobBag {
  * base64 на сотни килобайт, одинаковый во всех шагах, где его ячейка не
  * менялась. Шесть шагов давали бы шесть копий одной картинки.
  *
- * Уезжает только то, что перечислено в `BLOB_MIMES`: запись хранит
- * раскодированные байты, а `image/svg+xml` — это XML-текст, а не base64.
+ * Уезжает только то, что перечислено в `SPILL_MIMES`: растровые картинки и
+ * фигура plotly. `image/svg+xml` в этом списке нет намеренно — он и так весит
+ * меньше картинки, ради которой вынос заводился.
  */
 function projectOutput(output: CellOutput, blobs: BlobBag, sessionId: string | null): CellOutput {
   if (output.kind === 'stream') return { kind: 'stream', name: output.name, text: output.text }
@@ -90,7 +99,7 @@ function projectOutput(output: CellOutput, blobs: BlobBag, sessionId: string | n
   const data: Record<string, string> = {}
   for (const [mime, value] of Object.entries(output.data)) {
     data[mime] =
-      typeof value === 'string' && value.length >= BLOB_MIN_BYTES && BLOB_MIMES.has(mime)
+      typeof value === 'string' && value.length >= BLOB_MIN_BYTES && SPILL_MIMES.has(mime)
         ? blobs.put(mime, value)
         : value
   }

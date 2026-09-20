@@ -199,6 +199,7 @@ Guide: [the Oracle](https://colloq.ru/docs/en/oracle.html)
 | Feature | What you get |
 | --- | --- |
 | **Shared files and terminal** | Upload datasets, organize folders, edit text files, preview images and PDFs. The shared terminal works in the room's filesystem and records who ran each command. |
+| **Cell output** | Text, tracebacks, `pandas` tables, Markdown, images and SVG, plus interactive `plotly` figures — drawn in a sandboxed frame with no access to the class and no network of its own. Scripts from a cell's output are never executed: the output is produced by anyone allowed to run code, and it is rendered in every browser in the room. |
 | **History** | Notebook versions, plus a filtered activity journal in the teacher's History panel: attendance, Oracle requests, run outcomes, submitted answers and editing participation. See [activity history](docs/activity-history.md). |
 | **Notebooks in and out** | Several notebooks per room and `.ipynb` export. Start a class from a `.ipynb` file (outputs are not imported) or from a GitHub link to a notebook or folder in a public repository. |
 | **End class, resume later** | **End class** makes the room read-only for students and keeps its notebook, files and discussion. **Resume class** brings back the previous rules. |

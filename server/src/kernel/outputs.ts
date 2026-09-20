@@ -1,9 +1,16 @@
 import { tr } from '@shared/i18n'
 import * as Y from 'yjs'
 import { cellOutputs, findCell, type OutputBlob, type StreamName, type YOutput } from '@shared/notebook'
-import { BLOB_MIMES } from '@shared/publish'
+import { SPILL_MIMES, spillEncoding } from '@shared/publish'
 import { putBlob } from '../blobs.js'
 import { config } from '../config.js'
+import {
+  MAX_FIGURE_CHARS,
+  figureChars,
+  figureTooBigNotice,
+  withoutDeadPlotlyHtml,
+  withoutFigure,
+} from './figures.js'
 
 /**
  * The bridge from kernel messages to the shared document.
@@ -256,6 +263,22 @@ export class OutputWriter {
     // Строка потока закрыта картинкой: дописывать в неё уже некуда.
     this.forgetTail()
     /*
+     * Фигура plotly — раньше всех прочих расчётов, и по двум разным поводам.
+     *
+     * Первый: рядом с ней ядро присылает `text/html` — сотни килобайт скрипта,
+     * который продукт не исполнит никогда (kernel/figures.ts). В документ он
+     * ложился бы полным весом и на каждый график.
+     *
+     * Второй: у фигуры свой потолок поверх бюджета ячейки. Обрезать JSON
+     * нельзя — обрезанная фигура это не «часть графика», а битый кадр, — так
+     * что вместо неё встаёт строка, которая говорит, что случилось и что
+     * делать.
+     */
+    let bundle = withoutDeadPlotlyHtml(mimebundle)
+    const chars = figureChars(bundle)
+    const oversize = chars > MAX_FIGURE_CHARS ? chars : 0
+    if (oversize > 0) bundle = withoutFigure(bundle)
+    /*
      * Раскодировать — до транзакции, положить — внутри неё.
      *
      * Внутри транзакции документ закрыт для всех остальных, и `Buffer.from`
@@ -264,10 +287,14 @@ export class OutputWriter {
      * бюджета, который отложенное стирание сбрасывает ровно в начале
      * транзакции (см. `write`), — поэтому оно принимается там.
      */
-    const heavy = this.heavyParts(mimebundle)
+    const heavy = this.heavyParts(bundle)
     this.write((outputs) => {
+      if (oversize > 0) this.say(outputs, figureTooBigNotice(oversize))
+      // Из набора могла остаться одна фигура, и та не поместилась: записи
+      // data тогда нет вовсе — только строка выше.
+      if (Object.keys(bundle).length === 0) return
       const inline: Record<string, string> = {}
-      for (const [mime, value] of Object.entries(mimebundle)) {
+      for (const [mime, value] of Object.entries(bundle)) {
         if (!heavy.has(mime)) inline[mime] = value
       }
       /*
@@ -294,7 +321,7 @@ export class OutputWriter {
         if (!stored) {
           // Не записалось — картинка всё равно едет, просто по-старому. Потерять
           // её из-за полного диска хуже, чем заплатить за неё документом.
-          inline[mime] = mimebundle[mime]
+          inline[mime] = bundle[mime]
           continue
         }
         blobs.push({ sha: stored.sha, mime, bytes: stored.bytes })
@@ -313,18 +340,24 @@ export class OutputWriter {
   /**
    * Что из набора уедет по ссылке — уже раскодированным.
    *
-   * Только растровые картинки (`BLOB_MIMES`) и только крупные: остальное
-   * дешевле оставить в документе, чем сходить за ним вторым запросом. Тот же
-   * список, по которому выносит содержимое публикация, — чтобы в комнате и на
-   * опубликованной странице по ссылке уезжало одно и то же.
+   * Растровые картинки и фигуры plotly (`SPILL_MIMES`), и только крупные:
+   * остальное дешевле оставить в документе, чем сходить за ним вторым
+   * запросом. Тот же список, по которому выносит содержимое публикация, —
+   * чтобы в комнате и на опубликованной странице по ссылке уезжало одно и то
+   * же.
+   *
+   * Кодировка у них разная и спрашивается по типу (`spillEncoding`): картинка
+   * приходит base64, фигура — текстом JSON. Раскодировать текст как base64 —
+   * это мусор в записи и пустая рамка на экране, ровно та беда, из-за которой
+   * SVG в записи не выносится вовсе.
    */
   private heavyParts(mimebundle: Record<string, string>): Map<string, Uint8Array> {
     const heavy = new Map<string, Uint8Array>()
     if (!this.sessionId) return heavy
     for (const [mime, value] of Object.entries(mimebundle)) {
       if (typeof value !== 'string' || value.length < BLOB_FROM_CHARS) continue
-      if (!BLOB_MIMES.has(mime)) continue
-      const body = Buffer.from(value, 'base64')
+      if (!SPILL_MIMES.has(mime)) continue
+      const body = Buffer.from(value, spillEncoding(mime))
       // Пустое после раскодирования — это не картинка, а что-то, что ядро
       // назвало картинкой: пусть едет в документ и разбирается там.
       if (body.length > 0) heavy.set(mime, body)
@@ -538,42 +571,46 @@ export class OutputWriter {
     outputs.push([output])
   }
 
-  private notice(outputs: Y.Array<YOutput>): void {
-    if (this.noticed) return
-    this.noticed = true
+  /**
+   * Слово от продукта, а не от Python, — отдельной записью потока ошибок.
+   *
+   * Одна на все объяснения ниже: обрезанный текст, кончившийся бюджет
+   * картинок, фигура, которая не поместилась. Хвост забывается всегда —
+   * дописывать в строку, за которой легла наша строка, уже некуда.
+   */
+  private say(outputs: Y.Array<YOutput>, text: string): void {
     this.forgetTail()
     const output = new Y.Map<any>()
     output.set('kind', 'stream')
     output.set('name', 'stderr' as StreamName)
     const body = new Y.Text()
-    body.insert(
-      0,
-      tr("server.colloqOutputStoppedAfterCharactersSaveThe.cf6866", { p0: MAX_CELL_OUTPUT_CHARS }),
-    )
+    body.insert(0, text)
     output.set('text', body)
     outputs.push([output])
+  }
+
+  private notice(outputs: Y.Array<YOutput>): void {
+    if (this.noticed) return
+    this.noticed = true
+    this.say(
+      outputs,
+      tr("server.colloqOutputStoppedAfterCharactersSaveThe.cf6866", { p0: MAX_CELL_OUTPUT_CHARS }),
+    )
   }
 
   /** Про картинки — своими словами: совет «печатайте в файл» тут ни при чём. */
   private dataNotice(outputs: Y.Array<YOutput>): void {
     if (this.dataNoticed) return
     this.dataNoticed = true
-    this.forgetTail()
-    const output = new Y.Map<any>()
-    output.set('kind', 'stream')
-    output.set('name', 'stderr' as StreamName)
-    const body = new Y.Text()
     const shown =
       this.dataBudget >= 1024 * 1024
         ? `${Math.round(this.dataBudget / (1024 * 1024))} MB`
         : `${Math.round(this.dataBudget / 1024)} KB`
-    body.insert(
-      0,
+    this.say(
+      outputs,
       tr("server.colloqTheImageOutputLimitWasReached.a9f30a", { p0: shown }) +
         tr("server.saveTheFigureToAFileOr.961b0e") +
         tr("server.itsSizeFigsizeDpi.24640a"),
     )
-    output.set('text', body)
-    outputs.push([output])
   }
 }

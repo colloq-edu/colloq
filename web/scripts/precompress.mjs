@@ -3,7 +3,16 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliCompressSync, gzipSync, constants } from 'node:zlib'
 
-/** Compress immutable application assets and the separately copied PDF worker. */
+/**
+ * Compress immutable application assets and the two bundles copied in beside
+ * them: the PDF worker and plotly.js.
+ *
+ * Пять мегабайт plotly сжимаются до 1.1 МБ brotli, и разница видна не в
+ * графике на экране, а в аудитории на общем вайфае: без этого шага первый
+ * график занятия качается вчетверо дольше. Сжимается он здесь, а не сборщиком,
+ * по той же причине, что и воркер pdf.js, — оба приезжают в `public/` мимо
+ * Rollup, файлами, которые положил туда скрипт.
+ */
 export async function precompress(directory) {
   const root = path.resolve(directory)
   const files = []
@@ -15,9 +24,11 @@ export async function precompress(directory) {
     }
   }
   await walk(path.join(root, 'assets'))
-  const worker = path.join(root, 'pdf/pdf.worker.min.mjs')
-  try { if ((await stat(worker)).isFile()) files.push(worker) } catch (error) {
-    if (error.code !== 'ENOENT') throw error
+  for (const copied of ['pdf/pdf.worker.min.mjs', 'plotly/plotly.min.js']) {
+    const file = path.join(root, copied)
+    try { if ((await stat(file)).isFile()) files.push(file) } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
   }
   const totals = { files: 0, original: 0, brotli: 0, gzip: 0 }
   for (const file of files.sort()) {

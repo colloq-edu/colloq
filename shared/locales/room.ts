@@ -61,6 +61,25 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.workSavedDraft": {"ru": "Черновик сохранён в {time}", "en": "Draft saved at {time}"},
   "room.pult.v2.workPresenceUnknown": {"ru": "Статус сети неизвестен", "en": "Connection status unknown"},
   "room.pult.v2.workReview": {"ru": "Оценка преподавателя", "en": "Teacher’s review"},
+  /*
+   * Вывод ячейки: то, что говорит сама тетрадь, а не Python.
+   *
+   * Строка про интерактивный вывод — ответ на самую частую жалобу «ячейка
+   * ничего не выводит»: вывод был, он состоял из скрипта, а скрипты из чужого
+   * вывода Colloq не исполняет (SECURITY.md). Перечисление в конце — не
+   * список ограничений, а подсказка, куда идти: у plotly всё работает.
+   */
+  "room.output.interactive": {
+    "ru": "Этот вывод интерактивный и требует исполнения скрипта — Colloq такое не исполняет. Поддерживаются картинки, таблицы, Markdown и графики plotly.",
+    "en": "This output is interactive and needs a script to run — Colloq does not run scripts. Images, tables, Markdown and plotly figures are supported."
+  },
+  "room.output.plotlyTitle": {"ru": "Интерактивный график plotly", "en": "Interactive plotly figure"},
+  "room.output.plotlyBroken": {"ru": "График не читается", "en": "The figure could not be read"},
+  "room.output.plotlyBundle": {
+    "ru": "Библиотека графиков не загрузилась — обновите страницу",
+    "en": "The plotting library did not load — reload the page"
+  },
+  "room.output.plotlyFailed": {"ru": "График не нарисовался: {p0}", "en": "The figure could not be drawn: {p0}"},
   "room.pult.v2.workCode": {"ru": "Код решения", "en": "Solution code"},
   "room.pult.v2.workSame": {"ru": "Так же ответили ещё {count}", "en": "{count} others answered the same"},
   "room.pult.v2.workExecution": {"ru": "Запуск", "en": "Execution"},

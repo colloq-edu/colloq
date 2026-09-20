@@ -44,6 +44,12 @@ pencil-check-*.png
 # Байт-код Python рядом со скриптами ретранслятора (scripts/relay-capy.py).
 __pycache__/
 
+# Бандл plotly.js, разложенный в public/ шагом сборки `npm run plotly:dist`.
+# Пять мегабайт, воспроизводимых из package-lock одной командой, — в истории
+# им места нет. Воркер pdf.js рядом в истории лежит, и это его беда, а не
+# образец: он вчетверо меньше и попал туда до того, как про это подумали.
+/web/public/plotly/
+
 # Isolated development worktrees.
 .worktrees/
 
