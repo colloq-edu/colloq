@@ -59,7 +59,7 @@ import {
 } from '../server/src/db.js'
 import { dispatch } from '../server/src/control.js'
 import { getSessionDoc } from '../server/src/collab/index.js'
-import { createBook, dropBook, moveBook, openBook, ownsBookAt } from '../server/src/collab/books.js'
+import { createBook, dropBook, moveBook, openBook, ownBooksOf, ownsBookAt } from '../server/src/collab/books.js'
 import { makeFile, statPath } from '../server/src/workspace.js'
 import { writeIpynb } from '../shared/ipynb.js'
 import { app } from '../server/src/app.js'
@@ -575,6 +575,36 @@ test('тетрадь преподавателя автора не получае
       ?.disabled,
     false,
   )
+})
+
+/*
+ * Чужой файл из общей папки личным не становится.
+ *
+ * 20.09.2026 на живом занятии студент щёлкнул по `seminar.ipynb` — раздатке
+ * преподавателя, лежавшей в папке занятия, — и семинар всей группы стал его
+ * личной тетрадью: править и запускать в нём мог он один. «Свои тетради
+ * студентов» — про черновик, который студент завёл СЕБЕ (createBook); про
+ * внесение готового файла это правило не говорит ничего.
+ */
+test('студент вносит чужой файл в комнату — тетрадь остаётся комнатной', () => {
+  const id = 'book-brought'
+  createSession(id, 'Раздатка', null)
+  getSessionDoc(id)
+  setRules(id, { ...OPEN_ROOM, files: 'room', ownBooks: 'on' })
+  const by = { participantId: AKIM, name: 'Аким', role: 'participant' as const }
+
+  // Файл в папке — как будто его положил преподаватель.
+  assert.equal(makeFile(id, 'Семинар.ipynb', writeIpynb([])), 'ok')
+  const brought = openBook(id, 'Семинар.ipynb', by)
+  assert.ok(brought.ok, 'внести файл в комнату студенту не дали')
+  const root = brought.ok ? brought.book.root : ''
+  assert.equal(storedRules(id).books?.[root], undefined, 'внесённый файл стал личной тетрадью')
+  assert.equal(ownBooksOf(id, getSessionDoc(id).doc, AKIM), 0, 'чужой файл занял потолок своих тетрадей')
+
+  // А своя, заведённая тут же, по-прежнему личная.
+  const mine = createBook(id, 'Аким.ipynb', by)
+  assert.ok(mine.ok)
+  assert.equal(storedRules(id).books?.[mine.ok ? mine.book.root : ''].access, 'owner')
 })
 
 /* ------------------------------------------- право завести свою тетрадь */

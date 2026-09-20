@@ -301,7 +301,8 @@ export function ownBooksOf(sessionId: string, doc: Y.Doc, participantId: string)
 }
 
 /**
- * Записать автора только что заведённой тетради.
+ * Записать автора только что ЗАВЕДЁННОЙ тетради (createBook), а не любой
+ * внесённой в комнату.
  *
  * Пишет СЕРВЕР и только для не-преподавателя: тетрадь, заведённую
  * преподавателем, автором не подписывают — он и так может в ней всё, а строка
@@ -374,7 +375,23 @@ export type OpenBookResult =
  * проекцией. Это односторонняя дверь, и в интерфейсе она названа открытием — то
  * есть тем, чем и является для человека.
  */
-export function openBook(sessionId: string, path: string, by?: BookAuthor): OpenBookResult {
+export function openBook(
+  sessionId: string,
+  path: string,
+  by?: BookAuthor,
+  /**
+   * Тетрадь ЗАВЕДЕНА этим человеком прямо сейчас (`createBook`), а не внесена
+   * из файла, который уже лежал в папке.
+   *
+   * Разница решает, чьей станет тетрадь. «Свои тетради студентов» — про
+   * черновик, который студент завёл себе сам; про раздатку преподавателя,
+   * лежащую в общей папке, это правило не говорит ничего. 20.09.2026 на живом
+   * занятии студент щёлкнул по `seminar.ipynb` из папки — и семинар всей
+   * группы стал его личной тетрадью: править и запускать в нём мог он один.
+   * Внесение чужого файла теперь оставляет тетрадь комнатной.
+   */
+  fresh = false,
+): OpenBookResult {
   const { doc } = getSessionDoc(sessionId)
   const known = bookAt(doc, path)
   // Уже внесённая — просто открывается: право спрашивают у того, кто ДОБАВЛЯЕТ
@@ -449,7 +466,7 @@ export function openBook(sessionId: string, path: string, by?: BookAuthor): Open
    * в продукте нет. Уже внесённая тетрадь сюда не доходит (возврат выше), так
    * что второй человек, открывший тот же файл, автора не переписывает.
    */
-  if (by) rememberAuthor(sessionId, doc, root, by)
+  if (by && fresh) rememberAuthor(sessionId, doc, root, by)
   schedule(sessionId)
   return { ok: true, book: made, imported: true }
 }
@@ -496,7 +513,8 @@ export function createBook(sessionId: string, path: string, by?: BookAuthor): Op
   if (statPath(sessionId, path)) return { ok: false, why: tr("server.alreadyExists.e348cc", { p0: baseOf(path) }) }
   const made = makeFile(sessionId, path, writeIpynb([]))
   if (made !== 'ok') return { ok: false, why: tr("server.couldNotCreate.0cfbaa", { p0: baseOf(path) }) }
-  return openBook(sessionId, path, by)
+  // Заведённая здесь и сейчас — своя: отсюда и приходит личная тетрадь студента.
+  return openBook(sessionId, path, by, true)
 }
 
 /**
