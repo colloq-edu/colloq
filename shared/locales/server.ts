@@ -2589,6 +2589,34 @@ export const serverMessages: MessageCatalog = {
     "ru": "В попытке нельзя завершать процесс ядра: оно общее для всей комнаты. Уберите os._exit() или os.abort().",
     "en": "An attempt may not end the kernel process: the whole room shares it. Remove os._exit() or os.abort()."
   },
+  "server.guard.lead": {
+    "ru": "{p0} — опасная команда, и она не выполнена.",
+    "en": "{p0} is a dangerous command and did not run."
+  },
+  "server.guard.whyKernel": {
+    "ru": "В общей тетради она гасит ядро: переменные пропадают у всего класса.",
+    "en": "In a shared notebook it shuts the kernel down: everyone’s variables are gone."
+  },
+  "server.guard.whyWipe": {
+    "ru": "В общей тетради она стирает переменные у всего класса.",
+    "en": "In a shared notebook it wipes everyone’s variables."
+  },
+  "server.guard.whyFiles": {
+    "ru": "В общей тетради она сносит папку занятия — раздатку и всё, что уже сдали.",
+    "en": "In a shared notebook it deletes the class folder — the handouts and everything already submitted."
+  },
+  "server.guard.allow": {
+    "ru": "Разрешить такие команды может преподаватель — правило «Опасные команды» в настройках занятия.",
+    "en": "The teacher can allow such commands — the “Dangerous commands” rule in the class settings."
+  },
+  "server.guard.inCouncil": {
+    "ru": "В попытке консилиума такие команды не выполняются никогда: ядро одно на всю комнату.",
+    "en": "Inside a council attempt such commands never run: the whole room shares one kernel."
+  },
+  "server.guard.notConfirmed": {
+    "ru": "Ядро не подтвердило защиту от опасных команд — ячейка не выполнена. Перезапустите ядро тетради.",
+    "en": "The kernel did not confirm the dangerous-command guard — the cell did not run. Restart the notebook’s kernel."
+  },
   "server.council.outOfMemory": {
     "ru": "[Colloq] Попытке не хватило памяти: ей было отведено {p0}. Ядро и данные остальных целы — уменьшите объём или считайте по частям.",
     "en": "[Colloq] The attempt ran out of memory: it was given {p0}. The kernel and everyone else's data are intact — use less or work in chunks."

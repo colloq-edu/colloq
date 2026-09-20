@@ -52,7 +52,7 @@ import {
   publicationOf,
   stepCount,
 } from '../publish/store.js'
-import { environmentOf, shutdownSession, syncBookKernels } from '../kernel/index.js'
+import { environmentOf, shutdownSession, syncBookKernels, syncDangerGuard } from '../kernel/index.js'
 import { applyOwnLimits } from '../kernel/pool.js'
 import { applyCpuLimit, applyMemoryLimit } from '../kernel/pool.js'
 import {
@@ -553,6 +553,9 @@ export function adminInstanceRoutes(): Router {
       // Доступ тетради решает, в каком контейнере её ядро; сменился — ядро
       // гасится. Тот же довод, что в routes/sessions.ts.
       syncBookKernels(row.id)
+      // И защита от опасных команд — в живые ядра занятия, тем же путём и по
+      // тому же доводу, что из комнаты (routes/sessions.ts).
+      syncDangerGuard(row.id)
       // The room finds out now, not on its next reload: the panel greys its
       // controls from this, and a rule nobody was told about is a rule that
       // looks like a bug when a button stops working.

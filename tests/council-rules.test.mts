@@ -27,6 +27,7 @@
  * пяти секунд ожидания.
  */
 import './_env.mts'
+import { guardAnswer } from './_guard.mts'
 import { createServer, type Server } from 'node:http'
 import { after, afterEach, before, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -226,7 +227,14 @@ before(async () => {
         const wantsReport = expressions !== undefined && Object.keys(expressions).length > 0
         const leaving = code.includes('.leave(globals())')
         if (leaving) isolationExits += 1
-        const answer = leaving ? councilLeftovers : councilReport
+        /*
+         * Установка защиты от опасных команд приходит той же дорогой и тем же
+         * ключом, и без подтверждения сервер не запускает ни одной ячейки
+         * (kernel/index.ts · ensureGuard). Ответ общий на все подделки ядра —
+         * tests/_guard.mts.
+         */
+        const guard = guardAnswer(code)
+        const answer = guard ?? (leaving ? councilLeftovers : councilReport)
         reply(ws, msg.header, 'execute_reply', {
           status: !service && (code.includes('REFUSE') || code.includes('STARVE')) ? 'error' : 'ok',
           execution_count: 1,

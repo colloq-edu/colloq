@@ -56,6 +56,7 @@ export interface ChoiceRow {
       | 'history'
       | 'opens'
       | 'ownBooks'
+      | 'danger'
     )
   title: string
   note: string
@@ -149,6 +150,29 @@ export const RULE_ROWS: RuleRow[] = [
     get unit() { return tr('room.rules.cellLimit.unit') },
     min: 1,
     max: MAX_CELL_LIMIT_SEC,
+  },
+  {
+    /*
+     * Третьей строкой про ядро, сразу за «кто запускает» и «сколько ему дано
+     * считать»: все три про одно — ядро у тетради одно на всех. Первая про то,
+     * кому можно нажать, вторая про то, когда запуск обрывается, эта — про
+     * строки, после которых обрывается не запуск, а занятие.
+     */
+    kind: 'choice',
+    key: 'danger',
+    get title() { return tr('room.rules.danger.title') },
+    /*
+     * Подпись обязана сказать четыре вещи, и каждая из них — ответ на вопрос,
+     * с которым сюда приходят: ЧТО именно не исполнится, ПОЧЕМУ (одна строка
+     * гасит ядро или стирает переменные всему классу), КОМУ это выключают
+     * (курс по самому Python) и ЧЕГО здесь не обещают — это лежачий
+     * полицейский, а не песочница, и терминал он не закрывает.
+     */
+    get note() { return tr('room.rules.danger.note') },
+    options: [
+      { value: 'block', get label() { return tr('room.rules.danger.block') } },
+      { value: 'allow', get label() { return tr('room.rules.danger.allow') } },
+    ],
   },
   {
     kind: 'choice',

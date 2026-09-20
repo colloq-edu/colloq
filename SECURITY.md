@@ -100,6 +100,16 @@ at <https://colloq.ru/docs/en/security.html> (Russian original:
   allowed to run code can reach the class's files from Python, whatever the
   Files panel allows. Individual Council sheets are a teaching tool, not
   sandboxes.
+- **Getting past the "Dangerous commands" rule.** That rule refuses the lines
+  that end a shared kernel or wipe its variables by accident — `exit()`,
+  `os._exit()`, a fatal signal aimed at the kernel itself, `%reset`,
+  `!kill -9 -1`, `shutdown`, `rm -rf` of the class folder — and it is a speed
+  bump, not a sandbox. It works by replacing functions inside the kernel
+  process, so `ctypes`, reloading `os` through `importlib`, a fork bomb, a
+  segfault in a native library and `globals().clear()` all walk past it by
+  design, and the room's terminal is not covered at all. A way around it is not
+  a vulnerability; a way to make a *guarded* call go through without the
+  refusal reaching the person who made it is a bug worth reporting.
 - **What an owner or teacher can do on an instance they control.** This
   includes reading their own classes' data.
 - **Local classes are "my class, my computer."** `colloq start`, `make dev` and

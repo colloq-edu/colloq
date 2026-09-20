@@ -33,7 +33,7 @@ import {
 import { onlineParticipantIds } from '../collab/index.js'
 import { freeMark } from '@shared/marks'
 import { seldom, tally } from '../log.js'
-import { ensureKernel, syncBookKernels } from '../kernel/index.js'
+import { ensureKernel, syncBookKernels, syncDangerGuard } from '../kernel/index.js'
 import { forgetResources, readCpuInput, readMemoryInput } from '../kernel/resources.js'
 import { applyOwnLimits } from '../kernel/pool.js'
 import { activeName, exists as environmentExists } from '../environments.js'
@@ -902,6 +902,16 @@ export function sessionRoutes(): Router {
      * гасится, и комната читает об этом строкой в журнале ядра.
      */
     syncBookKernels(sessionId)
+    /*
+     * И защита от опасных команд — во все живые ядра занятия сейчас же.
+     *
+     * Она живёт подменами ВНУТРИ процесса ядра, а не проверкой на сервере, так
+     * что сама собой новое правило не узнает: переключив строку ради показа
+     * `os._exit` на курсе по Python, преподаватель ждёт, что покажет её
+     * следующая же ячейка, а не следующее занятие. Обратная сторона важнее:
+     * включив защиту посреди пары, он ждёт, что она уже действует.
+     */
+    syncDangerGuard(sessionId)
     /*
      * Комната узнаёт сейчас, а не при следующей перезагрузке: интерфейс гасит
      * по этому кнопки, и правило, о котором не сказали, выглядит как поломка —

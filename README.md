@@ -121,7 +121,7 @@ how the room takes part. In any preset, a cell can be:
 <details>
 <summary><strong>Room rules and teacher access</strong></summary>
 
-Whatever the card sets, the room can change what opening a cell does; who edits a cell's text; who runs code; after how many seconds a cell stops itself; who changes the structure; who can put a document on the room's screen; who may create and edit files; whether a student may start their own notebook; whether the Oracle may act on the room's files; actions per request; questions per hour; seconds between questions; who may read the history; who may restart the kernel; and who may wipe shared work. The source of these settings is [rule-rows.ts](web/src/lib/rule-rows.ts).
+Whatever the card sets, the room can change what opening a cell does; who edits a cell's text; who runs code; after how many seconds a cell stops itself; whether dangerous commands run at all; who changes the structure; who can put a document on the room's screen; who may create and edit files; whether a student may start their own notebook; whether the Oracle may act on the room's files; actions per request; questions per hour; seconds between questions; who may read the history; who may restart the kernel; and who may wipe shared work. The source of these settings is [rule-rows.ts](web/src/lib/rule-rows.ts).
 
 A room holds several notebooks, and each one also has an access of its own —
 **as in the room**, **personal** (its author and the teacher work in it),

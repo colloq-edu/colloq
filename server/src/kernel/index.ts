@@ -129,6 +129,13 @@ import {
   type CouncilIsolationReport,
   type CouncilLeftovers,
 } from './council-isolation.js'
+import {
+  guardPolicySource,
+  parseGuardReport,
+  COLLOQ_REFUSED,
+  GUARD_REPORT_EXPR,
+  GUARD_REPORT_KEY,
+} from './danger.js'
 import { durationWords } from '@shared/text'
 import type { BriefValue, CouncilRun, InspectMiss } from '@shared/protocol'
 import { closeTerminal, terminalPhase } from './terminal.js'
@@ -396,6 +403,19 @@ interface Runtime {
    * то, что делает человек.
    */
   retired: boolean
+  /**
+   * Что этому ядру УЖЕ сказано про опасные команды — той самой строкой.
+   *
+   * Отпечатком служит сам исходник (danger.ts · guardPolicySource): в нём и
+   * правило комнаты, и язык отказа, так что сравнение с прошлым сказанным
+   * ловит и переключение правила посреди пары, и смену языка инстанса, и при
+   * этом не стоит ни одного лишнего похода в ядро на каждую ячейку.
+   *
+   * `null` — ядру ещё ничего не сказано или сказанное больше не в силе: свежий
+   * процесс, перезапуск, самовольный перезапуск Jupyter после OOM. Пока здесь
+   * `null`, очередь не выпускается (`ensureGuard`).
+   */
+  guard: string | null
 }
 
 /**
@@ -451,6 +471,26 @@ function cellLimitOf(sessionId: string): number | null {
   }
 }
 
+/**
+ * Не исполнять ли в этой комнате опасные команды (rules.ts · `danger`).
+ *
+ * По ХРАНИМЫМ правилам, и разницы с действующими тут нет по построению:
+ * `rulesAfterClass` это поле переносит как есть — конец занятия про права, а
+ * защита остаётся той же, какой была. Спрашивается у правил КОМНАТЫ, а не
+ * тетради: `rulesForBook` её не трогает, и личная тетрадь студента живёт под
+ * той же защитой — процесс у неё свой, а беда одна и та же.
+ *
+ * Строки занятия в базе нет (тест, удалённая комната) — защищаем: умолчание
+ * здесь строгое, и ошибиться можно только в эту сторону.
+ */
+function dangerBlocked(sessionId: string): boolean {
+  try {
+    return storedRules(sessionId).danger !== 'allow'
+  } catch {
+    return true
+  }
+}
+
 function getRuntime(sessionId: string, root: string): Runtime {
   let scopes = runtimes.get(sessionId)
   if (!scopes) {
@@ -481,6 +521,7 @@ function getRuntime(sessionId: string, root: string): Runtime {
       limit: null,
       environment: null,
       retired: false,
+      guard: null,
     }
     scopes.set(root, runtime)
   }
@@ -1230,6 +1271,16 @@ function tellWhyItDied(runtime: Runtime, cellId: string | null): void {
 
 function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
   /*
+   * Процесс меняется — всё, что мы ему сказали, больше не в силе.
+   *
+   * Перезапуск (хоть кнопкой, хоть своевольный, после OOM или после `os._exit`
+   * в ту единственную ночь, когда защиту ещё не ставили) заводит НОВЫЙ Python,
+   * в котором нет ни нашего модуля, ни подмен. Забыв обнулить отпечаток, мы бы
+   * считали защиту стоящей на ядре, где её нет, — и следующие тридцать ячеек
+   * пошли бы в него как есть.
+   */
+  if (phase === 'restarting' || phase === 'dead') runtime.guard = null
+  /*
    * Jupyter restarting the kernel by itself — the container's OOM killer,
    * almost always. The process is gone and coming back under the same id, so
    * this is neither `dead` (nothing to start) nor an ordinary phase (there is
@@ -1461,6 +1512,18 @@ export function ensureKernel(sessionId: string, root: string = CELLS_KEY): Promi
           tr("server.reconnectedToTheExistingKernelTheRunning.a20941"),
         )
       }
+      /*
+       * Защита от опасных команд — ДО того, как ядро объявлено готовым.
+       *
+       * Процесс новый, и в нём `os._exit` пока настоящий: между «сокет
+       * поднялся» и этой строкой ни одна пользовательская ячейка не должна
+       * успеть уйти в ядро. Неудача здесь ядро не хоронит — его просто не
+       * выпускают в работу: `ensureGuard` спросят ещё раз перед каждой
+       * ячейкой (`pump`), и та, что не дождалась, скажет об этом словами
+       * вместо того, чтобы молча считаться на незащищённом ядре.
+       */
+      runtime.guard = null
+      await ensureGuard(runtime).catch(() => false)
       setStatus(runtime, runtime.currentCell ? 'busy' : (kernel.phase as KernelStatus))
       // Подъём ядра — настоящее событие: до полутора минут холодного старта, и
       // именно между этой строкой и следующей комната смотрит в пустоту.
@@ -1589,6 +1652,14 @@ export async function restartSession(
     try {
       if (runtime.kernel && runtime.kernel.phase !== 'dead') await runtime.kernel.restart()
       else await ensureKernel(sessionId, root)
+      /*
+       * Перезапуск — это новый процесс, то есть ядро без защиты. Ставим её
+       * здесь же, не дожидаясь первой ячейки: между «ядро вернулось» и первым
+       * Run в комнате обычно есть люди, а у них — терминал и оракул.
+       * Неудача не роняет перезапуск: перед ячейкой спросят ещё раз.
+       */
+      runtime.guard = null
+      await ensureGuard(runtime).catch(() => false)
       resetAllCells(runtime, runtime.currentCell)
       setStatus(runtime, 'idle')
       kernelNote(
@@ -2609,6 +2680,40 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   }
 
   /*
+   * Защита от опасных команд — прежде первой строки, ушедшей в ядро.
+   *
+   * Обычно это ноль работы: отпечаток совпадает с тем, что ядру уже сказано, и
+   * функция возвращается не выходя из процесса. Поход в ядро случается ровно
+   * дважды — на первой ячейке после подъёма и на смене правила посреди пары.
+   *
+   * Не подтвердилась — ячейку НЕ исполняем и говорим почему. Пропустить её
+   * значило бы вернуться ровно в то, с чего всё началось: `os._exit(0)` в
+   * чьей-то ячейке и тридцать человек без переменных, без строчки в журнале и
+   * без причины.
+   */
+  if (!(await ensureGuard(runtime))) {
+    /*
+     * Ядро, умершее в щель между `ensureKernel` и этой строкой, объясняется
+     * своими словами: «защита не подтвердилась» отправило бы преподавателя
+     * искать поломку в правиле, которого он не трогал. Имя исключения у
+     * второго случая пустое по тому же доводу, что у остановки пределом:
+     * ячейка рисует «имя: текст», и английское слово перед русской фразой
+     * ничего не добавляет.
+     */
+    if (runtime.kernel?.phase === 'dead') writer.error('KernelDied', deadMessage(), [])
+    else writer.error('', tr('server.guard.notConfirmed'), [])
+    runtime.currentCell = null
+    runtime.currentBatch = null
+    runtime.currentRunById = null
+    runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
+    runtime.lastWorkAt = Date.now()
+    dropWriter(runtime)
+    setCellState(runtime.sessionId, item.cellId, 'error')
+    finishExecution(runtime, item, 'error', Math.max(0, Date.now() - startedAt))
+    return
+  }
+
+  /*
    * Всё набранное — на диск, прежде чем ячейка пойдёт это читать.
    *
    * `%run solve.py`, `open('data.csv')`, `import helpers` читают файл, а не
@@ -2667,6 +2772,18 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
        * стоит.
        */
       onError: (ename, evalue, traceback) => {
+        /*
+         * Свой отказ — одной строкой, без трейсбека, ровно как остановка по
+         * пределу. Кадры `<colloq-guard>` в нём не код студента: там наш
+         * модуль объясняет, почему `os._exit()` в общей тетради гасит ядро
+         * всему классу, — и всё это уже сказано человеческими словами в самом
+         * тексте отказа. Код ДО опасной строки при этом отработал как обычно:
+         * отказ — это исключение, а не отмена ячейки.
+         */
+        if (ename === COLLOQ_REFUSED) {
+          writer.error('', evalue, [])
+          return
+        }
         const fired = firedNow()
         if (fired !== null && (ename === 'KeyboardInterrupt' || ename === 'Interrupted')) {
           // Имя исключения пустое нарочно: ячейка рисует «имя: текст», и
@@ -2861,6 +2978,72 @@ const SILENT_HANDLERS: Parameters<JupyterKernel['execute']>[1] = {
   onData: () => {},
   onError: () => {},
   onClear: () => {},
+}
+
+/**
+ * Поставить в ядре защиту от опасных команд — и ДОЖДАТЬСЯ подтверждения.
+ *
+ * Подтверждение обязательно, и это главное свойство: `false` отсюда означает
+ * «неизвестно, подменены ли `os._exit` и остальные», а на таком ядре ячейка не
+ * запускается. 20.09 цена молчаливого «наверное, встало» уже измерена — девять
+ * потерянных ядер за одиннадцать минут на занятии в тридцать человек.
+ *
+ * Отчёт едет `user_expressions`: при `silent: true` ядро не шлёт в IOPUB
+ * ничего, и услышать установку иначе было бы нечем — тем же приёмом слышат
+ * вход изоляции консилиума.
+ *
+ * Стоит это одного похода в ядро на ПЕРВУЮ ячейку после подъёма и ещё одного
+ * на каждую смену правила или языка: дальше отпечаток совпадает, и функция
+ * возвращается не выходя из процесса.
+ */
+async function ensureGuard(runtime: Runtime): Promise<boolean> {
+  const wanted = guardPolicySource(dangerBlocked(runtime.sessionId))
+  if (runtime.guard === wanted) return true
+  const kernel = runtime.kernel
+  if (!kernel || kernel.phase === 'dead') return false
+  runtime.guard = null
+  let raw: unknown = null
+  try {
+    await kernel.execute(
+      wanted,
+      {
+        ...SILENT_HANDLERS,
+        onUserExpressions: (values) => {
+          raw = values[GUARD_REPORT_KEY]
+        },
+      },
+      {
+        silent: true,
+        storeHistory: false,
+        userExpressions: { [GUARD_REPORT_KEY]: GUARD_REPORT_EXPR },
+      },
+    )
+  } catch {
+    return false
+  }
+  const report = parseGuardReport(raw)
+  // `policy` сверяется, а не `on`: попытка консилиума может держать защиту
+  // поверх правила прямо сейчас, и `on: true` при выключенном правиле — это
+  // нормально, а вот разошедшееся `policy` значило бы, что ядро нас не поняло.
+  if (!report?.ok || report.policy !== dangerBlocked(runtime.sessionId)) return false
+  runtime.guard = wanted
+  return true
+}
+
+/**
+ * Правило поменяли посреди пары — донести это до всех живых ядер занятия.
+ *
+ * «Правила действуют сразу» — обещание всей комнаты (shared/rules.ts), и
+ * защита не может быть из него исключением: преподаватель курса по Python
+ * переключил строку ради показа и ждёт, что следующая же ячейка покажет
+ * `os._exit`, а не отказ. Тихо и без очереди: ячейке на это ждать нечего, а
+ * та, что не успела, спросит сама через `ensureGuard`.
+ */
+export function syncDangerGuard(sessionId: string): void {
+  for (const runtime of scopesOf(sessionId)) {
+    if (!runtime.kernel || runtime.kernel.phase === 'dead' || runtime.retired) continue
+    void ensureGuard(runtime).catch(() => {})
+  }
 }
 
 /** Молча посчитать служебную строку в ядре тетради; неудача — не беда попытки. */

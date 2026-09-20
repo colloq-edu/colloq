@@ -39,13 +39,21 @@ import {
   SIZE_UNKNOWN,
   type CouncilIsolationReport,
 } from '../server/src/kernel/council-isolation.js'
+import { guardPolicySource, GUARD_MODULE } from '../server/src/kernel/danger.js'
 
 /* ------------------------------------------------------------- исходники */
 
-test('вход — два выражения, которые не связывают в ядре ни одного имени', () => {
+test('вход — три выражения, которые не связывают в ядре ни одного имени', () => {
   const source = councilEnterSource(1024 * 1024)
   const lines = source.split('\n')
-  assert.equal(lines.length, 2, 'вход перестал быть двумя выражениями')
+  /*
+   * Третьим выражение стало 20.09, когда защита от опасных команд переехала из
+   * консилиума в общий модуль: первая строка ставит ЕЁ, вторая — изоляцию,
+   * третья входит. Порядок не вкусовой — вход тут же берёт защиту в удержание
+   * и без неё отказывается (IMPL · `_hold`).
+   */
+  assert.equal(lines.length, 3, 'вход перестал быть тремя выражениями')
+  assert.ok(lines[0].includes(JSON.stringify(GUARD_MODULE)), 'первой строкой ставится не защита')
   /*
    * Ни одного присваивания на верхнем уровне — в этом весь смысл `exec` в
    * `__dict__` скрытого модуля. Появись здесь `import sys` или `m = ...`, вход
@@ -62,15 +70,17 @@ test('вход — два выражения, которые не связыва
    * ни за что. Версия — хеш самого исходника, поэтому новая сборка сервера
    * переустановит модуль в уже живом ядре сама, без перезапуска комнаты.
    */
-  assert.match(lines[0], /^if getattr\(__import__\('sys'\)\.modules\.get\(/)
-  assert.match(lines[0], /'version', None\) != "[0-9a-f]{12}": exec\(compile\(/)
-  assert.ok(lines[0].includes(JSON.stringify(COUNCIL_MODULE)))
+  for (const line of [lines[0], lines[1]]) {
+    assert.match(line, /^if getattr\(__import__\('sys'\)\.modules\.get\(/)
+    assert.match(line, /'version', None\) != "[0-9a-f]{12}": exec\(compile\(/)
+  }
+  assert.ok(lines[1].includes(JSON.stringify(COUNCIL_MODULE)))
   // Версия внутри исходника и версия в сверке — одна и та же строка, иначе
   // модуль переустанавливался бы на каждой попытке и молча.
-  const stamp = /!= "([0-9a-f]{12})"/.exec(lines[0])![1]
-  assert.ok(lines[0].includes(`version = '${stamp}'`), 'версия в исходнике другая')
+  const stamp = /!= "([0-9a-f]{12})"/.exec(lines[1])![1]
+  assert.ok(lines[1].includes(`version = '${stamp}'`), 'версия в исходнике другая')
   // Бюджет уезжает числом в самый запрос: ядро о конфигурации сервера не знает.
-  assert.match(lines[1], /\.enter\(globals\(\), 1048576, \{/)
+  assert.match(lines[2], /\.enter\(globals\(\), 1048576, \{/)
   // Негодное число не превращается в NaN внутри Python: своё умолчание ближе.
   assert.match(councilEnterSource(Number.NaN), /\.enter\(globals\(\), 536870912, \{/)
   assert.match(councilEnterSource(-1), /\.enter\(globals\(\), 536870912, \{/)
@@ -80,13 +90,20 @@ test('вход — два выражения, которые не связыва
    * от языка комнаты, а его меняют в панели посреди пары. Булево при этом —
    * словом Python: `false` в ядре не значение, а NameError (наступали).
    */
-  assert.match(lines[1], /'memory': False\}?/)
+  assert.match(lines[2], /'memory': False\}?/)
   assert.match(councilEnterSource(1024, { memoryGuard: true }), /'memory': True/)
-  assert.doesNotMatch(lines[1], /\b(false|true|null)\b/)
+  assert.doesNotMatch(lines[2], /\b(false|true|null)\b/)
+  /*
+   * Хвост отказа у попытки СВОЙ: в комнате он советует правило «Опасные
+   * команды», а здесь разрешить это не может никто — ядро одно на всех, и
+   * обещать обратное было бы неправдой.
+   */
   setLocaleResolver(() => 'en')
-  assert.match(councilEnterSource(1024), /may not shut the kernel down/)
+  assert.match(councilEnterSource(1024), /never run: the whole room shares one kernel/)
+  assert.doesNotMatch(councilEnterSource(1024), /The teacher can allow/)
   setLocaleResolver(() => 'ru')
-  assert.match(councilEnterSource(1024), /нельзя завершать ядро/)
+  assert.match(councilEnterSource(1024), /не выполняются никогда: ядро одно на всю комнату/)
+  assert.doesNotMatch(councilEnterSource(1024), /Разрешить такие команды/)
 })
 
 test('выход переживает отсутствие модуля — возвращать тогда нечего', () => {
@@ -213,6 +230,15 @@ interface Drive {
   budget?: number
   /** Второй вход подряд, без выхода между ними: прошлый выход не дошёл. */
   twice?: boolean
+  /**
+   * Правило комнаты «Опасные команды», объявленное ядру ДО входа.
+   *
+   * С 20.09 защита от `exit()` и `os._exit()` у консилиума не своя: он держит
+   * включённой общую (danger.ts), и после выхода она остаётся ровно такой,
+   * какой её велело правило. Не сказано ничего — умолчание самой защиты,
+   * то есть «не исполняются».
+   */
+  policy?: boolean
 }
 
 /**
@@ -240,6 +266,9 @@ function drive(what: Drive): Drove {
     `EXIT = ${JSON.stringify(COUNCIL_EXIT_SOURCE)}`,
     "ns = {'__builtins__': __builtins__, '__name__': '__main__'}",
     `exec(compile(${JSON.stringify(what.setup)}, '<setup>', 'exec'), ns)`,
+    ...(what.policy === undefined
+      ? []
+      : [`exec(compile(${JSON.stringify(guardPolicySource(what.policy))}, '<rule>', 'exec'), ns)`]),
     enterOnce,
     `report = json.loads(repr(sys.modules[${module}].report))`,
     'failure = None',
@@ -502,27 +531,60 @@ test('os.abort() в попытке отказывает так же', { skip: no
 })
 
 /**
- * После выхода `os._exit` обязан быть НАСТОЯЩИМ, а `os.kill` — нетронутым.
+ * Вложенность: попытка держит защиту ПОВЕРХ правила, и выход возвращает ровно
+ * то, что правило и говорит.
  *
- * Первое: оставить в общем модуле `os` наш отказ значило бы сломать
- * `multiprocessing` всей комнате — и не на попытке, а навсегда.
+ * До 20.09 у консилиума была своя копия отказа, и после выхода `os._exit`
+ * обязан был стать настоящим — иначе `multiprocessing` ломался бы всей
+ * комнате навсегда. Теперь копия одна (danger.ts), и обещание стало точнее:
+ * при правиле «исполняются» после попытки возвращаются НАСТОЯЩИЕ функции, при
+ * «не исполняются» защита остаётся стоять — она и должна стоять, это правило
+ * комнаты, а не свойство попытки.
  *
- * Второе: `os.kill` не закрыт намеренно, а не по недосмотру. Им управляют
- * дочерними процессами (`subprocess`, пулы), и отказ там сломал бы работающие
- * тетради ради дыры, которую всё равно обходят через `ctypes`. Строка стоит
- * здесь, чтобы следующий, кто решит «закроем заодно и kill», знал, что об
- * этом уже думали.
+ * Проверяется поимённо, потому что ошибиться здесь можно молча в обе стороны:
+ * забытый отказ в общем `os` — это сломанный joblib до конца пары, а снятая
+ * защита — ровно та дыра, ради которой всё писалось.
  */
-test('после выхода os._exit настоящий, а os.kill не трогали вовсе', { skip: noPython }, () => {
-  const out = drive({
-    setup: 'import os\nreal = (os._exit, os.abort, os.kill)',
-    attempt: 'import os\nseen_kill = os.kill is real[2]',
-    probe: "{'restored': os._exit is real[0] and os.abort is real[1], 'kill': os.kill is real[2]}",
+test('после выхода функции возвращаются по правилу комнаты, а не по попытке',
+  { skip: noPython }, () => {
+    const allowed = drive({
+      // Записка про то, что видела попытка, кладётся в sys.modules: имена,
+      // заведённые попыткой, выход снимает, а туда он не смотрит.
+      setup: 'import os, signal, sys, types\n'
+        + "sys.modules['_probe'] = types.ModuleType('_probe')\n"
+        + 'real = (os._exit, os.abort, os.kill, signal.raise_signal)',
+      attempt: "import os, sys\nsys.modules['_probe'].held = os._exit is not real[0]",
+      probe: "{'restored': os._exit is real[0] and os.abort is real[1]"
+        + " and os.kill is real[2] and signal.raise_signal is real[3], 'held': sys.modules['_probe'].held}",
+      policy: false,
+    })
+    assert.equal(allowed.failure, null, allowed.failure ?? '')
+    assert.equal(allowed.after.held, true, 'внутри попытки защиты не было — класс уронить можно')
+    assert.equal(
+      allowed.after.restored,
+      true,
+      'при правиле «исполняются» подмена пережила попытку — это сломает multiprocessing навсегда',
+    )
+
+    const blocked = drive({
+      // Записка про то, что видела попытка, кладётся в sys.modules: имена,
+      // заведённые попыткой, выход снимает, а туда он не смотрит.
+      setup: 'import os, signal, sys, types\n'
+        + "sys.modules['_probe'] = types.ModuleType('_probe')\n"
+        + 'real = (os._exit, os.abort, os.kill, signal.raise_signal)',
+      attempt: "import os, sys\nsys.modules['_probe'].held = os._exit is not real[0]",
+      probe: "{'guarded': os._exit is not real[0] and os.abort is not real[1]"
+        + " and os.kill is not real[2] and signal.raise_signal is not real[3], 'held': sys.modules['_probe'].held}",
+      policy: true,
+    })
+    assert.equal(blocked.failure, null, blocked.failure ?? '')
+    assert.equal(blocked.after.held, true, 'внутри попытки защиты не было')
+    assert.equal(
+      blocked.after.guarded,
+      true,
+      'выход из попытки снял защиту комнаты — а правило её как раз и требует',
+    )
   })
-  assert.equal(out.failure, null, out.failure ?? '')
-  assert.equal(out.after.restored, true, 'os._exit остался подменённым — это сломает multiprocessing')
-  assert.equal(out.after.kill, true, 'os.kill подменили — это сломает управление дочерними процессами')
-})
 
 test('состояние процесса возвращается: ГСЧ, потоки вывода, путь, окружение', { skip: noPython }, () => {
   const out = drive({

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { tr, formatNumber } from '@shared/i18n'
+import { COLLOQ_REFUSED, GUARD_MODULE, guardCouncilSettings, guardInstallLine } from './danger.js'
 
 /**
  * Личные копии данных на одну попытку консилиума — и точный возврат после неё.
@@ -43,7 +44,9 @@ import { tr, formatNumber } from '@shared/i18n'
  *     занятие на тридцать человек потеряло ядро девять раз за одиннадцать
  *     минут на попытке в две строки; воспроизведено в одноразовом контейнере.
  *     Теперь отвечают отказом — кроме ребёнка после `fork()`, где `_exit` и
- *     есть правильный конец (`_guard_kill`);
+ *     есть правильный конец. С 20.09 это не своя копия, а ОБЩАЯ защита
+ *     комнаты (`danger.ts`), которую попытка держит включённой на своё
+ *     время, что бы ни стояло в правиле «Опасные команды»;
  *   · жадность: `np.ones((40000, 40000))` или неудачное декартово соединение
  *     звали OOM-killer, и он убивал ядро тетради. Проверено контрольным
  *     опытом. Теперь попытке ставится потолок адресного пространства от
@@ -91,8 +94,15 @@ export const COUNCIL_REPORT_EXPR = `__import__('sys').modules['${COUNCIL_MODULE}
  */
 export const COUNCIL_LEFTOVERS_EXPR = `__import__('sys').modules['${COUNCIL_MODULE}'].leftovers`
 
-/** Имя исключения, которым изоляция отказывает попытке её же словами. */
-export const COUNCIL_REFUSED = 'ColloqRefused'
+/**
+ * Имя исключения, которым изоляция отказывает попытке её же словами.
+ *
+ * То же самое, что у глобальной защиты (danger.ts · COLLOQ_REFUSED), и это не
+ * совпадение: отказ «эта команда гасит ядро всем» с 20.09 реализован ОДИН раз,
+ * а попытка консилиума просто держит его включённым поверх правила комнаты.
+ * Имя оставлено здесь псевдонимом, чтобы вызывающие не переписывались.
+ */
+export const COUNCIL_REFUSED = COLLOQ_REFUSED
 
 /** Сколько байт личных копий разрешено одной попытке, если не сказано иначе. */
 export const COUNCIL_DEFAULT_COPY_BYTES = 512 * 1024 * 1024
@@ -192,13 +202,43 @@ _delattr = delattr
 _id = id
 
 
-class ColloqRefused(Exception):
-    """Попытка попросила то, что у комнаты одно на всех.
+def _guard():
+    """Общая защита от опасных команд — та же, что стоит в обычной ячейке.
 
-    Имя видно студенту на карточке, поэтому оно короткое и своё: сервер узнаёт
-    по нему свой же отказ и печатает одну человеческую строку без трейсбека
-    (kernel/index.ts · runCouncilOne), как и с остановкой по пределу.
+    Своей копии отказа у консилиума больше нет: \`exit()\`, \`os._exit()\`,
+    смертельный сигнал в ядро, \`!kill -9 -1\`, \`%reset\` закрывает один
+    модуль (kernel/danger.ts), а попытка лишь ДЕРЖИТ его включённым на своё
+    время — что бы ни стояло в правиле комнаты. Две реализации одного отказа
+    разошлись бы на первой же правке, и разошлись бы молча.
     """
+    return sys.modules.get('${GUARD_MODULE}')
+
+
+def _hold(words):
+    guard = _guard()
+    if guard is None:
+        # Установка защиты идёт ПЕРВОЙ строкой той же ячейки входа, так что
+        # сюда попадают только ядра, где она не встала вовсе, — и тогда вход
+        # честно отчитается неудачей, а попытка не запустится.
+        return False
+    try:
+        guard.hold(words)
+    except Exception:
+        return False
+    return True
+
+
+def _release(current):
+    if not current.get('guard'):
+        return
+    guard = _guard()
+    if guard is None:
+        return
+    try:
+        guard.release()
+    except Exception:
+        pass
+
 
 # Служебные имена IPython: они принадлежат ядру, а не студенту, и копия
 # журнала ввода никому не нужна. \`_1\`, \`_i7\` — эхо ячеек, туда же.
@@ -652,151 +692,6 @@ def _make(kind, obj, memo):
     return copy.deepcopy(obj, memo)
 
 
-def _guard_exit(ns, text):
-    """\`exit()\` в попытке гасит ядро ВСЕЙ комнате — и это не выдумка.
-
-    В ipykernel \`exit\` и \`quit\` — один объект ZMQExitAutocall, его вызов
-    (и даже голое имя \`exit\` на строке: IPython сам дописывает скобки) идёт
-    в \`shell.ask_exit()\`, а тот ставит \`exit_now\`, и процесс заканчивается.
-    Проверено на настоящем ядре: \`data\` после этого нет ни у кого.
-    \`sys.exit()\` ведёт себя иначе и ядро переживает — его не трогаем.
-
-    Подменяется именно \`ask_exit\`, а не имена \`exit\`/\`quit\` в
-    пространстве попытки, и это существенно: голое \`exit\` на строке IPython
-    превращает в вызов только потому, что там лежит ЕГО объект-автовызов
-    (IPyAutocall). Подменив имя обычной функцией, мы бы закрыли \`exit()\` со
-    скобками и открыли \`exit\` без них — проверено на живом ядре, именно так
-    и вышло. Оригинал остаётся на месте, а его \`__call__\` упирается в наш
-    отказ. Имена подменяются только там, где оболочки нет вовсе.
-    """
-    def refuse(*args, **kwargs):
-        raise ColloqRefused(text)
-
-    saved = {'refuse': refuse}
-    shell = _shell()
-    if shell is not None:
-        try:
-            saved['shell'] = shell
-            saved['own'] = 'ask_exit' in vars(shell)
-            saved['ask'] = shell.ask_exit
-            shell.ask_exit = refuse
-        except Exception:
-            saved.pop('shell', None)
-    if 'shell' not in saved:
-        for name in ('exit', 'quit'):
-            try:
-                saved.setdefault('names', {})[name] = (name in ns, ns.get(name))
-                ns[name] = refuse
-            except Exception:
-                pass
-    return saved
-
-
-def _unguard_exit(current, ns):
-    saved = current.get('exit') if current else None
-    if not saved:
-        return
-    shell = saved.get('shell')
-    if shell is not None:
-        try:
-            if saved.get('own'):
-                shell.ask_exit = saved['ask']
-            else:
-                # Метод класса вернётся сам, как только уйдёт наша подмена.
-                del shell.ask_exit
-        except Exception:
-            try:
-                shell.ask_exit = saved['ask']
-            except Exception:
-                pass
-    # Сами имена вернёт общий возврат привязок; здесь только на случай, когда
-    # их в saved не было вовсе (голый python без IPython).
-    for name, was in (saved.get('names') or {}).items():
-        try:
-            if ns.get(name) is not saved['refuse']:
-                continue
-            if was[0]:
-                ns[name] = was[1]
-            else:
-                del ns[name]
-        except Exception:
-            pass
-
-
-def _kill_refusal(mine, real, text):
-    """Отказ вместо конца процесса — но только В ТОМ САМОМ процессе.
-
-    Ребёнку после \`fork()\` настоящий \`_exit\` возвращается, и это не
-    послабление, а обязательство: \`multiprocessing\` и joblib заканчивают
-    дочерний процесс именно им, и отказ в ребёнке пустил бы копию попытки
-    бежать дальше вторым ядром — беда крупнее той, от которой защищаемся.
-    """
-    def refuse(*args, **kwargs):
-        try:
-            child = os.getpid() != mine
-        except Exception:
-            child = False
-        if child:
-            return real(*args, **kwargs)
-        raise ColloqRefused(text)
-    return refuse
-
-
-def _guard_kill(text):
-    """\`os._exit()\` в попытке гасит ядро ВСЕЙ комнате — и молча.
-
-    20.09.2026, занятие на тридцать человек: попытка в две строки —
-    \`import os\` и \`os._exit(0)\` — убила ядро комнаты девять раз за
-    одиннадцать минут. Эту смерть не отличить от исправной работы ничем:
-    процесс исчезает мгновенно, БЕЗ трассировки, без строки в stderr, без
-    сигнала в dmesg и без счётчика \`oom_kill\` в cgroup. Jupyter поднимает
-    ядро заново (\`AsyncIOLoopKernelRestarter\`), а тридцать человек теряют
-    переменные и очередь — и никто, включая преподавателя, не видит причины.
-    Воспроизведено в одноразовом контейнере на том же образе.
-
-    \`exit()\` к тому дню был закрыт (_guard_exit), \`os._exit\` — нет: модуль
-    считал защиту от умысла не своим делом. Одного занятия хватило, чтобы
-    передумать: цена здесь не «студент схитрил», а «пара остановилась».
-
-    Закрыты ровно два имени, у которых нет другого смысла, кроме «кончить
-    этот процесс сейчас»: \`os._exit\` и \`os.abort\`. \`os.kill\` остаётся —
-    им управляют дочерними процессами, и отказ там сломал бы больше, чем
-    закрыл.
-
-    Это не песочница, а та же планка, что у \`exit()\`: \`ctypes\`,
-    \`signal.raise_signal\`, перезагрузка \`os\` через importlib проходят мимо.
-    Закрыт тот способ, которым ядро гасят на самом деле.
-    """
-    try:
-        mine = os.getpid()
-    except Exception:
-        return None
-    saved = {}
-    for name in ('_exit', 'abort'):
-        real = _getattr(os, name, None)
-        if real is None:
-            continue
-        try:
-            _setattr(os, name, _kill_refusal(mine, real, text))
-        except Exception:
-            continue
-        saved[name] = real
-    return saved or None
-
-
-def _unguard_kill(current):
-    saved = current.get('kill') if current else None
-    if not saved:
-        return
-    for name in ('_exit', 'abort'):
-        if name not in saved:
-            continue
-        try:
-            _setattr(os, name, saved[name])
-        except Exception:
-            pass
-
-
 def _read_int(path):
     try:
         with open(path) as handle:
@@ -907,7 +802,7 @@ def _memory_cap(floor, headroom):
     маленькой (пол 512 МБ) обычный \`fit\` упирается в потолок и отвечает
     \`RuntimeError: can't allocate read lock\` — ошибкой, из которой автор
     попытки ничего не поймёт. Это известный недочёт, а не причина смертей ядра
-    20.09: те были от \`os._exit(0)\` в попытке (см. \`_guard_kill\`), при
+    20.09: те были от \`os._exit(0)\` в попытке (см. \`_hold\` и danger.ts), при
     нетронутом cgroup (\`oom_kill 0\`, пик 5,2 из 16 ГБ).
     """
     if not sys.platform.startswith('linux'):
@@ -1347,8 +1242,9 @@ def leave(ns):
     # Потолок памяти снимается ПЕРВЫМ: под ним не должен идти ни один возврат,
     # иначе чужой np.set_printoptions отменится из-за нехватки адресов.
     _disarm_memory(current.get('memory'))
-    _unguard_exit(current, ns)
-    _unguard_kill(current)
+    # Защита отпускается ровно на один счёт: при правиле «не исполняются» она
+    # остаётся стоять и после попытки, при «исполняются» — снимается здесь.
+    _release(current)
     saved = current.get('saved')
     if saved is not None:
         for key in saved:
@@ -1428,9 +1324,13 @@ def enter(ns, budget, settings=None):
         # Состояние ставится ДО копирования: прерывание пределом посреди входа
         # не должно оставить попытке половину подмены без пути назад.
         state = {'saved': saved, 'cwd': cwd, 'rc': rc, 'process': _snapshot(),
-                 'exit': _guard_exit(ns, settings.get('exit') or 'exit() is not allowed here'),
-                 'kill': _guard_kill(settings.get('kill') or 'os._exit() is not allowed here'),
+                 'guard': _hold(settings.get('guard')),
                  'memory': None}
+        if not state['guard']:
+            # Без защиты попытку не запускают вовсе: студент на ОБЩЕМ ядре не
+            # должен уметь уронить класс ни при каком правиле комнаты, и
+            # «кажется, встало» здесь не ответ.
+            raise RuntimeError('guard unavailable')
 
         copies = {}
         skipped = []
@@ -1572,13 +1472,21 @@ export function councilEnterSource(
    * Python: `false` в ядре — это NameError, а не значение.
    */
   const settings = [
-    `{'exit': ${JSON.stringify(tr('server.council.noExit'))}`,
-    `'kill': ${JSON.stringify(tr('server.council.noProcessExit'))}`,
+    // Слова отказа для защиты — её же, комнатные, но с другим хвостом: внутри
+    // попытки разрешить эти команды нельзя ничем, и советовать правило было бы
+    // неправдой (danger.ts · guardCouncilSettings).
+    `{'guard': ${guardCouncilSettings()}`,
     `'memory': ${options.memoryGuard === true ? 'True' : 'False'}`,
     `'floor': ${COUNCIL_MEMORY_FLOOR_BYTES}`,
     `'headroom': ${COUNCIL_MEMORY_HEADROOM_BYTES}}`,
   ].join(', ')
   return [
+    /*
+     * Защита от опасных команд ставится ПЕРВОЙ строкой, до самой изоляции: её
+     * модуль и есть то, что вход тут же берёт в удержание, и порядок здесь не
+     * вкусовой — `_hold` ищет модуль в `sys.modules` и без него отказывает.
+     */
+    guardInstallLine(),
     /*
      * Установка — только когда её ещё нет или она другая.
      *

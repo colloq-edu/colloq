@@ -21,6 +21,7 @@ beforeEach(async () => {
 import assert from 'node:assert/strict'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type * as Y from 'yjs'
+import { guardAnswer } from './_guard.mts'
 
 /* ------------------------------------------------------------ fake Jupyter */
 
@@ -65,6 +66,19 @@ let held: Array<{ socket: WebSocket; parent: unknown; asked?: boolean; code?: st
  */
 function councilExpressions(asked: boolean, code = ''): Record<string, unknown> {
   if (!asked) return {}
+  /*
+   * Установка защиты от опасных команд приходит той же дорогой и тем же
+   * ключом, а сервер без подтверждения ячейку не запускает вовсе (kernel/
+   * index.ts · ensureGuard). Ответ общий на все подделки — tests/_guard.mts.
+   */
+  const guard = guardAnswer(code)
+  if (guard) {
+    return {
+      user_expressions: {
+        colloq: { status: 'ok', data: { 'text/plain': JSON.stringify(guard) }, metadata: {} },
+      },
+    }
+  }
   /*
    * Ключ `colloq` один на два служебных запуска — вход консилиума и
    * статический разбор справки (kernel/inspect-static.ts), — и отвечать им
@@ -284,7 +298,17 @@ before(async () => {
          * одно, пока второе отвечает. Метка стоит в коде ячейки, так что
          * держится ровно то ядро, которому её послали.
          */
-        if (swallowExecutes || (!service && /HOLD/.test(msg.content.code))) {
+        /*
+         * Установка защиты держится НИКОГДА, что бы ни стояло во флагах.
+         *
+         * Настоящее ядро отвечает на неё первой же миллисекундой после
+         * подъёма — это одна строка `apply()` в свежем процессе, и держать её
+         * нечем. Подделка, удержавшая её вместе с ячейкой, проверяла бы не
+         * очередь, а пятисекундное ожидание подтверждения, которого никто не
+         * собирался слать.
+         */
+        const guarding = guardAnswer(msg.content.code) !== null
+        if (!guarding && (swallowExecutes || (!service && /HOLD/.test(msg.content.code)))) {
           reply(ws, msg.header, 'status', { execution_state: 'busy' })
           held.push({ socket: ws, parent: msg.header, asked, code: msg.content.code })
           return
