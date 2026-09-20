@@ -12,9 +12,28 @@ import {
 } from '@shared/runtime'
 
 export type KernelBackend = 'broker' | 'docker' | 'test'
+/**
+ * Чем поднимать ядра. Умолчание для `NODE_ENV=test` — подставные ядра.
+ *
+ * Прежде тестовый сервер без явного `KERNEL_BACKEND` брал docker — и начинал
+ * распоряжаться НАСТОЯЩИМИ контейнерами: уборщик простоя ходит по меткам
+ * `colloq.kind=room-kernel` через `docker ps -a`, то есть видит и комнаты
+ * чужого, живого сервера на той же машине. 20.09.2026 так поднятый стенд
+ * оказался рядом с идущим занятием и мог погасить его комнату; цена ошибки —
+ * сброшенные переменные у всего класса посреди пары.
+ *
+ * Тестовому серверу настоящие контейнеры не нужны ни для чего, поэтому
+ * умолчание здесь безопасное, а не «как у разработки». Кому нужен docker под
+ * `NODE_ENV=test`, тот пишет `KERNEL_BACKEND=docker` руками — и делает это
+ * осознанно.
+ */
 export function selectKernelBackend(env: NodeJS.ProcessEnv): KernelBackend {
   const chosen = env.KERNEL_BACKEND?.trim() ||
-    (env.NODE_ENV === 'production' || env.KERNEL_RUNTIME_URL ? 'broker' : 'docker')
+    (env.NODE_ENV === 'production' || env.KERNEL_RUNTIME_URL
+      ? 'broker'
+      : env.NODE_ENV === 'test'
+        ? 'test'
+        : 'docker')
   if (!['broker', 'docker', 'test'].includes(chosen)) throw new Error(`Unknown kernel backend: ${chosen}`)
   if (chosen === 'test' && env.NODE_ENV !== 'test') throw new Error('The test kernel backend requires NODE_ENV=test')
   if (chosen === 'docker' && env.NODE_ENV === 'production') {

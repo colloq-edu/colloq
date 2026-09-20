@@ -25,6 +25,16 @@ test('production requires the broker and cannot select development/test executio
   assert.throws(()=>selectKernelBackend({NODE_ENV:'production',KERNEL_BACKEND:'test'}),/test/i)
   assert.throws(()=>selectKernelBackend({KERNEL_BACKEND:'mystery'}),/backend/i)
   assert.equal(selectKernelBackend({NODE_ENV:'test',KERNEL_BACKEND:'test'}),'test')
+  /*
+   * Тестовый сервер БЕЗ явного выбора не берёт docker: уборщик простоя ходит
+   * по меткам контейнеров через `docker ps -a` и видит комнаты чужого живого
+   * сервера на той же машине. 20.09.2026 так поднятый стенд оказался рядом с
+   * идущим занятием — цена ошибки — сброшенные переменные у всего класса.
+   */
+  assert.equal(selectKernelBackend({NODE_ENV:'test'}),'test')
+  // А разработка по-прежнему берёт docker, и явный выбор под NODE_ENV=test уважается.
+  assert.equal(selectKernelBackend({NODE_ENV:'development'}),'docker')
+  assert.equal(selectKernelBackend({NODE_ENV:'test',KERNEL_BACKEND:'docker'}),'docker')
   assert.throws(()=>requireKernelIsolation({NODE_ENV:'production',KERNEL_ISOLATION:'off'}),/isolation/i)
   assert.throws(()=>requireKernelIsolation({NODE_ENV:'development',KERNEL_BACKEND:'docker',KERNEL_ISOLATION:'off'}),/isolation/i)
 })
