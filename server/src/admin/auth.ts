@@ -156,8 +156,12 @@ function readCookieHeader(header: string | undefined, name: string): string | nu
  * `res.req`, а не отдельный параметр: печенье выдают шесть маршрутов и три
  * стенда, а express кладёт запрос на ответ сам. Подделка без него (тесты,
  * скрипты) читается как http — там его и нет.
+ *
+ * Вынесено наружу ради печенья участника соревнований (competitions/identity.ts):
+ * правило одно, и вторая его копия разошлась бы с этой молча — ровно так, как
+ * когда-то разошлись выдача и удаление.
  */
-function secureCookie(res: Response): boolean {
+export function secureCookie(res: Response): boolean {
   const req = res.req as Request | undefined
   if (!req) return false
   if (req.secure) return true

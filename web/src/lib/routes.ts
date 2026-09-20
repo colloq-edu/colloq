@@ -84,6 +84,39 @@ const COURSE_PATH = /^\/c\/([A-Za-z0-9_-]{1,64})\/?$/
  * печатал «его опубликовали заново» вместо честного «такой страницы нет».
  */
 const PUBLIC_PATH = /^\/p\/([A-Za-z0-9_-]{1,64})(?:\/(\d+))?\/?$/
+/*
+ * Соревнования: `/k` — список, `/k/<slug>` — страница, `/k/t/<ключ>` — вход.
+ *
+ * Ключ ХВОСТОМ ПОСЛЕ `t`, а не голым `/k/<ключ>`, и это не стиль: адрес
+ * соревнования тоже стоит вторым сегментом, и `K7Q-M2X-9FD` пришлось бы
+ * отличать от `rohlik` по форме строки. Пока формы не спорят, это работает; в
+ * тот день, когда преподаватель заведёт соревнование с адресом из девяти букв,
+ * ссылка для входа молча откроет чужую задачу. Поэтому `t` — зарезервированный
+ * адрес (`shared/competitions.ts` · RESERVED_SLUGS), и соревнования с таким
+ * именем не бывает.
+ *
+ * Вкладки страницы (`submissions`, `leaderboard`) и проектор — тем же
+ * выражением: это та же страница тем же человеком, и переход между вкладками
+ * не обязан пересобирать экран. Буквы адреса — те же, что у курсов и
+ * публикаций (`shared/publish.ts` · slugOk): строчные, цифры и дефис.
+ *
+ * Алфавит ключа — тот, которым его печатает сервер: три группы по три знака из
+ * `ENTRANT_KEY_ALPHABET`, с дефисами или без. Пробелы и нижний регистр
+ * приводит к виду сам сервер, поэтому здесь они тоже проходят.
+ */
+const COMPETITIONS_PATH =
+  /^\/k(?:\/t\/([A-Za-z0-9 -]{9,16})|\/([a-z0-9-]{1,64})(?:\/(submissions|leaderboard)(\/screen)?)?)?\/?$/
+
+/** Какая из страниц соревнований открыта. */
+export type CompetitionView = 'list' | 'task' | 'submissions' | 'leaderboard' | 'screen'
+
+export interface CompetitionRoute {
+  /** Адрес соревнования; `null` — общий список `/k`. */
+  slug: string | null
+  view: CompetitionView
+  /** Ключ из ссылки для входа: страница меняет его на печенье. */
+  signInKey: string | null
+}
 
 /** Комната и то, каким из трёх её экранов её открыли. */
 export function readRoomRoute(path: string): RoomRoute | null {
@@ -130,6 +163,42 @@ export function readPublicRoute(path: string): PublicRoute | null {
   if (!match) return null
   return { id: match[1], step: match[2] === undefined ? null : Number(match[2]) }
 }
+
+/**
+ * Страницы соревнований — и вход по ключу-ссылке.
+ *
+ * Возвращается и для голого `/k`: список соревнований — такая же страница, как
+ * остальные, и отличать её отсутствием разбора было бы лишним ветвлением в
+ * `App`.
+ */
+export function readCompetitionRoute(path: string): CompetitionRoute | null {
+  const match = COMPETITIONS_PATH.exec(path)
+  if (!match) return null
+  const key = match[1] ?? null
+  const slug = match[2] ?? null
+  const tail = match[3]
+  const screen = match[4] !== undefined
+  const view: CompetitionView = slug === null
+    ? 'list'
+    : screen
+      ? 'screen'
+      : tail === 'submissions'
+        ? 'submissions'
+        : tail === 'leaderboard'
+          ? 'leaderboard'
+          : 'task'
+  return { slug, view, signInKey: key }
+}
+
+/**
+ * Куда высадить человека после обмена ключа на вход.
+ *
+ * Ключ живёт в строке браузера ровно до первого ответа сервера: адрес
+ * переживает и вкладку, и снимок экрана, который студент пришлёт однокурснику
+ * «смотри, какое место». Ровно то же правило и по той же причине, что у ссылки
+ * на пульт (`handoffLanding` выше).
+ */
+export const COMPETITIONS_LANDING = '/k'
 
 /** Панель преподавателя: свои под-адреса она разбирает сама. */
 export function isAdminPath(path: string): boolean {

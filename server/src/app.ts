@@ -32,11 +32,13 @@ import { jupyterReachable } from './kernel/jupyter.js'
 import { isolationAvailable } from './kernel/pool.js'
 import { tally } from './log.js'
 import { adminAuthRoutes } from './routes/admin-auth.js'
+import { adminCompetitionRoutes } from './routes/admin-competitions.js'
 import { adminEnvironmentRoutes } from './routes/admin-environments.js'
 import { adminImportRoutes } from './routes/admin-import.js'
 import { adminInstanceRoutes } from './routes/admin-instance.js'
 import { aiRoutes } from './routes/ai.js'
 import { banRoutes } from './routes/bans.js'
+import { competitionRoutes } from './routes/competitions.js'
 import { councilRoutes } from './routes/council.js'
 import { courseRoutes } from './routes/courses.js'
 import { blobRoutes } from './routes/blobs.js'
@@ -482,6 +484,9 @@ app.use(instanceResourcesRoutes())
 app.use(adminInstanceRoutes())
 app.use(courseRoutes())
 app.use(adminEnvironmentRoutes())
+// Панель соревнований — рядом с остальными админскими дверями и по тому же
+// праву; участникам отвечает своя половина ниже (routes/competitions.ts).
+app.use(adminCompetitionRoutes())
 app.use(adminImportRoutes())
 app.use(sessionRoutes())
 // Двери бана — сразу за входом: они про тех же людей и живут по тому же праву
@@ -499,6 +504,9 @@ app.use(aiRoutes())
 // Консилиум — за оракулом: его единственная REST-дверь спрашивает ту же модель
 // и тратит тот же лимит вопросов комнаты (routes/council.ts).
 app.use(councilRoutes())
+// Соревнования — своя половина продукта и своё удостоверение: `/api/k`
+// спрашивает печенье участника, а не преподавателя (routes/competitions.ts).
+app.use(competitionRoutes())
 
 app.use('/api', (_req, res) => res.status(404).json({ error: tr('common.notFound') }))
 

@@ -37,6 +37,7 @@ const ADMIN = 'web/src/screens/AdminScreen.svelte'
 const READER = 'web/src/screens/ReaderScreen.svelte'
 const SESSION = 'web/src/screens/SessionScreen.svelte'
 const NOTEBOOK = 'web/src/components/notebook/Notebook.svelte'
+const COMPETITIONS = 'web/src/screens/CompetitionsScreen.svelte'
 const ROWS = 'web/src/components/ui/RowsSkeleton.svelte'
 
 /** Все исходники веба — по ним проверяется, что чего-то больше нет нигде. */
@@ -202,6 +203,7 @@ test('о готовности докладывает каждый экран, к
     ['читалка', READER],
     ['комната', SESSION],
     ['тетрадь', NOTEBOOK],
+    ['соревнования', COMPETITIONS],
     ['роутер', APP],
   ] as const) {
     const source = code(read(file))
@@ -223,9 +225,10 @@ test('о готовности докладывает каждый экран, к
 })
 
 test('на месте скелета стоит заставка, и на экране — экранная', () => {
-  // Роутер: все четыре ожидания куска маршрута.
+  // Роутер: все пять ожиданий куска маршрута — читалка, соревнования, панель
+  // (дважды: адрес панели и корень) и комната.
   const app = code(read(APP))
-  assert.equal(app.match(/<Splash \/>/g)?.length, 4, 'не все ожидания маршрута показывают заставку')
+  assert.equal(app.match(/<Splash \/>/g)?.length, 5, 'не все ожидания маршрута показывают заставку')
   assert.doesNotMatch(app, /<Splash size="pane"/, 'вместо экрана — панельная заставка')
   // Панель и читалка: экран целиком.
   assert.match(code(read(ADMIN)), /<Splash \/>/, 'панель потеряла заставку')

@@ -207,6 +207,48 @@ Guide: [the Oracle](https://colloq.ru/docs/en/oracle.html)
 | **Russian or English** | The owner switches the interface for the whole instance from `/admin`. Open rooms switch live, keeping code, cursors and drafts. [Language settings](https://colloq.ru/docs/en/language.html). |
 | **Python environments** | An environment is a requirements file; each class picks one at creation. GPU environments give each room an exclusive GPU slice. |
 
+## Competitions
+
+A competition is a task with a closed evaluation: you hand the class the data and
+the description, an entrant submits an `.ipynb` notebook as a file, and the server
+executes it **from scratch** in a throwaway container with no network, then scores
+the result with your metric. It lives next to courses, under **Competitions** in
+the admin panel, and the class opens it at an address like `/k/<name>`.
+
+What you set up: a title and an address, a Markdown description, the open data
+files, the **hidden answers**, a sample notebook with a baseline solution, the
+metric code, the execution limits and a deadline. Until the sample notebook has
+gone the whole way to a number, the competition cannot be opened: a task that does
+not even solve for its author means a hundred people hunting for a mistake of
+their own that isn't there.
+
+How a result is computed. A submission takes two steps in two separate throwaway
+containers: first the notebook runs and `submission.csv` is taken out of it, then
+your `score(solution, submission)` runs on its own. The metric is computed
+**twice** — on the public share of the rows and on the private one. The public
+leaderboard is always visible; the final one opens at the deadline. What counts is
+the submission the entrant picked; if they picked none, their best public one.
+
+What an entrant sees: their own submissions and only their own, the stages moving
+live (accepted → queued → running the notebook → checking the CSV → scoring),
+their own traceback verbatim if the notebook failed, and their place. They read
+the text of a `ParticipantVisibleError` raised by your metric in full — everything
+else it may print is yours alone to see.
+
+An entrant's identity is instance-level, not per room: a person gets an **entry
+key** shaped `K7Q-M2X-9FD` and a link carrying it, and the same key brings them
+back to their submissions from another device. The key itself is not in the
+database: what is stored is its fingerprint and a copy encrypted with the instance
+secret. A teacher can issue a new key — the old one stops working that same
+second, along with every tab still open on it.
+
+The queue is one per instance, lives in SQLite and survives a server restart. By
+default one submission runs at a time, the queue is fair per person (a person's
+second submission queues behind everyone else's first), and the teacher can pause
+it or kill the run in progress.
+
+Guide: [competitions](https://colloq.ru/docs/en/competitions.html)
+
 ## Quick start
 
 ### Install with pip
@@ -471,6 +513,8 @@ development backend; the production installer supplies broker configuration.
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | Application upload limits; these do not limit arbitrary writes from Python. |
 | `COUNCIL_COPY_MB` | How much memory one council attempt may spend on personal copies of the room's data (512 by default). Anything above the budget stays shared, and the attempt is told so in its own output. Copy-on-write pandas copies cost nothing and are not counted. |
 | `COUNCIL_MEMORY_GUARD` | Cap the address space of a council attempt at the container's memory limit minus what is already in use (`1` by default; `0` turns it off). A greedy attempt then fails with `MemoryError` on its own card instead of the OOM killer taking the notebook's kernel and everybody's variables. Skipped automatically where it cannot work: outside Linux, without a cgroup limit, or with CUDA nearby. |
+| `COMPETITION_BACKEND` | How competition submissions are executed: `docker` (two throwaway containers per submission — one for the notebook, one for the metric) or `test`, a stand-in runner that never executes a single line of a submitted notebook. Unset means `docker`; `test` requires `NODE_ENV=test`, exactly as `KERNEL_BACKEND` does. The stand-in is what lets the whole product — queue, leaderboard, chosen submission — work on a machine without Docker. Competitions have no broker path: on a k3s deployment the server still needs a Docker daemon of its own to run them. |
+| `DATA_HOST_DIR` | The competition directory as the Docker daemon sees it — what `WORKSPACE_HOST_DIR` is to rooms. Leave it unset on a host-native server. Under `make up` the server itself lives in a container, and without this a submission silently receives an empty directory instead of its data. |
 
 </details>
 
@@ -503,8 +547,8 @@ described in [SECURITY.md](SECURITY.md).
 ## Documentation
 
 The guides at **[colloq.ru/docs](https://colloq.ru/docs/en/)** cover installing,
-running a class, room rules, lectures, council, the Oracle, environments,
-publishing, networking, backups and updates, in
+running a class, room rules, lectures, council, the Oracle, competitions,
+environments, publishing, networking, backups and updates, in
 [English](https://colloq.ru/docs/en/) and [Russian](https://colloq.ru/docs/).
 Operator and developer references live next to the code: [deploy/k3s](deploy/k3s/README.md),
 [deploy/vast](deploy/vast/README.md), [runtime](runtime/README.md),

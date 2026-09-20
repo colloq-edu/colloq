@@ -7,5 +7,15 @@ import { adminMessages } from '@shared/locales/admin'
 import { roomMessages } from '@shared/locales/room'
 import { activityMessages } from '@shared/locales/activity'
 import { serverMessages } from '@shared/locales/server'
+/* Слова соревнований — общие с `/k`: плашки исходов и состояние соревнования
+   панель берёт оттуда, чтобы у преподавателя и у студента они не разъехались. */
+import { competitionsMessages } from '@shared/locales/competitions'
 
-registerMessages(commonMessages, adminMessages, roomMessages, activityMessages, serverMessages)
+registerMessages(
+  commonMessages,
+  adminMessages,
+  roomMessages,
+  activityMessages,
+  serverMessages,
+  competitionsMessages,
+)

@@ -532,6 +532,7 @@ start_server() {
       DATA_DIR="$STATE/data" \
       WORKSPACE_DIR="$STATE/workspace" \
       WORKSPACE_HOST_DIR="$HOST_STATE/workspace" \
+      DATA_HOST_DIR="$HOST_STATE/data" \
       STATIC_DIR="$APP/web/dist" \
       BIND_ADDR="${BIND_ADDR:-0.0.0.0}" \
       JUPYTER_TOKEN="$jt" \

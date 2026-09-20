@@ -30,10 +30,11 @@ function built(area: string, locale: string): Record<string, Record<string, unkn
   return JSON.parse(code.slice(code.indexOf('registerMessages(') + 'registerMessages('.length, code.lastIndexOf(')')))
 }
 
-test('every area speaks every language, and the loader names all six modules', () => {
+test('every area speaks every language, and the loader names all eight modules', () => {
   const files = fs.readdirSync(folder).sort()
   assert.deepEqual(files, [
-    'admin-en.ts', 'admin-ru.ts', 'reader-en.ts', 'reader-ru.ts', 'room-en.ts', 'room-ru.ts',
+    'admin-en.ts', 'admin-ru.ts', 'competitions-en.ts', 'competitions-ru.ts',
+    'reader-en.ts', 'reader-ru.ts', 'room-en.ts', 'room-ru.ts',
   ])
   // Имена перечислены в загрузчике руками (сборщик не читает вычисленные
   // адреса) — разойтись с каталогом они умеют молча.
@@ -45,7 +46,8 @@ test('a screen carries one language and only the catalogs it reads', () => {
   const room = built('room', 'ru')
   const admin = built('admin', 'ru')
   const reader = built('reader', 'ru')
-  for (const [name, catalog] of Object.entries({ room, admin, reader })) {
+  const competitions = built('competitions', 'ru')
+  for (const [name, catalog] of Object.entries({ room, admin, reader, competitions })) {
     for (const pair of Object.values(catalog)) {
       assert.deepEqual(Object.keys(pair), ['ru'], `${name} ships a second language`)
     }
@@ -55,6 +57,11 @@ test('a screen carries one language and only the catalogs it reads', () => {
   assert.ok(admin['admin.teaching'] && admin['room.ui.0'])
   assert.ok(reader['room.ui.0'])
   assert.equal(reader['admin.teaching'], undefined)
+  // Страницы соревнований не платят ни за комнату, ни за панель: там нет ни
+  // ячейки, ни ядра, ни списка семинаров.
+  assert.ok(competitions['competitions.state.live'] && competitions['common.reload'])
+  assert.equal(competitions['room.ui.0'], undefined)
+  assert.equal(competitions['admin.teaching'], undefined)
   // Русский и английский — это разные куски, а не один с двумя половинами.
   assert.equal(built('room', 'en')['room.ui.0'].en, messages['room.ui.0'].en)
   assert.equal(built('room', 'en')['room.ui.0'].ru, undefined)

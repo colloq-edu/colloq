@@ -9,6 +9,7 @@
   import Environments from '@/admin/screens/Environments.svelte'
   import Seminars from '@/admin/screens/Seminars.svelte'
   import Courses from '@/admin/screens/Courses.svelte'
+  import Competitions from '@/admin/screens/Competitions.svelte'
   import Publish from '@/admin/screens/Publish.svelte'
   import Teachers from '@/admin/screens/Teachers.svelte'
   import SignInScreen from '@/screens/SignInScreen.svelte'
@@ -67,9 +68,11 @@
         ? 'teachers'
         : path.startsWith('/admin/environments')
           ? 'environments'
-          : path.startsWith('/admin/courses')
-            ? 'courses'
-            : 'seminars',
+          : path.startsWith('/admin/competitions')
+            ? 'competitions'
+            : path.startsWith('/admin/courses')
+              ? 'courses'
+              : 'seminars',
   )
 
   /*
@@ -78,6 +81,19 @@
    * список курсов, а не из панели.
    */
   const openCourse = $derived(/^\/admin\/courses\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
+  /*
+   * Соревнование и вкладка его пульта — тоже адрес, и по той же причине: на
+   * «Лидерборд · оба» ссылаются коллеге, а «Настройки» открывают посреди пары
+   * и возвращаются в них. `new` — не соревнование, а форма заведения: она
+   * открывается на списке и адреса после себя не оставляет.
+   */
+  const competitionRoute = $derived(
+    /^\/admin\/competitions\/([A-Za-z0-9_-]{1,64})(?:\/(board|entrants|settings))?/.exec(path),
+  )
+  const openCompetition = $derived(competitionRoute?.[1] ?? null)
+  const competitionTab = $derived(
+    (competitionRoute?.[2] ?? 'submissions') as 'submissions' | 'board' | 'entrants' | 'settings',
+  )
   /* Публикация — тоже адрес: это экран, на котором принимают решение. */
   const publishing = $derived(/^\/admin\/publish\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
 
@@ -245,6 +261,8 @@
       <Publish sessionId={publishing} {navigate} />
     {:else if tab === 'courses'}
       <Courses open={openCourse} {navigate} />
+    {:else if tab === 'competitions'}
+      <Competitions open={openCompetition} tab={competitionTab} {navigate} />
     {:else if tab === 'environments'}
       <Environments />
     {:else if tab === 'oracle'}

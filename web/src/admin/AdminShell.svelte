@@ -1,5 +1,11 @@
 <script lang="ts" module>
-  export type AdminTab = 'seminars' | 'courses' | 'environments' | 'oracle' | 'teachers'
+  export type AdminTab =
+    | 'seminars'
+    | 'courses'
+    | 'competitions'
+    | 'environments'
+    | 'oracle'
+    | 'teachers'
 
   /**
    * The numbers on the nav rows.
@@ -13,6 +19,7 @@
   class NavCounts {
     seminars = $state<number | null>(null)
     courses = $state<number | null>(null)
+    competitions = $state<number | null>(null)
     teachers = $state<number | null>(null)
     environments = $state<number | null>(null)
 
@@ -50,6 +57,7 @@
           const n = await read()
           if (tab === 'seminars') this.seminars = n
           else if (tab === 'courses') this.courses = n
+          else if (tab === 'competitions') this.competitions = n
           else if (tab === 'teachers') this.teachers = n
           else if (tab === 'environments') this.environments = n
         } catch {
@@ -61,6 +69,9 @@
       await Promise.all([
         ask('seminars', this.seminars, () => adminApi.listSeminars().then((l) => l.length)),
         ask('courses', this.courses, () => adminApi.listCourses().then((l) => l.length)),
+        ask('competitions', this.competitions, () =>
+          adminApi.listCompetitions().then((r) => r.competitions.length),
+        ),
         ask('teachers', this.teachers, () => adminApi.listTeachers().then((l) => l.length)),
         ask('environments', this.environments, () =>
           adminApi.listEnvironments().then((r) => r.environments.length),
@@ -121,6 +132,24 @@
       icon: 'folder',
       href: '/admin/courses',
       count: navCounts.courses,
+    },
+    /*
+     * Соревнование стоит в ПРЕПОДАВАНИИ, а не в ИНСТАНСЕ, хотя очередь и
+     * участники у него общие на весь сервер.
+     *
+     * Потому что вкладка отвечает не за хозяйство, а за задачу, которую
+     * преподаватель ставит классу, — как занятие и как курс. В ИНСТАНСЕ лежит
+     * то, что настраивают раз и для всех (оракул, кто может учить), а
+     * соревнование заводят к паре, ведут неделю и закрывают разбором. Общая
+     * очередь показана внутри раздела полосой исполнителя — там, где на неё
+     * смотрят, — и отдельной строки в рельсе не просит.
+     */
+    {
+      id: 'competitions',
+      label: tr('competitions.title'),
+      icon: 'table',
+      href: '/admin/competitions',
+      count: navCounts.competitions,
     },
     {
       id: 'environments',

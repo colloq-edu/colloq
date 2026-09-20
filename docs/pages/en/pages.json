@@ -43,6 +43,12 @@
     "description": "Everyone writes their own answer; the teacher chooses what to discuss together."
   },
   {
+    "slug": "competitions",
+    "group": "teach",
+    "title": "Competitions",
+    "description": "A task with a closed evaluation: data, a metric, a leaderboard and a submission queue."
+  },
+  {
     "slug": "lectures",
     "group": "teach",
     "title": "Lecture, projection and console",

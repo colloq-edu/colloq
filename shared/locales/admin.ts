@@ -2852,5 +2852,1066 @@ export const adminMessages: MessageCatalog = {
   "admin.publication.releaseHeading": {
     "ru": "Освободить адрес /p/{address}?",
     "en": "Release address /p/{address}?"
-  }
+  },
+
+  /*
+   * СОРЕВНОВАНИЯ — вкладка панели (A1, A2, A3).
+   *
+   * Русские строки дословны по макету (Paper 07 · Соревнования): владелец их
+   * вычитал сам, и «ё» в «идёт», строчные в «в зачёт» и «·» разделителем —
+   * часть текста, а не оформление. Английский — настоящий перевод.
+   *
+   * Слов, которые уже назвал `shared/locales/competitions.ts`, здесь нет:
+   * плашки исходов, состояние соревнования, направление метрики и отказы
+   * дверей — одни на панель и на страницы участника, и второй их копии быть
+   * не должно (иначе «ГОТОВО» у преподавателя и у студента разъедутся).
+   */
+  "admin.competitions.lede": {
+    "ru": "Задача, данные и метрика — ваши. Участник присылает тетрадь, сервер исполняет её с нуля и считает результат.",
+    "en": "The task, the data and the metric are yours. A participant sends a notebook, the server runs it from scratch and computes the result."
+  },
+  "admin.competitions.search": {
+    "ru": "Поиск…",
+    "en": "Search…"
+  },
+  "admin.competitions.new": {
+    "ru": "НОВОЕ СОРЕВНОВАНИЕ",
+    "en": "NEW COMPETITION"
+  },
+  "admin.competitions.runner": {
+    "ru": "ИСПОЛНИТЕЛЬ",
+    "en": "RUNNER"
+  },
+  "admin.competitions.runningN": {
+    "ru": {
+      "one": "исполняет {count} посылку",
+      "few": "исполняет {count} посылки",
+      "many": "исполняет {count} посылок",
+      "other": "исполняет {count} посылки"
+    },
+    "en": {
+      "one": "running {count} submission",
+      "other": "running {count} submissions"
+    }
+  },
+  "admin.competitions.runningNone": {
+    "ru": "ничего не исполняется",
+    "en": "nothing is running"
+  },
+  "admin.competitions.waitingN": {
+    "ru": {
+      "one": "{count} ждёт",
+      "few": "{count} ждут",
+      "many": "{count} ждут",
+      "other": "{count} ждут"
+    },
+    "en": {
+      "one": "{count} waiting",
+      "other": "{count} waiting"
+    }
+  },
+  "admin.competitions.slots": {
+    "ru": {
+      "one": "по одной за раз",
+      "few": "по {count} за раз",
+      "many": "по {count} за раз",
+      "other": "по {count} за раз"
+    },
+    "en": {
+      "one": "one at a time",
+      "other": "{count} at a time"
+    }
+  },
+  "admin.competitions.noNetwork": {
+    "ru": "без сети",
+    "en": "no network"
+  },
+  "admin.competitions.doneToday": {
+    "ru": "сегодня исполнено {count}",
+    "en": "{count} run today"
+  },
+  "admin.competitions.doneTodayAvg": {
+    "ru": "сегодня исполнено {count}, в среднем {avg}",
+    "en": "{count} run today, {avg} on average"
+  },
+  "admin.competitions.pauseQueue": {
+    "ru": "Приостановить очередь",
+    "en": "Pause the queue"
+  },
+  "admin.competitions.resumeQueue": {
+    "ru": "Возобновить очередь",
+    "en": "Resume the queue"
+  },
+  "admin.competitions.queuePaused": {
+    "ru": "очередь приостановлена",
+    "en": "the queue is paused"
+  },
+  "admin.competitions.queuePausedLong": {
+    "ru": "Очередь приостановлена: посылки принимаются, но не исполняются.",
+    "en": "The queue is paused: submissions are accepted but not run."
+  },
+  "admin.competitions.col.competition": {
+    "ru": "СОРЕВНОВАНИЕ",
+    "en": "COMPETITION"
+  },
+  "admin.competitions.col.status": {
+    "ru": "СТАТУС",
+    "en": "STATUS"
+  },
+  "admin.competitions.col.deadline": {
+    "ru": "ДЕДЛАЙН",
+    "en": "DEADLINE"
+  },
+  "admin.competitions.col.entrants": {
+    "ru": "УЧАСТНИКИ",
+    "en": "PARTICIPANTS"
+  },
+  "admin.competitions.col.submissions": {
+    "ru": "ПОСЫЛКИ",
+    "en": "SUBMISSIONS"
+  },
+  "admin.competitions.col.bestPublic": {
+    "ru": "ЛУЧШИЙ ПУБЛИЧНЫЙ",
+    "en": "BEST PUBLIC"
+  },
+  "admin.competitions.col.entrant": {
+    "ru": "УЧАСТНИК",
+    "en": "PARTICIPANT"
+  },
+  "admin.competitions.col.place": {
+    "ru": "МЕСТО",
+    "en": "PLACE"
+  },
+  "admin.competitions.col.key": {
+    "ru": "КЛЮЧ ВХОДА",
+    "en": "SIGN-IN KEY"
+  },
+  "admin.competitions.col.public": {
+    "ru": "ПУБЛИЧНЫЙ",
+    "en": "PUBLIC"
+  },
+  "admin.competitions.col.private": {
+    "ru": "ПРИВАТНЫЙ",
+    "en": "PRIVATE"
+  },
+  "admin.competitions.col.shift": {
+    "ru": "СДВИГ",
+    "en": "SHIFT"
+  },
+  "admin.competitions.col.when": {
+    "ru": "КОГДА",
+    "en": "WHEN"
+  },
+  "admin.competitions.col.outcome": {
+    "ru": "ИСХОД",
+    "en": "OUTCOME"
+  },
+  "admin.competitions.col.happened": {
+    "ru": "ЧТО СЛУЧИЛОСЬ",
+    "en": "WHAT HAPPENED"
+  },
+  "admin.competitions.col.took": {
+    "ru": "ШЛА",
+    "en": "TOOK"
+  },
+  "admin.competitions.publicPart": {
+    "ru": "публичная часть {percent} %",
+    "en": "public part {percent}%"
+  },
+  "admin.competitions.baselineNotPassed": {
+    "ru": "бейзлайн ещё не прошёл проверку",
+    "en": "the baseline has not passed its check yet"
+  },
+  "admin.competitions.privateBoardOpen": {
+    "ru": "приватный лидерборд открыт",
+    "en": "the private leaderboard is open"
+  },
+  "admin.competitions.privateBoardClosed": {
+    "ru": "приватный лидерборд ещё закрыт",
+    "en": "the private leaderboard is still closed"
+  },
+  "admin.competitions.readyToOpen": {
+    "ru": "готово к открытию",
+    "en": "ready to open"
+  },
+  "admin.competitions.opensAfterCheck": {
+    "ru": "откроется после проверки",
+    "en": "opens once it passes the check"
+  },
+  "admin.competitions.deadlineNone": {
+    "ru": "не назначен",
+    "en": "not set"
+  },
+  "admin.competitions.deadlineOpenEnded": {
+    "ru": "без срока",
+    "en": "no deadline"
+  },
+  "admin.competitions.left": {
+    "ru": "осталось {time}",
+    "en": "{time} left"
+  },
+  "admin.competitions.leftNone": {
+    "ru": "срок вышел",
+    "en": "time is up"
+  },
+  "admin.competitions.leftDh": {
+    "ru": "{d} дн {h} ч",
+    "en": "{d} d {h} h"
+  },
+  "admin.competitions.leftD": {
+    "ru": "{d} дн",
+    "en": "{d} d"
+  },
+  "admin.competitions.leftHm": {
+    "ru": "{h} ч {m} мин",
+    "en": "{h} h {m} min"
+  },
+  "admin.competitions.leftH": {
+    "ru": "{h} ч",
+    "en": "{h} h"
+  },
+  "admin.competitions.leftM": {
+    "ru": "{m} мин",
+    "en": "{m} min"
+  },
+  "admin.competitions.leftS": {
+    "ru": "{s} с",
+    "en": "{s} s"
+  },
+  "admin.competitions.spanHm": {
+    "ru": "{h} ч {m} мин",
+    "en": "{h} h {m} min"
+  },
+  "admin.competitions.spanMs": {
+    "ru": "{m} мин {s} с",
+    "en": "{m} min {s} s"
+  },
+  "admin.competitions.spanS": {
+    "ru": "{s} с",
+    "en": "{s} s"
+  },
+  "admin.competitions.sinceNow": {
+    "ru": "только что",
+    "en": "just now"
+  },
+  "admin.competitions.sinceM": {
+    "ru": "{count} мин назад",
+    "en": "{count} min ago"
+  },
+  "admin.competitions.sinceH": {
+    "ru": "{count} ч назад",
+    "en": "{count} h ago"
+  },
+  "admin.competitions.sinceYesterday": {
+    "ru": "вчера",
+    "en": "yesterday"
+  },
+  "admin.competitions.sinceD": {
+    "ru": "{count} дн назад",
+    "en": "{count} d ago"
+  },
+  "admin.competitions.sinceW": {
+    "ru": {
+      "one": "неделю назад",
+      "few": "{count} недели назад",
+      "many": "{count} недель назад",
+      "other": "{count} недели назад"
+    },
+    "en": {
+      "one": "a week ago",
+      "other": "{count} weeks ago"
+    }
+  },
+  "admin.competitions.sinceMonth": {
+    "ru": {
+      "one": "месяц назад",
+      "few": "{count} месяца назад",
+      "many": "{count} месяцев назад",
+      "other": "{count} месяца назад"
+    },
+    "en": {
+      "one": "a month ago",
+      "other": "{count} months ago"
+    }
+  },
+  "admin.competitions.todayAt": {
+    "ru": "сегодня, {time}",
+    "en": "today, {time}"
+  },
+  "admin.competitions.baselineScore": {
+    "ru": "бейзлайн {score}",
+    "en": "baseline {score}"
+  },
+  "admin.competitions.baselineNotRun": {
+    "ru": "бейзлайн не проверяли",
+    "en": "the baseline was never checked"
+  },
+  "admin.competitions.baselineMetricFailed": {
+    "ru": "бейзлайн: ошибка метрики",
+    "en": "baseline: metric error"
+  },
+  "admin.competitions.baselineFailed": {
+    "ru": "бейзлайн не дошёл до числа",
+    "en": "the baseline never reached a score"
+  },
+  "admin.competitions.countAll": {
+    "ru": {
+      "one": "{count} соревнование всего",
+      "few": "{count} соревнования всего",
+      "many": "{count} соревнований всего",
+      "other": "{count} соревнования всего"
+    },
+    "en": {
+      "one": "{count} competition in total",
+      "other": "{count} competitions in total"
+    }
+  },
+  "admin.competitions.seenAt": {
+    "ru": "участники видят открытые по адресу /k",
+    "en": "participants see the open ones at /k"
+  },
+  "admin.competitions.none": {
+    "ru": "Соревнований ещё нет",
+    "en": "No competitions yet"
+  },
+  "admin.competitions.noneHint": {
+    "ru": "Заведите первое: адрес, данные, скрытые ответы и метрика. Пока оно черновик, участники его не видят.",
+    "en": "Set up the first one: an address, the data, the hidden answers and a metric. While it is a draft, no participant sees it."
+  },
+  "admin.competitions.noMatch": {
+    "ru": "Нет соревнований по запросу «{query}».",
+    "en": "No competitions match “{query}”."
+  },
+  "admin.competitions.rowMenu": {
+    "ru": "Действия: {name}",
+    "en": "Actions: {name}"
+  },
+  "admin.competitions.menu.open": {
+    "ru": "Открыть",
+    "en": "Open"
+  },
+  "admin.competitions.menu.editor": {
+    "ru": "Редактор",
+    "en": "Editor"
+  },
+  "admin.competitions.menu.entrantPage": {
+    "ru": "Страница участника",
+    "en": "Participant page"
+  },
+  "admin.competitions.menu.delete": {
+    "ru": "Удалить соревнование",
+    "en": "Delete competition"
+  },
+  "admin.competitions.deleteHeading": {
+    "ru": "Удалить «{name}»?",
+    "en": "Delete “{name}”?"
+  },
+  "admin.competitions.deleteBody": {
+    "ru": "Каталог соревнования удаляется целиком: открытые данные, файл ответов, код метрики и посылки участников ({count}). Отменить это нечем.",
+    "en": "The whole competition folder goes: the open data, the answer file, the metric code and the participants' submissions ({count}). There is nothing to undo it with."
+  },
+  "admin.competitions.deleteConfirm": {
+    "ru": "Удалить",
+    "en": "Delete"
+  },
+  "admin.competitions.copyFailed": {
+    "ru": "Не удалось скопировать. Ссылка: {link}",
+    "en": "Could not copy. The link: {link}"
+  },
+  "admin.competitions.requestFailed": {
+    "ru": "Не удалось выполнить запрос. Попробуйте ещё раз.",
+    "en": "The request did not go through. Try again."
+  },
+  "admin.competitions.notOpened": {
+    "ru": "Соревнование не открылось",
+    "en": "Could not open the competition"
+  },
+  "admin.competitions.checkAddress": {
+    "ru": "Проверьте адрес или вернитесь к списку.",
+    "en": "Check the address, or go back to the list."
+  },
+  "admin.competitions.all": {
+    "ru": "Все соревнования",
+    "en": "All competitions"
+  },
+  "admin.competitions.titlePlaceholder": {
+    "ru": "Название соревнования",
+    "en": "Competition title"
+  },
+  "admin.competitions.titleLabel": {
+    "ru": "Название",
+    "en": "Title"
+  },
+  "admin.competitions.slugLabel": {
+    "ru": "Адрес",
+    "en": "Address"
+  },
+  "admin.competitions.createDraft": {
+    "ru": "Завести черновик",
+    "en": "Create a draft"
+  },
+  "admin.competitions.crumbDraft": {
+    "ru": "черновик",
+    "en": "draft"
+  },
+  "admin.competitions.saveDraft": {
+    "ru": "Сохранить черновик",
+    "en": "Save draft"
+  },
+  "admin.competitions.savedWord": {
+    "ru": "Сохранено",
+    "en": "Saved"
+  },
+  "admin.competitions.openCompetition": {
+    "ru": "ОТКРЫТЬ СОРЕВНОВАНИЕ",
+    "en": "OPEN COMPETITION"
+  },
+  "admin.competitions.section.basics": {
+    "ru": "Основное",
+    "en": "Basics"
+  },
+  "admin.competitions.basicsHint": {
+    "ru": "Название и одна строка — в списке у участника. Описание — на странице соревнования: задача, данные, что сдавать.",
+    "en": "The title and the one-liner show up in the participant's list. The description lives on the competition page: the task, the data, what to submit."
+  },
+  "admin.competitions.blurbLabel": {
+    "ru": "Краткая строка",
+    "en": "One-liner"
+  },
+  "admin.competitions.blurbPlaceholder": {
+    "ru": "Одна строка — её участник читает в списке",
+    "en": "One line — what a participant reads in the list"
+  },
+  "admin.competitions.tabText": {
+    "ru": "ТЕКСТ",
+    "en": "TEXT"
+  },
+  "admin.competitions.tabPreview": {
+    "ru": "ПРОСМОТР",
+    "en": "PREVIEW"
+  },
+  "admin.competitions.markdownHint": {
+    "ru": "Markdown · формулы $…$",
+    "en": "Markdown · formulas $…$"
+  },
+  "admin.competitions.descriptionLabel": {
+    "ru": "Описание",
+    "en": "Description"
+  },
+  "admin.competitions.descriptionPlaceholder": {
+    "ru": "## Задача\nЧто предсказывать и по каким данным.\n\n## Что отправить\nТетрадь .ipynb, которая при запуске всех ячеек создаёт submission.csv.",
+    "en": "## Task\nWhat to predict, and from which data.\n\n## What to submit\nAn .ipynb notebook that writes submission.csv when all its cells are run."
+  },
+  "admin.competitions.descriptionEmpty": {
+    "ru": "Описания пока нет.",
+    "en": "No description yet."
+  },
+  "admin.competitions.previewLoading": {
+    "ru": "Готовим просмотр…",
+    "en": "Preparing the preview…"
+  },
+  "admin.competitions.section.data": {
+    "ru": "Данные",
+    "en": "Data"
+  },
+  "admin.competitions.dataHint": {
+    "ru": "Открытые файлы участник скачивает и видит в тетради как data/. Ответы не покидают сервер: они лежат вне папок, которые попадают в контейнеры, и достаются только проверяющему коду.",
+    "en": "A participant downloads the open files and sees them in the notebook as data/. The answers never leave the server: they sit outside the folders that get mounted into containers, and only the scoring code can reach them."
+  },
+  "admin.competitions.openFilesHead": {
+    "ru": "ВИДЯТ УЧАСТНИКИ · DATA/",
+    "en": "PARTICIPANTS SEE · DATA/"
+  },
+  "admin.competitions.hiddenHead": {
+    "ru": "СКРЫТЫЕ ОТВЕТЫ",
+    "en": "HIDDEN ANSWERS"
+  },
+  "admin.competitions.rows": {
+    "ru": {
+      "one": "{n} строка",
+      "few": "{n} строки",
+      "many": "{n} строк",
+      "other": "{n} строки"
+    },
+    "en": {
+      "one": "{n} row",
+      "other": "{n} rows"
+    }
+  },
+  "admin.competitions.addFiles": {
+    "ru": "+ добавить файлы · до {mb} МБ на соревнование",
+    "en": "+ add files · up to {mb} MB per competition"
+  },
+  "admin.competitions.addSolution": {
+    "ru": "+ загрузить файл ответов",
+    "en": "+ upload the answer file"
+  },
+  "admin.competitions.noData": {
+    "ru": "Файлов данных ещё нет.",
+    "en": "No data files yet."
+  },
+  "admin.competitions.dropFile": {
+    "ru": "Удалить {name}",
+    "en": "Delete {name}"
+  },
+  "admin.competitions.publicPercentLabel": {
+    "ru": "Доля публичной части, %",
+    "en": "Public part, %"
+  },
+  "admin.competitions.publicPercentUnit": {
+    "ru": "% строк — публичная часть",
+    "en": "% of rows — the public part"
+  },
+  "admin.competitions.splitNow": {
+    "ru": {
+      "one": "{n} строка считается сразу",
+      "few": "{n} строки считаются сразу",
+      "many": "{n} строк считаются сразу",
+      "other": "{n} строки считаются сразу"
+    },
+    "en": {
+      "one": "{n} row is scored right away",
+      "other": "{n} rows are scored right away"
+    }
+  },
+  "admin.competitions.splitAfter": {
+    "ru": "{n} — после дедлайна.",
+    "en": "{n} — after the deadline."
+  },
+  "admin.competitions.splitBySeed": {
+    "ru": "Деление случайное, зерно записано; колонка Usage в файле его заменит.",
+    "en": "The split is random with a recorded seed; a Usage column in the file replaces it."
+  },
+  "admin.competitions.splitByUsage": {
+    "ru": "Делит колонка Usage в самом файле ответов.",
+    "en": "The Usage column inside the answer file makes the split."
+  },
+  "admin.competitions.splitUnknown": {
+    "ru": "Строки поделятся, когда приедет файл ответов.",
+    "en": "Rows get split once the answer file arrives."
+  },
+  "admin.competitions.section.baseline": {
+    "ru": "Сэмпл-тетрадь",
+    "en": "Sample notebook"
+  },
+  "admin.competitions.baselineHint": {
+    "ru": "Бейзлайн, с которого начнёт каждый участник. Сервер исполняет его так же, как посылку: пока он не прошёл весь путь до числа, соревнование не открыть.",
+    "en": "The baseline every participant starts from. The server runs it exactly as it runs a submission: until it has gone all the way to a score, the competition cannot open."
+  },
+  "admin.competitions.cells": {
+    "ru": {
+      "one": "{count} ячейка",
+      "few": "{count} ячейки",
+      "many": "{count} ячеек",
+      "other": "{count} ячейки"
+    },
+    "en": {
+      "one": "{count} cell",
+      "other": "{count} cells"
+    }
+  },
+  "admin.competitions.uploadedAt": {
+    "ru": "загружена {when}",
+    "en": "uploaded {when}"
+  },
+  "admin.competitions.replace": {
+    "ru": "Заменить",
+    "en": "Replace"
+  },
+  "admin.competitions.baselinePasses": {
+    "ru": "ПРОХОДИТ",
+    "en": "PASSES"
+  },
+  "admin.competitions.baselineGoing": {
+    "ru": "ИДЁТ",
+    "en": "RUNNING"
+  },
+  "admin.competitions.baselineBroken": {
+    "ru": "НЕ ПРОШЛА",
+    "en": "FAILED"
+  },
+  "admin.competitions.baselineNotRunShort": {
+    "ru": "НЕ ПРОВЕРЕНА",
+    "en": "NOT CHECKED"
+  },
+  "admin.competitions.ofLimit": {
+    "ru": "{span} из {limit}",
+    "en": "{span} of {limit}"
+  },
+  "admin.competitions.publicScore": {
+    "ru": "ПУБЛИЧНЫЙ",
+    "en": "PUBLIC"
+  },
+  "admin.competitions.privateScore": {
+    "ru": "ПРИВАТНЫЙ",
+    "en": "PRIVATE"
+  },
+  "admin.competitions.baselinePassed": {
+    "ru": "Исполнена с нуля в окружении {env}, без сети. Эта строка встанет в лидерборд отметкой «бейзлайн».",
+    "en": "Run from scratch in the {env} environment, with no network. This row goes on the leaderboard marked “baseline”."
+  },
+  "admin.competitions.baselineWaiting": {
+    "ru": "Проверка идёт тем же путём, что и посылка участника: свой контейнер, без сети.",
+    "en": "The check takes the same path a participant's submission does: its own container, no network."
+  },
+  "admin.competitions.checkBaseline": {
+    "ru": "Проверить целиком",
+    "en": "Run the full check"
+  },
+  "admin.competitions.checkAgain": {
+    "ru": "Проверить заново",
+    "en": "Check again"
+  },
+  "admin.competitions.noBaseline": {
+    "ru": "Сэмпл-тетради ещё нет",
+    "en": "No sample notebook yet"
+  },
+  "admin.competitions.noBaselineHint": {
+    "ru": "Тетрадь .ipynb до {mb} МБ. С неё начнёт каждый участник, и ею же проверяется, что задача вообще решается.",
+    "en": "An .ipynb notebook up to {mb} MB. Every participant starts from it, and it is what proves the task can be solved at all."
+  },
+  "admin.competitions.pickFile": {
+    "ru": "Выбрать файл",
+    "en": "Pick a file"
+  },
+  "admin.competitions.section.metric": {
+    "ru": "Метрика",
+    "en": "Metric"
+  },
+  "admin.competitions.metricHint": {
+    "ru": "Одна функция: ответы и посылка на входе, число на выходе. Сервер зовёт её дважды — на публичных и на приватных строках. ParticipantVisibleError участник прочтёт дословно; любую другую ошибку увидите только вы.",
+    "en": "One function: the answers and the submission in, a number out. The server calls it twice — on the public rows and on the private ones. A ParticipantVisibleError is read word for word by the participant; any other error is seen by you alone."
+  },
+  "admin.competitions.presets": {
+    "ru": "ЗАГОТОВКИ",
+    "en": "TEMPLATES"
+  },
+  "admin.competitions.metricNameLabel": {
+    "ru": "Имя метрики",
+    "en": "Metric name"
+  },
+  "admin.competitions.metricNamePlaceholder": {
+    "ru": "MAPE",
+    "en": "MAPE"
+  },
+  "admin.competitions.metricNameHint": {
+    "ru": "— имя колонки в лидерборде",
+    "en": "— the leaderboard column name"
+  },
+  "admin.competitions.metricCodeLabel": {
+    "ru": "Код метрики",
+    "en": "Metric code"
+  },
+  "admin.competitions.checkMetric": {
+    "ru": "Проверить на бейзлайне",
+    "en": "Check against the baseline"
+  },
+  "admin.competitions.checkMetricHint": {
+    "ru": "Считается в отдельном контейнере без сети, до 60 с. Посылки хранятся, поэтому после правки метрики всё пересчитывается без повторного исполнения тетрадей.",
+    "en": "Computed in a separate container with no network, within 60 s. Submissions are kept, so after the metric is edited everything is rescored without running the notebooks again."
+  },
+  "admin.competitions.presetColumns": {
+    "ru": "Заготовка собрана по колонкам ответов: {id}, {target}.",
+    "en": "The template is built from the answer columns: {id}, {target}."
+  },
+  "admin.competitions.preset.columns": {
+    "ru": "Укажите колонки {cols} в этом порядке.",
+    "en": "Use the columns {cols}, in this order."
+  },
+  "admin.competitions.preset.missing": {
+    "ru": "Не для всех строк test.csv есть прогноз",
+    "en": "Not every row of test.csv has a prediction"
+  },
+  "admin.competitions.section.run": {
+    "ru": "Исполнение посылки",
+    "en": "Running a submission"
+  },
+  "admin.competitions.runHint": {
+    "ru": "Каждая посылка — свой одноразовый контейнер: тетрадь исполняется с нуля, без сети, данные только на чтение. Вышло время — контейнер убит, без уговоров.",
+    "en": "Every submission gets its own throwaway container: the notebook runs from scratch, with no network and read-only data. Time is up — the container is killed, no negotiation."
+  },
+  "admin.competitions.environmentLabel": {
+    "ru": "Окружение",
+    "en": "Environment"
+  },
+  "admin.competitions.envReady": {
+    "ru": "СОБРАНО",
+    "en": "BUILT"
+  },
+  "admin.competitions.envUnbuilt": {
+    "ru": "НЕ СОБРАНО",
+    "en": "NOT BUILT"
+  },
+  "admin.competitions.sameAsRoom": {
+    "ru": "то же окружение, что у ядра в занятии",
+    "en": "the same environment the class kernel runs"
+  },
+  "admin.competitions.limit.time": {
+    "ru": "ВРЕМЯ",
+    "en": "TIME"
+  },
+  "admin.competitions.limit.timeUnit": {
+    "ru": "мин на посылку",
+    "en": "min per submission"
+  },
+  "admin.competitions.limit.memory": {
+    "ru": "ПАМЯТЬ",
+    "en": "MEMORY"
+  },
+  "admin.competitions.limit.memoryUnit": {
+    "ru": "ГБ",
+    "en": "GB"
+  },
+  "admin.competitions.limit.cpu": {
+    "ru": "ПРОЦЕССОР",
+    "en": "PROCESSOR"
+  },
+  "admin.competitions.limit.cpuUnit": {
+    "ru": "ядра",
+    "en": "cores"
+  },
+  "admin.competitions.limit.perDay": {
+    "ru": "ПОСЫЛОК В ДЕНЬ",
+    "en": "SUBMISSIONS A DAY"
+  },
+  "admin.competitions.limit.perDayUnit": {
+    "ru": "на участника",
+    "en": "per participant"
+  },
+  "admin.competitions.machineFree": {
+    "ru": "На этой машине свободно {free} ГБ: одна посылка за раз оставляет идущему занятию {rest} ГБ.",
+    "en": "This machine has {free} GB free: one submission at a time leaves {rest} GB to the class in progress."
+  },
+  "admin.competitions.quotaNote": {
+    "ru": "Посылки с ошибкой в счёт дня не идут, если упали до первой ячейки.",
+    "en": "A failed submission does not count against the day if it died before the first cell."
+  },
+  "admin.competitions.section.terms": {
+    "ru": "Сроки и зачёт",
+    "en": "Dates and standings"
+  },
+  "admin.competitions.termsHint": {
+    "ru": "Публичный лидерборд виден всё время. Приватный считается с первой посылки, но скрыт до дедлайна — чтобы под него нельзя было подгониться.",
+    "en": "The public leaderboard is visible the whole time. The private one is computed from the very first submission but stays hidden until the deadline — so nobody can fit to it."
+  },
+  "admin.competitions.startsAt": {
+    "ru": "НАЧАЛО",
+    "en": "START"
+  },
+  "admin.competitions.startsAtHint": {
+    "ru": "пусто — сразу после открытия",
+    "en": "empty — as soon as it opens"
+  },
+  "admin.competitions.deadlineAt": {
+    "ru": "ДЕДЛАЙН",
+    "en": "DEADLINE"
+  },
+  "admin.competitions.deadlineHint": {
+    "ru": "время вашего часового пояса",
+    "en": "in your own time zone"
+  },
+  "admin.competitions.privateBoard": {
+    "ru": "ПРИВАТНЫЙ ЛИДЕРБОРД",
+    "en": "PRIVATE LEADERBOARD"
+  },
+  "admin.competitions.privateAuto": {
+    "ru": "открыть сам после дедлайна",
+    "en": "open it by itself after the deadline"
+  },
+  "admin.competitions.privateManual": {
+    "ru": "открою вручную — на разборе",
+    "en": "I will open it by hand — at the review"
+  },
+  "admin.competitions.scoringHead": {
+    "ru": "ЧТО ИДЁТ В ЗАЧЁТ",
+    "en": "WHAT COUNTS"
+  },
+  "admin.competitions.scoringChosen": {
+    "ru": "участник выбирает одну посылку",
+    "en": "the participant picks one submission"
+  },
+  "admin.competitions.scoringBest": {
+    "ru": "лучшая по публичной",
+    "en": "the best on the public part"
+  },
+  "admin.competitions.scoringLast": {
+    "ru": "последняя",
+    "en": "the last one"
+  },
+  "admin.competitions.scoringNote": {
+    "ru": "Не выбрал — берётся лучшая по публичной части. Выбор между «верю лидерборду» и «верю своей валидации» — половина урока.",
+    "en": "If they pick none, the best on the public part is taken. Choosing between “I trust the leaderboard” and “I trust my own validation” is half the lesson."
+  },
+  "admin.competitions.percentRange": {
+    "ru": "Публичная часть — от {min} до {max} %.",
+    "en": "The public part must be between {min} and {max}%."
+  },
+  "admin.competitions.tab.submissions": {
+    "ru": "Посылки",
+    "en": "Submissions"
+  },
+  "admin.competitions.tab.board": {
+    "ru": "Лидерборд · оба",
+    "en": "Leaderboard · both"
+  },
+  "admin.competitions.tab.entrants": {
+    "ru": "Участники",
+    "en": "Participants"
+  },
+  "admin.competitions.tab.settings": {
+    "ru": "Настройки",
+    "en": "Settings"
+  },
+  "admin.competitions.entrantLink": {
+    "ru": "Ссылка участникам",
+    "en": "Link for participants"
+  },
+  "admin.competitions.boardOnScreen": {
+    "ru": "Лидерборд на проектор",
+    "en": "Leaderboard on the projector"
+  },
+  "admin.competitions.finishNow": {
+    "ru": "Завершить сейчас",
+    "en": "Finish now"
+  },
+  "admin.competitions.finishHeading": {
+    "ru": "Завершить «{name}» сейчас?",
+    "en": "Finish “{name}” now?"
+  },
+  "admin.competitions.finishBodyAuto": {
+    "ru": "Приём посылок закроется у всего класса, а приватный лидерборд откроется сразу: для завершённого соревнования дедлайн уже наступил.",
+    "en": "Submissions close for the whole class, and the private leaderboard opens at once: for a finished competition the deadline has already come."
+  },
+  "admin.competitions.finishBodyManual": {
+    "ru": "Приём посылок закроется у всего класса. Приватный лидерборд останется закрытым, пока вы не откроете его сами.",
+    "en": "Submissions close for the whole class. The private leaderboard stays closed until you open it yourself."
+  },
+  "admin.competitions.openPrivate": {
+    "ru": "Открыть приватный лидерборд",
+    "en": "Open the private leaderboard"
+  },
+  "admin.competitions.runningNow": {
+    "ru": "ИСПОЛНЯЕТСЯ СЕЙЧАС",
+    "en": "RUNNING NOW"
+  },
+  "admin.competitions.cellOf": {
+    "ru": "ячейка {done} из {total}",
+    "en": "cell {done} of {total}"
+  },
+  "admin.competitions.ofClock": {
+    "ru": "{now} из {limit}",
+    "en": "{now} of {limit}"
+  },
+  "admin.competitions.kill": {
+    "ru": "Убить",
+    "en": "Kill"
+  },
+  "admin.competitions.nothingRunning": {
+    "ru": "Сейчас ничего не исполняется.",
+    "en": "Nothing is running right now."
+  },
+  "admin.competitions.waitingHead": {
+    "ru": "ЖДУТ · {count}",
+    "en": "WAITING · {count}"
+  },
+  "admin.competitions.queueEmpty": {
+    "ru": "Очередь пуста.",
+    "en": "The queue is empty."
+  },
+  "admin.competitions.waitingElsewhere": {
+    "ru": "и ещё {count} в других соревнованиях",
+    "en": "and {count} more in other competitions"
+  },
+  "admin.competitions.fairQueue": {
+    "ru": "Очередь честная: у кого уже что-то исполняется, тот пропускает остальных вперёд.",
+    "en": "The queue is fair: whoever already has something running lets the others go first."
+  },
+  "admin.competitions.eta": {
+    "ru": "≈ {time}",
+    "en": "≈ {time}"
+  },
+  "admin.competitions.etaSoon": {
+    "ru": "вот-вот",
+    "en": "any moment"
+  },
+  "admin.competitions.etaUnknown": {
+    "ru": "неизвестно",
+    "en": "unknown"
+  },
+  "admin.competitions.sum.submissions": {
+    "ru": "ПОСЫЛОК",
+    "en": "SUBMISSIONS"
+  },
+  "admin.competitions.sum.scored": {
+    "ru": "ДОШЛИ ДО ЧИСЛА",
+    "en": "REACHED A SCORE"
+  },
+  "admin.competitions.sum.notebookFailed": {
+    "ru": "УПАЛА ТЕТРАДЬ",
+    "en": "NOTEBOOK FAILED"
+  },
+  "admin.competitions.sum.rejected": {
+    "ru": "ОТВЕТ НЕ ПРИНЯТ",
+    "en": "ANSWER REJECTED"
+  },
+  "admin.competitions.sum.timedOut": {
+    "ru": "ВЫШЛО ВРЕМЯ",
+    "en": "OUT OF TIME"
+  },
+  "admin.competitions.median": {
+    "ru": "Медиана исполнения {span}.",
+    "en": "Median run {span}."
+  },
+  "admin.competitions.worstCell": {
+    "ru": "Чаще всего тетради падают на ячейке {cell} — {hits} посылок из {total}.",
+    "en": "Notebooks most often die on cell {cell} — {hits} submissions out of {total}."
+  },
+  "admin.competitions.noSubmissions": {
+    "ru": "Посылок ещё нет",
+    "en": "No submissions yet"
+  },
+  "admin.competitions.noSubmissionsHint": {
+    "ru": "Дайте классу адрес {link} — и первая тетрадь приедет сюда.",
+    "en": "Give the class the address {link} — the first notebook will land here."
+  },
+  "admin.competitions.stateRunning": {
+    "ru": "исполняется",
+    "en": "running"
+  },
+  "admin.competitions.stateQueued": {
+    "ru": "в очереди",
+    "en": "in queue"
+  },
+  "admin.competitions.outcome.metricFailed": {
+    "ru": "Ошибка в вашем коде, не у участника: посылка в счёт не пошла и ждёт пересчёта.",
+    "en": "The error is in your code, not the participant's: this submission did not count and is waiting to be rescored."
+  },
+  "admin.competitions.outcome.newBest": {
+    "ru": "новый лучший результат соревнования",
+    "en": "a new best result for the competition"
+  },
+  "admin.competitions.outcome.chosen": {
+    "ru": "выбрана автором в зачёт",
+    "en": "picked by its author to count"
+  },
+  "admin.competitions.outcome.cellFailed": {
+    "ru": "ячейка {cell}",
+    "en": "cell {cell}"
+  },
+  "admin.competitions.entrantSees": {
+    "ru": "Участник видит: «{text}».",
+    "en": "The participant sees: “{text}”."
+  },
+  "admin.competitions.fixAndRescore": {
+    "ru": "Исправить метрику и пересчитать всех",
+    "en": "Fix the metric and rescore everyone"
+  },
+  "admin.competitions.submissionMenu": {
+    "ru": "Действия: посылка #{number}",
+    "en": "Actions: submission #{number}"
+  },
+  "admin.competitions.menu.notebook": {
+    "ru": "Открыть исполненную тетрадь",
+    "en": "Open the executed notebook"
+  },
+  "admin.competitions.menu.output": {
+    "ru": "Весь вывод",
+    "en": "All output"
+  },
+  "admin.competitions.menu.rerun": {
+    "ru": "Исполнить заново",
+    "en": "Run again"
+  },
+  "admin.competitions.menu.rescore": {
+    "ru": "Пересчитать метрику",
+    "en": "Rescore the metric"
+  },
+  "admin.competitions.menu.drop": {
+    "ru": "Не засчитывать",
+    "en": "Do not count it"
+  },
+  "admin.competitions.moreRows": {
+    "ru": {
+      "one": "Ещё {count} строка не показана.",
+      "few": "Ещё {count} строки не показаны.",
+      "many": "Ещё {count} строк не показано.",
+      "other": "Ещё {count} строки не показаны."
+    },
+    "en": {
+      "one": "{count} more row is not shown.",
+      "other": "{count} more rows are not shown."
+    }
+  },
+  "admin.competitions.showAll": {
+    "ru": "Показать все",
+    "en": "Show all"
+  },
+  "admin.competitions.feedNote": {
+    "ru": "В меню строки: открыть исполненную тетрадь · весь вывод · исполнить заново · не засчитывать. Приватный столбец видите только вы — участникам он откроется после дедлайна.",
+    "en": "In a row's menu: open the executed notebook · all output · run again · do not count it. The private column is yours alone — participants get it after the deadline."
+  },
+  "admin.competitions.noEntrants": {
+    "ru": "Участников ещё нет",
+    "en": "No participants yet"
+  },
+  "admin.competitions.noEntrantsHint": {
+    "ru": "Человек становится участником, когда впервые открывает соревнование и называет себя. Ключ входа он получает там же.",
+    "en": "A person becomes a participant the first time they open the competition and give a name. That is also where they get their sign-in key."
+  },
+  "admin.competitions.keyRevoked": {
+    "ru": "ключ отключён",
+    "en": "key turned off"
+  },
+  "admin.competitions.rotateKey": {
+    "ru": "Выдать новый ключ",
+    "en": "Issue a new key"
+  },
+  "admin.competitions.keyNote": {
+    "ru": "Ключ входа возвращает человека с другого устройства. Новый ключ отключает старый в ту же секунду.",
+    "en": "The sign-in key brings a person back from another device. A new key turns the old one off the same second."
+  },
+  "admin.competitions.noBoard": {
+    "ru": "Лидерборда пока нет",
+    "en": "No leaderboard yet"
+  },
+  "admin.competitions.noBoardHint": {
+    "ru": "В него встают посылки, дошедшие до числа. Пока таких нет.",
+    "en": "It fills with submissions that reached a score. There are none yet."
+  },
+  "admin.competitions.boardBothOpen": {
+    "ru": "Приватный лидерборд открыт: класс видит обе колонки.",
+    "en": "The private leaderboard is open: the class sees both columns."
+  },
+  "admin.competitions.boardBothHidden": {
+    "ru": "Приватную колонку видите только вы — участникам она откроется после дедлайна.",
+    "en": "The private column is yours alone — participants get it after the deadline."
+  },
+  "admin.competitions.unknownEntrant": {
+    "ru": "участник",
+    "en": "participant"
+  },
+  "admin.competitions.runNotebook": {
+    "ru": "ТЕТРАДЬ",
+    "en": "NOTEBOOK"
+  },
+  "admin.competitions.runMetric": {
+    "ru": "МЕТРИКА",
+    "en": "METRIC"
+  },
+  "admin.competitions.noRuns": {
+    "ru": "Прогонов не было.",
+    "en": "There were no runs."
+  },
+  "admin.competitions.artifacts": {
+    "ru": "ЧТО ОСТАЛОСЬ НА ДИСКЕ",
+    "en": "WHAT IS LEFT ON DISK"
+  },
+  "admin.competitions.noArtifacts": {
+    "ru": "От прогона ничего не осталось: каталог уже убран.",
+    "en": "Nothing is left of the run: the folder has been swept."
+  },
+  "admin.competitions.metricUnnamed": {
+    "ru": "метрика",
+    "en": "metric"
+  },
 }

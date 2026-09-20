@@ -38,6 +38,11 @@ services:
       KERNEL_ISOLATION: required
       # This path is resolved by the Docker daemon, not by the app container.
       WORKSPACE_HOST_DIR: ${WORKSPACE_HOST_DIR:-${PWD}/workspace}
+      # The same trick for competition submissions: their throwaway containers
+      # mount the competition's data and answers, and the daemon resolves those
+      # paths on the host. Without this every submission gets an empty data
+      # directory and fails on read_csv — silently, and for everyone at once.
+      DATA_HOST_DIR: ${DATA_HOST_DIR:-${PWD}/data}
       KERNEL_NETWORK: ${KERNEL_NETWORK:-colloq}
       KERNEL_MEM: ${KERNEL_MEM:-4g}
       # Per-environment override, one line per environment that needs its own

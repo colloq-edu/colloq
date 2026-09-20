@@ -18,7 +18,14 @@
     recallSessionInfo,
     rememberSessionInfo,
   } from '@/lib/session-cache'
-  import { handoffLanding, isAdminPath, readCourseId, readPublicRoute, readRoomRoute } from '@/lib/routes'
+  import {
+    handoffLanding,
+    isAdminPath,
+    readCompetitionRoute,
+    readCourseId,
+    readPublicRoute,
+    readRoomRoute,
+  } from '@/lib/routes'
   import { upgradeIfStaff } from '@/screens/staff'
   import { loadLocalizedScreen, reloadAreaMessages } from '@/lib/screen-language'
   import { language, messagesChanged } from '@/lib/i18n.svelte'
@@ -67,6 +74,12 @@
   const isAdmin = $derived(isAdminPath(path))
   const courseId = $derived(readCourseId(path))
   const publicSeminar = $derived(readPublicRoute(path))
+  /*
+   * Соревнования — четвёртая публичная дверь продукта, рядом с курсом и
+   * публикацией: ни комнаты, ни токена участника здесь нет, а личность — своя,
+   * уровня инстанса, и живёт она в печенье, а не в localStorage.
+   */
+  const competition = $derived(readCompetitionRoute(path))
 
   /*
    * The admin panel arrives on demand, for the same reason the notebook's
@@ -110,6 +123,21 @@
   const reader = () =>
     (readerChunk ??= loadLocalizedScreen(
       () => import('@/screens/ReaderScreen.svelte').then((m) => m.default), 'reader', language.current))
+
+  /*
+   * И соревнования — тем же куском и по тому же доводу: `/k` открывают дома с
+   * телефона за час до дедлайна, и редактор, терминал и оракул там не нужны
+   * ни одной строкой. Словарь у них свой (lib/screen-language.ts · competitions).
+   */
+  let competitionsChunk:
+    | Promise<typeof import('@/screens/CompetitionsScreen.svelte').default>
+    | null = null
+  const competitions = () =>
+    (competitionsChunk ??= loadLocalizedScreen(
+      () => import('@/screens/CompetitionsScreen.svelte').then((m) => m.default),
+      'competitions',
+      language.current,
+    ))
 
   let session = $state<SessionInfo | null>(null)
   let identity = $state<StoredIdentity | null>(null)
@@ -473,6 +501,22 @@
       />
     {/await}
   {/key}
+{:else if competition}
+  <!--
+    Страницы соревнований. Стоят перед панелью и перед комнатой, потому что
+    `/k/…` не пересекается ни с тем, ни с другим, а ссылка для входа
+    (`/k/t/<ключ>`) обязана доехать до своего экрана раньше, чем что-нибудь
+    решит, что адрес ему незнаком, и отправит человека в панель.
+
+    Без ключа: `#key` здесь не нужен — переход между вкладками одного
+    соревнования это та же страница, и пересобирать её значило бы загружать
+    задачу заново на каждое нажатие.
+  -->
+  {#await competitions()}
+    <Splash />
+  {:then Competitions}
+    <Competitions route={competition} onnavigate={(next) => navigate(next)} />
+  {/await}
 {:else if isAdmin}
   {#await adminScreen()}
     <Splash />

@@ -37,6 +37,17 @@ import type {
   PublishCandidate,
   SkippedStep,
 } from '@shared/publish'
+import type {
+  CompetitionInput,
+  CompetitionLive,
+  CompetitionView,
+  CompetitionsList,
+  EntrantRow,
+  EntrantsList,
+  QueueSnapshot,
+  SubmissionDetail,
+  SubmissionFeed,
+} from '@shared/competitions-api'
 
 export type AdminErrorReason = AdminErrorBody['reason']
 
@@ -147,7 +158,14 @@ async function request<T>(path: string, init?: RequestInit, base = BASE): Promis
       ...init,
       credentials: 'include',
       headers: {
-        ...(init?.body ? { 'content-type': 'application/json' } : {}),
+        /*
+         * Многочастное тело сюда не попадает: границу знает только браузер, и
+         * подписанное нами `application/json` превратило бы загрузку файла в
+         * запрос, который сервер разобрать не может.
+         */
+        ...(init?.body && !(init.body instanceof FormData)
+          ? { 'content-type': 'application/json' }
+          : {}),
         ...init?.headers,
       },
     })
@@ -187,6 +205,19 @@ async function request<T>(path: string, init?: RequestInit, base = BASE): Promis
 }
 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
+
+/**
+ * Загрузка файлов — тем же разбором отказа, что и остальные двери.
+ *
+ * Своя функция, а не `request` с телом `FormData`: тот ставит
+ * `content-type: application/json` на всё, у чего есть тело, и граница
+ * многочастного тела уехала бы вместе с ним — сервер ответил бы «ожидалась
+ * загрузка файла» на настоящую загрузку файла. Здесь заголовок не ставится
+ * вовсе: его пишет браузер, и только он знает границу.
+ */
+async function sendForm<T>(path: string, form: FormData): Promise<T> {
+  return request<T>(path, { method: 'POST', body: form })
+}
 
 export const adminApi = {
   getInstanceSettings: () => request<InstanceSettings>('/instance/settings'),
@@ -275,6 +306,217 @@ export const adminApi = {
     request<{ active: string }>(`/environments/${encodeURIComponent(name)}/use`, {
       method: 'POST',
     }),
+
+  /* ------------------------------------------------------ соревнования */
+
+  /** Список A1 плюс состояние исполнителя: полоса наверху — про ту же очередь. */
+  listCompetitions: () => request<CompetitionsList>('/competitions'),
+
+  /** Очередь инстанса отдельно — она одна на все соревнования. */
+  competitionQueue: () => request<QueueSnapshot>('/competitions/queue'),
+
+  /** «Приостановить очередь» / «Возобновить очередь». Идущий прогон не трогает. */
+  pauseCompetitionQueue: (paused: boolean) =>
+    request<QueueSnapshot>('/competitions/queue/pause', { method: 'POST', ...json({ paused }) }),
+
+  /** «Убить» — прервать идущий прогон. Отказ значит, что убивать было нечего. */
+  killCompetitionRun: (submissionId: string) =>
+    request<{ killed: boolean }>('/competitions/queue/kill', {
+      method: 'POST',
+      ...json({ submissionId }),
+    }),
+
+  competition: (id: string) => request<CompetitionView>(`/competitions/${encodeURIComponent(id)}`),
+
+  /** Новое — всегда черновиком: открывает его отдельное действие с проверкой. */
+  createCompetition: (body: CompetitionInput) =>
+    request<CompetitionView>('/competitions', { method: 'POST', ...json(body) }),
+
+  /**
+   * Правка — только тем, что послали.
+   *
+   * Сервер трогает пришедшие поля и не трогает остальные, поэтому форма может
+   * слать свой кусок: редактор и вкладка «Настройки» показывают разное.
+   */
+  updateCompetition: (id: string, body: CompetitionInput) =>
+    request<CompetitionView>(`/competitions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      ...json(body),
+    }),
+
+  /** Вместе с каталогом, в котором лежат ответы. Только владелец. */
+  deleteCompetition: (id: string) =>
+    request<void>(`/competitions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  /** Код метрики своей дверью: редактор кода не видел остальной формы. */
+  saveCompetitionMetric: (
+    id: string,
+    metric: { name?: string; direction?: 'lower' | 'higher'; code?: string },
+  ) =>
+    request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/metric`, {
+      method: 'PUT',
+      ...json(metric),
+    }),
+
+  /** Открытые файлы данных: то, что участник увидит в `data/`. */
+  uploadCompetitionData: (id: string, files: readonly File[]) => {
+    const form = new FormData()
+    for (const file of files) form.append('file', file, file.name)
+    return sendForm<CompetitionView>(`/competitions/${encodeURIComponent(id)}/files`, form)
+  },
+
+  deleteCompetitionFile: (id: string, name: string) =>
+    request<CompetitionView>(
+      `/competitions/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`,
+      { method: 'DELETE' },
+    ),
+
+  /**
+   * Ответы — своей дверью, не параметром у предыдущей.
+   *
+   * Перепутанный каталог здесь значит «выдал ответы классу», и такая ошибка
+   * обязана выглядеть как другое имя метода, а не как другое значение поля.
+   */
+  uploadCompetitionSolution: (id: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file, file.name)
+    return sendForm<CompetitionView>(`/competitions/${encodeURIComponent(id)}/solution`, form)
+  },
+
+  deleteCompetitionSolution: (id: string, name: string) =>
+    request<CompetitionView>(
+      `/competitions/${encodeURIComponent(id)}/solution/${encodeURIComponent(name)}`,
+      { method: 'DELETE' },
+    ),
+
+  uploadCompetitionBaseline: (id: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file, file.name)
+    return sendForm<CompetitionView>(`/competitions/${encodeURIComponent(id)}/baseline`, form)
+  },
+
+  /** Проверить сэмпл-тетрадь целиком: она пойдёт в общую очередь как посылка. */
+  checkCompetitionBaseline: (id: string) =>
+    request<{ submissionId: string }>(`/competitions/${encodeURIComponent(id)}/baseline/check`, {
+      method: 'POST',
+    }),
+
+  /** «Проверить на бейзлайне» — только метрика, без повторного запуска тетради. */
+  checkCompetitionMetric: (id: string) =>
+    request<{ submissionId: string }>(`/competitions/${encodeURIComponent(id)}/metric/check`, {
+      method: 'POST',
+    }),
+
+  /** Отказ приезжает с reason 'not_ready' и фразой про недостающую секцию. */
+  openCompetition: (id: string) =>
+    request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/open`, { method: 'POST' }),
+
+  /** «Завершить сейчас». Только владелец: приём закрывается у всего класса. */
+  finishCompetition: (id: string) =>
+    request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/finish`, { method: 'POST' }),
+
+  /** «Открою вручную — на разборе». */
+  openPrivateBoard: (id: string) =>
+    request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/private-board`, {
+      method: 'POST',
+    }),
+
+  /** Один снимок живого состояния A3 — для экрана без потока. */
+  competitionLive: (id: string) =>
+    request<CompetitionLive>(`/competitions/${encodeURIComponent(id)}/live`),
+
+  /**
+   * Адрес живого потока (`EventSource`), а не сам поток.
+   *
+   * Подписку держит экран: она живёт столько же, сколько он, и закрывать её
+   * должен тот же, кто открыл. Здесь — только знание о том, где она лежит.
+   */
+  competitionStreamUrl: (id: string) => `${BASE}/competitions/${encodeURIComponent(id)}/stream`,
+
+  competitionSubmissions: (
+    id: string,
+    opts: { state?: string; entrant?: string; q?: string; limit?: number; offset?: number } = {},
+  ) => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries(opts)) {
+      if (value !== undefined && value !== '') query.set(key, String(value))
+    }
+    const tail = query.toString()
+    return request<SubmissionFeed>(
+      `/competitions/${encodeURIComponent(id)}/submissions${tail ? `?${tail}` : ''}`,
+    )
+  },
+
+  /** «Весь вывод»: прогоны, трейс метрики и что осталось на диске. */
+  competitionSubmission: (id: string, submissionId: string) =>
+    request<SubmissionDetail>(
+      `/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(submissionId)}`,
+    ),
+
+  /** «Открыть исполненную тетрадь» — ссылка, по которой её отдают. */
+  submissionFileUrl: (id: string, submissionId: string, name: string) =>
+    `${BASE}/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(
+      submissionId,
+    )}/file/${encodeURIComponent(name)}`,
+
+  /** «Исполнить заново»: та же тетрадь, новый контейнер, с нуля. */
+  rerunSubmission: (id: string, submissionId: string) =>
+    request<{ submissionId: string }>(
+      `/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(
+        submissionId,
+      )}/rerun`,
+      { method: 'POST' },
+    ),
+
+  /** Пересчитать метрику одной посылки — тетрадь не запускается. */
+  rescoreSubmission: (id: string, submissionId: string) =>
+    request<{ submissionId: string }>(
+      `/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(
+        submissionId,
+      )}/rescore`,
+      { method: 'POST' },
+    ),
+
+  /** «Не засчитывать». Только владелец: это чужой результат. */
+  dropSubmission: (id: string, submissionId: string) =>
+    request<{ submission: unknown }>(
+      `/competitions/${encodeURIComponent(id)}/submissions/${encodeURIComponent(
+        submissionId,
+      )}/drop`,
+      { method: 'POST' },
+    ),
+
+  /** «Исправить метрику и пересчитать всех» — после правки кода. */
+  rescoreCompetition: (id: string) =>
+    request<{ queued: number }>(`/competitions/${encodeURIComponent(id)}/rescore`, {
+      method: 'POST',
+    }),
+
+  /** Участники соревнования: место, посылки и ключ входа. */
+  competitionEntrants: (id: string) =>
+    request<EntrantsList>(`/competitions/${encodeURIComponent(id)}/entrants`),
+
+  /** Все участники инстанса — личность у них общая, а не комнатная. */
+  listEntrants: () => request<EntrantsList>('/competitions/entrants'),
+
+  createEntrant: (name: string) =>
+    request<{ entrant: EntrantRow; key: string }>('/competitions/entrants', {
+      method: 'POST',
+      ...json({ name }),
+    }),
+
+  updateEntrant: (id: string, body: { name?: string; disabled?: boolean }) =>
+    request<{ entrant: EntrantRow }>(`/competitions/entrants/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      ...json(body),
+    }),
+
+  /** Новый ключ. Старый перестаёт действовать в ту же секунду — только владелец. */
+  rotateEntrantKey: (id: string) =>
+    request<{ entrant: EntrantRow; key: string }>(
+      `/competitions/entrants/${encodeURIComponent(id)}/rotate`,
+      { method: 'POST' },
+    ),
 
   /* ------------------------------------------------------------ seminars */
 

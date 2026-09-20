@@ -1,0 +1,906 @@
+/**
+ * Очередь исполнения посылок — одна на инстанс, и насос над ней.
+ *
+ * УСТРОЙСТВО В ПЯТИ ФРАЗАХ. Очередь живёт в базе (store.ts), а не в памяти:
+ * пара идёт полтора часа, посылки копятся всё это время, и перезапуск сервера
+ * не должен означать «тридцать человек прислали в пустоту». Насос — это один
+ * таймер, который берёт работу транзакцией `takeNext` и запускает её, не
+ * дожидаясь; мест по умолчанию одно, потому что на машине преподавателя рядом
+ * идёт занятие, и вторая посылка отнимает у него память, а не ускоряет
+ * очередь. Работа идёт двумя шагами в двух одноразовых контейнерах — тетрадь,
+ * потом метрика, — и между ними переезжает ровно один файл. Всё, что знает о
+ * docker, лежит за дверью `runner-port.ts`: здесь решают, ЧЬЯ работа идёт
+ * следующей и что записать в строку посылки. И на старте процесса очередь
+ * поднимает осиротевшее: строка «исполняется», помеченная чужой жизнью
+ * процесса, — это прогон, у которого больше нет контейнера.
+ *
+ * ЧЕГО ЗДЕСЬ НЕТ. Ни одного `docker`, ни одного пути на диске, собранного
+ * руками, ни одной копии правил соревнования. Пути — `storage.ts`, правила —
+ * `@shared/competitions`, строки — `store.ts`. Этот модуль их связывает, и
+ * поэтому он читается сверху вниз, а не вширь.
+ */
+import { randomBytes } from 'node:crypto'
+import path from 'node:path'
+import { tr } from '@shared/i18n'
+import '../admin/settings.js'
+import { db } from '../db.js'
+import {
+  BOOT,
+  enqueue,
+  finishRun,
+  getCompetition,
+  getSubmission,
+  leaveQueue,
+  listSubmissions,
+  noteQueueContainer,
+  orphanedRuns,
+  queuePaused,
+  queueRow,
+  queueRows,
+  reclaimQueue,
+  runningRows,
+  setQueuePaused,
+  startRun,
+  takeNext,
+  updateSubmission,
+  waitingCount,
+  type QueueRow,
+} from './store.js'
+import {
+  competitionsFs,
+  dropScoreDirs,
+  freshScoreDir,
+  freshScoreOutDir,
+  inputDir,
+  NOTEBOOK_FILE,
+  openDir,
+  readResultFile,
+  resultDir,
+  scoreDir,
+  secretDir,
+  putSecretFile,
+  SOLUTION_FILE,
+  SUBMISSION_FILE,
+} from './storage.js'
+import { METRIC_NAME } from './docker-runner.js'
+import {
+  competitionBackend,
+  competitionRunner,
+  limitsFor,
+  type CompetitionBackend,
+  type RunOutcome,
+  type ScoreOutcome,
+} from './runner-port.js'
+import {
+  LIMITS,
+  isTerminal,
+  stateOfVerdict,
+  type Competition,
+  type RunKind,
+  type Submission,
+} from '@shared/competitions'
+
+/*
+ * Оба прогонщика грузятся здесь и только здесь.
+ *
+ * Модуль-порт знает лишь то, что они существуют: импортировать их оттуда
+ * значило бы затянуть сборку аргументов docker в процесс, который её никогда
+ * не позовёт. Регистрация происходит при загрузке модуля (registerCompetitionRunner).
+ */
+import './docker-runner.js'
+import './fake-runner.js'
+
+/**
+ * Имя контейнера — по нему его убивают и по нему же ищут в журнале docker.
+ *
+ * Префикс общий с комнатами (`colloq-`), чтобы всё хозяйство инстанса
+ * находилось одним `docker ps`. Случайный хвост, а не номер захода: контейнер
+ * прошлой посылки может ещё доживать свои миллисекунды, когда начинается
+ * повтор, и `docker run` с занятым именем отказывает целиком.
+ */
+export function containerName(submissionId: string, kind: RunKind, token: string): string {
+  return `colloq-comp-${submissionId}-${token}-${kind === 'metric' ? 'score' : 'run'}`
+}
+
+const newToken = (): string => randomBytes(4).toString('hex')
+
+/* --------------------------------------------------------------- настройка */
+
+/**
+ * Сколько посылок исполнять разом.
+ *
+ * Ключ в общем ящике инстанса (instance_settings), а не столбец в таблице
+ * очереди: это настройка МАШИНЫ, соседняя с настройками оракула, а не
+ * состояние очереди вроде паузы. Умолчание — одно место: при четырёх
+ * гигабайтах на посылку в виртуалку докера их помещается две, и это ещё до
+ * ядер живых комнат.
+ */
+const SLOTS_KEY = 'competitions.slots'
+export const DEFAULT_SLOTS = 1
+export const MAX_SLOTS = 8
+
+/*
+ * Ящик заводит `admin/settings`, и импорт здесь — не украшение: без него
+ * таблицы к моменту подготовки запросов ниже может ещё не быть, и очередь
+ * падала бы на старте у всякого, кто поднял её раньше панели. Тот же импорт
+ * ставит на место переводчик, читающий язык инстанса, — а строки, которые
+ * прогонщик пишет участнику, идут через `tr`.
+ */
+const readSetting = db.prepare('SELECT value FROM instance_settings WHERE key = ?')
+const writeSetting = db.prepare(`
+  INSERT INTO instance_settings (key, value) VALUES (?, ?)
+  ON CONFLICT(key) DO UPDATE SET value = excluded.value
+`)
+
+export function queueSlots(): number {
+  const row = readSetting.get(SLOTS_KEY) as { value: string } | undefined
+  const asked = Number(row?.value)
+  if (!Number.isFinite(asked)) return DEFAULT_SLOTS
+  return Math.min(MAX_SLOTS, Math.max(1, Math.floor(asked)))
+}
+
+export function setQueueSlots(slots: number): number {
+  const value = Math.min(MAX_SLOTS, Math.max(1, Math.floor(Number(slots) || DEFAULT_SLOTS)))
+  writeSetting.run(SLOTS_KEY, String(value))
+  return value
+}
+
+/**
+ * Запас памяти сверх того, что просит посылка.
+ *
+ * Контейнер стоит не только своим `--memory`: сверх него есть слой docker, сам
+ * процесс python до первой строки тетради и tmpfs, который в лимит входит, но
+ * занимается не сразу. Двести пятьдесят шесть мегабайт — та подушка, при
+ * которой `docker run` не отказывает на границе.
+ */
+const RUN_RESERVE_MB = 256
+
+/**
+ * Хватает ли машины на новую работу.
+ *
+ * `null` — «честно не знаем» (нет /proc, не отвечает демон), и это НЕ повод
+ * отказать: очередь, вставшая из-за того, что не прочитался файл, хуже
+ * посылки, которой отказал docker. Отказ здесь — только когда мы точно знаем,
+ * что памяти нет.
+ */
+export function enoughMemory(availableMb: number | null, needMb: number): boolean {
+  if (availableMb === null) return true
+  return availableMb >= needMb + RUN_RESERVE_MB
+}
+
+/**
+ * Сколько памяти нужно самой тяжёлой из ждущих работ.
+ *
+ * Именно самой тяжёлой, а не следующей по очереди, и это не осторожность, а
+ * честность очереди: пропустив вперёд лёгкую посылку, потому что тяжёлая не
+ * помещается, насос сломал бы тот самый порядок, который обещан подписью
+ * «третья в очереди». Пусть лучше очередь подождёт освободившейся памяти.
+ */
+/**
+ * Дать контейнеру прочитать то, что мы ему смонтировали.
+ *
+ * Файлы соревнования пишутся режимом 0600 — правильно для каталога внутри
+ * DATA_DIR (0700), но контейнер ходит от uid 1000, и это не обязательно uid
+ * сервера. Под `make up` они совпадают (в образе `USER node` — тот же 1000), а
+ * на хозяйской машине — как повезёт: посылка молча не прочитает ни данных, ни
+ * своей тетради, и в журнале это будет выглядеть как «тетрадь не нашла
+ * train.csv».
+ *
+ * Отсюда, а не из storage.ts: режим меняется не потому, что так правильно
+ * хранить, а потому, что этого требует docker. Каталог всё равно лежит внутри
+ * DATA_DIR, куда чужому не войти.
+ */
+function letContainerRead(dir: string): void {
+  try {
+    competitionsFs.chmodSync(dir, 0o755)
+    for (const name of competitionsFs.readdirSync(dir) as string[]) {
+      const file = path.join(dir, name)
+      if (competitionsFs.statSync(file).isDirectory()) letContainerRead(file)
+      else competitionsFs.chmodSync(file, 0o644)
+    }
+  } catch {
+    // Не вышло — пусть решает docker: отказ по правам он называет вслух, а
+    // ронять из-за этого посылку нечестно.
+  }
+}
+
+/** И записать: в `/result` и в каталог ответа метрики пишет контейнер, а не мы. */
+function letContainerWrite(dir: string): void {
+  try {
+    competitionsFs.chmodSync(dir, 0o777)
+  } catch {
+    /* см. выше */
+  }
+}
+
+function pendingNeedMb(): number {
+  let need = 0
+  for (const row of queueRows()) {
+    if (row.state !== 'waiting') continue
+    const competition = getCompetition(row.competitionId)
+    // Соревнования уже нет, а строка в очереди есть: работа снимется сама, и
+    // памяти ей не нужно ни мегабайта.
+    if (!competition) continue
+    // Пересчёт метрики тяжёлым не бывает: у неё свои два гигабайта.
+    need = Math.max(need, limitsFor(competition, row.kind).memoryMb)
+  }
+  return need
+}
+
+/* ------------------------------------------------------------------ насос */
+
+/** Идущие в ЭТОМ процессе работы: по ним видно, кого ещё ждать при остановке. */
+const inFlight = new Map<string, Promise<void>>()
+
+/** Посылки, которые велели снять. Читается прогоном в конце, а не в начале. */
+const cancelled = new Map<string, 'entrant' | 'teacher'>()
+
+let timer: NodeJS.Timeout | null = null
+let pumping = false
+let stopped = false
+
+/**
+ * Взять столько работ, сколько машина и настройка позволяют, и НЕ ждать их.
+ *
+ * Не ждать — принципиально: при двух местах вторая посылка должна начаться,
+ * пока идёт первая, а не после неё. Возвращается число начатых — по нему
+ * `drainCompetitionQueue` понимает, что брать больше нечего.
+ */
+export async function pumpOnce(): Promise<number> {
+  if (pumping || stopped) return 0
+  pumping = true
+  let started = 0
+  try {
+    if (queuePaused()) return 0
+    const slots = queueSlots()
+    if (runningRows().length >= slots) return 0
+    if (waitingCount() === 0) return 0
+    const need = pendingNeedMb()
+    const { availableMb } = await competitionRunner().capacity()
+    if (!enoughMemory(availableMb, need)) {
+      warnOnce(
+        `[competitions] на машине свободно ${availableMb} МБ, посылке нужно ${need} — очередь ждёт`,
+      )
+      return 0
+    }
+    forgetWarning()
+    for (;;) {
+      const row = takeNext({ boot: BOOT, slots })
+      if (!row) break
+      started++
+      const job = runJob(row).finally(() => {
+        inFlight.delete(row.submissionId)
+      })
+      inFlight.set(row.submissionId, job)
+    }
+  } finally {
+    pumping = false
+  }
+  return started
+}
+
+/** Дождаться всего, что идёт в этом процессе. */
+export function settleCompetitionWork(): Promise<void> {
+  return Promise.all([...inFlight.values()]).then(() => undefined)
+}
+
+/**
+ * Прогнать очередь до конца и дождаться её.
+ *
+ * Тестам и стенду: там нет секунды, которую можно подождать таймер, а
+ * проверять надо ровно то, что очередь доходит до конца сама.
+ */
+export async function drainCompetitionQueue(rounds = 50): Promise<void> {
+  for (let i = 0; i < rounds; i++) {
+    const started = await pumpOnce()
+    await settleCompetitionWork()
+    if (started === 0 && inFlight.size === 0) {
+      // Работа могла появиться, пока шла предыдущая (пересчёт, повтор).
+      if (waitingCount() === 0 || queuePaused()) return
+    }
+  }
+}
+
+/** Разбудить насос — после принятой посылки, снятой паузы, пересчёта. */
+export function wakeCompetitionPump(): void {
+  if (stopped || timer === null) return
+  void pumpOnce()
+}
+
+const TICK_MS = 1_000
+
+/**
+ * Поднять насос.
+ *
+ * Зовётся один раз при старте процесса, после `reclaimCompetitionQueue`.
+ * Таймер, а не «будить только на событие»: разбудить очередь должно и
+ * освобождение памяти, и снятая пауза в соседней вкладке, и конец чужой
+ * работы, — а секунда задержки для посылки, которая идёт минуты, не значит
+ * ничего.
+ */
+export function startCompetitionPump(): void {
+  if (timer) return
+  stopped = false
+  timer = setInterval(() => void pumpOnce(), TICK_MS)
+  // Таймер очереди не должен держать процесс живым: он уходит вместе с ним.
+  timer.unref?.()
+  void pumpOnce()
+}
+
+/** Остановить насос и дождаться идущего. Новых работ после этого не берут. */
+export async function stopCompetitionPump(): Promise<void> {
+  stopped = true
+  if (timer) clearInterval(timer)
+  timer = null
+  await settleCompetitionWork()
+}
+
+let warned = ''
+function warnOnce(text: string): void {
+  if (warned === text) return
+  warned = text
+  console.warn(text)
+}
+function forgetWarning(): void {
+  warned = ''
+}
+
+/* -------------------------------------------------------------- при старте */
+
+/**
+ * Поднять то, что осталось от прошлой жизни процесса.
+ *
+ * Строка «исполняется» с чужим `boot` означает ровно одно: сервер
+ * перезапустили, пока посылка шла. Контейнера, скорее всего, уже нет, но если
+ * есть — его имя лежит рядом, и снять его должен тот, кто это прочитал.
+ * Зовётся ОДИН раз, до насоса: две такие уборки подряд подняли бы одну работу
+ * дважды.
+ */
+export async function reclaimCompetitionQueue(): Promise<{
+  requeued: number
+  abandoned: number
+  swept: number
+}> {
+  const orphans = orphanedRuns(BOOT)
+  const { requeued, abandoned } = reclaimQueue(BOOT)
+  const runner = competitionRunner()
+  for (const row of orphans) {
+    if (row.container) await runner.kill(row.container).catch(() => undefined)
+  }
+  for (const row of requeued) {
+    /*
+     * Строка посылки осталась «выполняется» — она о перезапуске не знает. Без
+     * этой правки участник до следующего подъёма работы смотрел бы на таймер,
+     * который не движется, и на полосу этапов, застрявшую на «ЗАПУСК ТЕТРАДИ».
+     */
+    updateSubmission(row.submissionId, { state: 'queued', stage: 'queue' })
+  }
+  const swept = await runner.sweep().catch(() => 0)
+  if (requeued.length || abandoned.length || swept) {
+    console.log(
+      `[competitions] после перезапуска: поднято ${requeued.length}, брошено ${abandoned.length}, снято контейнеров ${swept}`,
+    )
+  }
+  return { requeued: requeued.length, abandoned: abandoned.length, swept }
+}
+
+/* ------------------------------------------------------------------ работа */
+
+async function runJob(row: QueueRow): Promise<void> {
+  const submission = getSubmission(row.submissionId)
+  const competition = submission ? getCompetition(submission.competitionId) : null
+  if (!submission || !competition) {
+    // Соревнование удалили, пока посылка ждала: снимать нечего, и держать
+    // строку в очереди незачем.
+    leaveQueue(row.submissionId)
+    return
+  }
+  try {
+    if (row.kind === 'metric') await scoreOnly(competition, submission)
+    else await runNotebookThenScore(competition, submission)
+  } catch (err) {
+    /*
+     * Сюда попадает только наша собственная поломка — не падение тетради и не
+     * падение метрики, у тех есть свои исходы. Участник в ней не виноват, и
+     * слово `metricFailed` выбрано именно поэтому: он прочтёт «проверяющий код
+     * упал, посылка будет пересчитана», а не обвинение своей тетради.
+     */
+    console.error('[competitions] прогон сорвался', err)
+    updateSubmission(submission.id, {
+      state: 'metricFailed',
+      teacherError: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+    })
+  } finally {
+    leaveQueue(row.submissionId)
+    cancelled.delete(row.submissionId)
+  }
+}
+
+/** Шаг первый и, если он удался, шаг второй. */
+async function runNotebookThenScore(competition: Competition, submission: Submission): Promise<void> {
+  const runner = competitionRunner()
+  const limits = limitsFor(competition, 'notebook')
+  const container = containerName(submission.id, 'notebook', newToken())
+  const run = startRun({ submissionId: submission.id, kind: 'notebook', container })
+  // Имя ложится и в строку очереди: контейнер переживает процесс, который его
+  // запустил, и снимать его после перезапуска будет уже другая жизнь сервера.
+  noteQueueContainer(submission.id, container)
+  updateSubmission(submission.id, {
+    state: 'running',
+    stage: 'notebook',
+    cellsDone: 0,
+    participantError: null,
+    teacherError: null,
+  })
+
+  const data = openDir(competition.id)
+  const input = inputDir(competition.id, submission.id)
+  const result = resultDir(competition.id, submission.id)
+  if (runner.backend === 'docker') {
+    letContainerRead(data)
+    letContainerRead(input)
+    letContainerWrite(result)
+  }
+
+  const outcome = await runner.run({
+    competition,
+    submissionId: submission.id,
+    container,
+    dataDir: data,
+    inputDir: input,
+    resultDir: result,
+    limits,
+    onProgress: (progress) => {
+      updateSubmission(submission.id, {
+        cellsDone: progress.cell + 1,
+        cellsTotal: progress.cells,
+      })
+    },
+  })
+  finishRun(run.id, {
+    finishedAt: Date.now(),
+    verdict: outcome.status,
+    exitCode: outcome.diagnostics.exit,
+    oom: outcome.diagnostics.oomKilled,
+    cellsDone: outcome.cell + 1,
+    cellsTotal: outcome.cells,
+    participantError: notebookNote(outcome, competition),
+    teacherError: teacherNote(outcome),
+  })
+
+  if (takeCancellation(submission.id, outcome.wall)) return
+  if (outcome.status !== 'ok') {
+    updateSubmission(submission.id, {
+      state: stateOfVerdict('notebook', outcome.status),
+      stage: outcome.status === 'no-submission' ? 'check' : 'notebook',
+      durationMs: outcome.wall,
+      cellsDone: outcome.cell + 1,
+      cellsTotal: outcome.cells,
+      participantError: notebookNote(outcome, competition),
+      teacherError: teacherNote(outcome),
+    })
+    return
+  }
+
+  /*
+   * Этап «ПРОВЕРКА CSV» — не украшение полосы. Между «тетрадь исполнилась» и
+   * «метрика посчитала» лежит единственная вещь, которую участник забывает
+   * чаще всего: записать ответ. Отдельным этапом он видит, где именно
+   * оборвалось.
+   */
+  updateSubmission(submission.id, {
+    stage: 'check',
+    cellsDone: outcome.cell + 1,
+    cellsTotal: outcome.cells,
+  })
+  const answer = readAnswer(competition.id, submission.id)
+  if (typeof answer === 'string') {
+    updateSubmission(submission.id, {
+      state: 'rejected',
+      stage: 'check',
+      durationMs: outcome.wall,
+      participantError: answer,
+    })
+    return
+  }
+  await scoreStep(competition, submission, answer, outcome.wall, outcome)
+}
+
+/**
+ * Забранный ответ — или строка, объясняющая участнику, почему его нет.
+ *
+ * Пусто и слишком велико разведены нарочно: «файл не записан» и «файл на 80
+ * мегабайт» — это два разных разговора, и участник, прочитавший первое вместо
+ * второго, пойдёт искать ошибку не там.
+ */
+function readAnswer(competitionId: string, submissionId: string): Buffer | string {
+  const file = path.join(resultDir(competitionId, submissionId), SUBMISSION_FILE)
+  let size: number
+  try {
+    size = competitionsFs.statSync(file).size
+  } catch {
+    return tr('competitions.answer.noFile', { file: SUBMISSION_FILE })
+  }
+  if (size > LIMITS.submissionBytes) {
+    return tr('competitions.answer.tooLarge', {
+      file: SUBMISSION_FILE,
+      count: Math.round(LIMITS.submissionBytes / MB),
+    })
+  }
+  const body = readResultFile(competitionId, submissionId, SUBMISSION_FILE, LIMITS.submissionBytes)
+  return body ?? tr('competitions.answer.unreadable', { file: SUBMISSION_FILE })
+}
+
+/** Пересчёт: метрика по сохранённому ответу, без повторного исполнения тетради. */
+async function scoreOnly(competition: Competition, submission: Submission): Promise<void> {
+  const answer = readAnswer(competition.id, submission.id)
+  if (typeof answer === 'string') {
+    /*
+     * Пересчитать нечего: ответ с диска ушёл (уборка старых посылок) или его и
+     * не было. Тетрадь второй раз не запускаем — это отдельное действие с
+     * отдельной кнопкой; здесь честнее сказать преподавателю, что посылка
+     * выпала из пересчёта.
+     */
+    updateSubmission(submission.id, {
+      state: 'metricFailed',
+      stage: 'check',
+      teacherError: tr('competitions.answer.gone', { file: SUBMISSION_FILE }),
+    })
+    return
+  }
+  updateSubmission(submission.id, {
+    state: 'running',
+    stage: 'score',
+    participantError: null,
+    teacherError: null,
+  })
+  await scoreStep(competition, submission, answer, submission.durationMs ?? 0, null)
+}
+
+/** Шаг второй: метрика преподавателя во втором одноразовом контейнере. */
+async function scoreStep(
+  competition: Competition,
+  submission: Submission,
+  answer: Buffer,
+  notebookWall: number,
+  notebook: RunOutcome | null,
+): Promise<void> {
+  const runner = competitionRunner()
+  updateSubmission(submission.id, { stage: 'score' })
+
+  const missing = prepareSecrets(competition)
+  if (missing) {
+    updateSubmission(submission.id, {
+      state: 'metricFailed',
+      stage: 'score',
+      durationMs: notebookWall,
+      teacherError: missing,
+    })
+    return
+  }
+
+  const container = containerName(submission.id, 'metric', newToken())
+  const run = startRun({ submissionId: submission.id, kind: 'metric', container })
+  noteQueueContainer(submission.id, container)
+
+  // Ответ переезжает в свой, НОВЫЙ каталог: контейнер метрики не должен видеть
+  // ни исполненную тетрадь участника, ни её вывод. Каталог для ответа метрики
+  // — отдельный, СОСЕДНИЙ: один и тот же путь, смонтированный и на чтение, и
+  // на запись, отдал бы сторожу размер ответа как «метрика пишет на диск».
+  freshScoreDir(competition.id, submission.id, answer)
+  const outDir = freshScoreOutDir(competition.id, submission.id)
+  if (runner.backend === 'docker') {
+    letContainerRead(secretDir(competition.id))
+    letContainerRead(scoreDir(competition.id, submission.id))
+    letContainerWrite(outDir)
+  }
+
+  let outcome: ScoreOutcome
+  try {
+    outcome = await runner.score({
+      competition,
+      submissionId: submission.id,
+      container,
+      secretDir: secretDir(competition.id),
+      submissionDir: scoreDir(competition.id, submission.id),
+      outDir,
+      limits: limitsFor(competition, 'metric'),
+    })
+  } finally {
+    /*
+     * Вторая копия ответа и json метрики живут ровно на время подсчёта. Держать
+     * их дальше значит хранить каждый ответ дважды: на соревновании в триста
+     * посылок это гигабайты, которых никто не читает. Пересчёт заводит каталог
+     * заново — он и обязан быть новым.
+     */
+    dropScoreDirs(competition.id, submission.id)
+  }
+  const state = stateOfVerdict('metric', outcome.status)
+  const participant = metricNote(outcome)
+  finishRun(run.id, {
+    finishedAt: Date.now(),
+    verdict: outcome.status,
+    exitCode: outcome.diagnostics.exit,
+    oom: outcome.diagnostics.oomKilled,
+    publicScore: outcome.public,
+    privateScore: outcome.private,
+    participantError: participant,
+    teacherError: outcome.teacherOnly,
+  })
+  if (takeCancellation(submission.id, notebookWall + outcome.wall)) return
+
+  updateSubmission(submission.id, {
+    state,
+    stage: 'score',
+    durationMs: notebookWall + outcome.wall,
+    publicScore: state === 'scored' ? outcome.public : null,
+    privateScore: state === 'scored' ? outcome.private : null,
+    participantError: participant,
+    teacherError: outcome.teacherOnly,
+    ...(notebook ? { cellsDone: notebook.cell + 1, cellsTotal: notebook.cells } : {}),
+  })
+}
+
+/**
+ * Ответы и код метрики на месте? Строка — чего не хватает, `null` — всё есть.
+ *
+ * Код метрики кладётся на диск КАЖДЫЙ раз, и это дешевле любой попытки
+ * угадать, поменялся ли он: преподаватель правит метрику ровно тогда, когда
+ * она упала, и посылка, пересчитанная старым кодом, выглядела бы как
+ * неисправленная ошибка. Мы пишем файл ВНУТРИ смонтированного каталога, а не
+ * монтируем сам файл, — именно поэтому перезапись безопасна (см. шапку
+ * storage.ts про virtiofs).
+ */
+function prepareSecrets(competition: Competition): string | null {
+  const code = competition.metric.code.trim()
+  if (!code) return tr('competitions.answer.noMetric')
+  if (!competitionsFs.existsSync(path.join(secretDir(competition.id), SOLUTION_FILE))) {
+    return tr('competitions.answer.noSolution', { file: SOLUTION_FILE })
+  }
+  putSecretFile(competition.id, METRIC_NAME, Buffer.from(`${code}\n`, 'utf8'))
+  return null
+}
+
+/**
+ * Посылку велели снять — записать это и уйти.
+ *
+ * Проверяется ПОСЛЕ шага, а не до: контейнер уже убит, работа кончилась, и
+ * единственное, что осталось, — не записать участнику «вышло время» за то, что
+ * он сам нажал «Отменить».
+ */
+function takeCancellation(submissionId: string, durationMs: number): boolean {
+  const by = cancelled.get(submissionId)
+  if (!by) return false
+  cancelled.delete(submissionId)
+  updateSubmission(submissionId, {
+    state: 'cancelled',
+    durationMs,
+    participantError: null,
+    teacherError: tr(by === 'teacher' ? 'competitions.answer.killedByTeacher' : 'competitions.answer.killedByEntrant'),
+  })
+  return true
+}
+
+/* ------------------------------------------------------------------ слова */
+
+const MB = 1024 * 1024
+
+/**
+ * Что читает УЧАСТНИК про упавшую тетрадь.
+ *
+ * Трассировка упавшей ячейки уезжает ему дословно: он её и писал, и «ошибка в
+ * тетради» без единой строки причины — это отказ, за которым он придёт к
+ * преподавателю. Всё остальное — наши слова, и они называют число: «не
+ * уложилась в 10 минут» полезнее, чем «лимит времени».
+ */
+export function notebookNote(outcome: RunOutcome, competition: Competition): string | null {
+  const at = outcome.cell + 1
+  switch (outcome.status) {
+    case 'ok':
+      return null
+    case 'cell_error':
+      if (outcome.diagnostics.killedBy === 'output') {
+        return tr('competitions.answer.tooMuchOutput', {
+          count: Math.round((outcome.diagnostics.peakBytes ?? 0) / MB) || 64,
+          cell: at,
+        })
+      }
+      return outcome.detail
+        ? `${tr('competitions.answer.cellFailed', { cell: at, cells: outcome.cells })}\n\n${outcome.detail}`
+        : tr('competitions.answer.cellFailed', { cell: at, cells: outcome.cells })
+    case 'cell_timeout':
+    case 'timeout':
+      return tr('competitions.answer.timeout', {
+        count: Math.max(1, Math.round(competition.limits.wallSeconds / 60)),
+        cell: at,
+        cells: outcome.cells,
+      })
+    case 'out-of-memory':
+      return tr('competitions.answer.outOfMemory', {
+        count: Math.max(1, Math.round(competition.limits.memoryMb / 1024)),
+        cell: at,
+      })
+    case 'kernel_died':
+      return tr('competitions.answer.kernelDied', { cell: at })
+    case 'exit':
+      return tr('competitions.answer.exited', { cell: at })
+    case 'target_too_large':
+      return tr('competitions.answer.tooLarge', {
+        file: SUBMISSION_FILE,
+        count: Math.round(LIMITS.submissionBytes / MB),
+      })
+    case 'target_unreadable':
+      return outcome.detail
+        ? `${tr('competitions.answer.unreadable', { file: SUBMISSION_FILE })}\n\n${outcome.detail}`
+        : tr('competitions.answer.unreadable', { file: SUBMISSION_FILE })
+    case 'no-submission':
+      return tr('competitions.answer.noFile', { file: SUBMISSION_FILE })
+    default:
+      // harness_error и unknown: виновата обвязка, а не участник. Он увидит
+      // фразу про упавший проверяющий код, а разбираться будет преподаватель.
+      return null
+  }
+}
+
+/** Что читает ПРЕПОДАВАТЕЛЬ: код выхода, OOM и хвост журнала контейнера. */
+export function teacherNote(outcome: RunOutcome): string | null {
+  if (outcome.status === 'ok') return null
+  const head = `${outcome.status} · exit ${outcome.diagnostics.exit ?? '—'}${
+    outcome.diagnostics.oomKilled ? ' · OOMKilled' : ''
+  }${outcome.diagnostics.killedBy ? ` · killed by ${outcome.diagnostics.killedBy}` : ''}`
+  return outcome.log ? `${head}\n${outcome.log}` : head
+}
+
+/**
+ * Что читает участник про метрику.
+ *
+ * `ParticipantVisibleError` — дословно, и это весь договор. Наши собственные
+ * проверки приезжают из контейнера КОДОМ (harness.ts · align): страница
+ * участника бывает на двух языках, а контейнер о языке инстанса не знает.
+ */
+export function metricNote(outcome: ScoreOutcome): string | null {
+  if (outcome.status !== 'participant_error') return null
+  const raw = outcome.message ?? ''
+  if (!raw.startsWith('{')) return raw || null
+  try {
+    const asked: unknown = JSON.parse(raw)
+    const code = (asked as { code?: unknown })?.code
+    if (typeof code !== 'string') return raw
+    const params = ((asked as { params?: unknown })?.params ?? {}) as Record<string, string | number>
+    return tr(`competitions.answer.${code}`, params)
+  } catch {
+    // Метрика вернула что-то своё, начинающееся с фигурной скобки. Текст
+    // участника он и есть — отдаём как написано.
+    return raw
+  }
+}
+
+/* ------------------------------------------------------------- вмешательство */
+
+/**
+ * Снять посылку: участник нажал «Отменить», преподаватель — «Убить».
+ *
+ * `false` — снимать нечего: работа уже кончилась. Это не ошибка, а ровно тот
+ * случай, который в макете не нарисован («отмена не успела»), и разговаривать
+ * с человеком о нём надо честно, а не притворяться, что получилось.
+ */
+export async function cancelSubmission(
+  submissionId: string,
+  by: 'entrant' | 'teacher',
+): Promise<boolean> {
+  const row = queueRow(submissionId)
+  if (!row) return false
+  if (row.state === 'waiting') {
+    leaveQueue(submissionId)
+    updateSubmission(submissionId, {
+      state: 'cancelled',
+      stage: 'queue',
+      teacherError: tr(by === 'teacher' ? 'competitions.answer.killedByTeacher' : 'competitions.answer.killedByEntrant'),
+    })
+    return true
+  }
+  cancelled.set(submissionId, by)
+  if (row.container) await competitionRunner().kill(row.container).catch(() => undefined)
+  return true
+}
+
+/** Исполнить тетрадь заново — то же самое, что прислать её ещё раз, но без номера. */
+export function rerunSubmission(submissionId: string): boolean {
+  const submission = getSubmission(submissionId)
+  if (!submission) return false
+  if (!isTerminal(submission.state)) return false
+  // Присланная тетрадь могла уйти с диска уборкой старых посылок — тогда
+  // исполнять нечего, и врать кнопкой «Исполнить заново» не стоит.
+  if (!competitionsFs.existsSync(path.join(inputDir(submission.competitionId, submission.id), NOTEBOOK_FILE))) {
+    return false
+  }
+  updateSubmission(submissionId, {
+    state: 'queued',
+    stage: 'queue',
+    participantError: null,
+    teacherError: null,
+    publicScore: null,
+    privateScore: null,
+  })
+  enqueue({
+    submissionId,
+    competitionId: submission.competitionId,
+    entrantId: submission.entrantId,
+    kind: 'notebook',
+  })
+  wakeCompetitionPump()
+  return true
+}
+
+/**
+ * Пересчитать метрику всем посылкам соревнования.
+ *
+ * Тетради НЕ запускаются заново — ради этого прогоны и хранятся строкой на
+ * заход: исполнение сотни тетрадей заняло бы час и дало бы ровно те же
+ * ответы, которые уже лежат на диске. Берутся те, у кого ответ сохранился;
+ * упавшая тетрадь пересчитывать нечего.
+ */
+export function rescoreCompetition(competitionId: string): number {
+  let queued = 0
+  for (const submission of listSubmissions(competitionId)) {
+    if (!hasStoredAnswer(competitionId, submission.id)) continue
+    updateSubmission(submission.id, {
+      state: 'queued',
+      stage: 'score',
+      participantError: null,
+      teacherError: null,
+    })
+    enqueue({
+      submissionId: submission.id,
+      competitionId,
+      entrantId: submission.entrantId,
+      kind: 'metric',
+    })
+    queued++
+  }
+  if (queued) wakeCompetitionPump()
+  return queued
+}
+
+function hasStoredAnswer(competitionId: string, submissionId: string): boolean {
+  try {
+    return competitionsFs.existsSync(
+      path.join(resultDir(competitionId, submissionId), SUBMISSION_FILE),
+    )
+  } catch {
+    return false
+  }
+}
+
+/** Приостановить очередь или пустить её снова. Идущее не трогается — на то «Убить». */
+export function pauseCompetitionQueue(paused: boolean, by: string | null = null): void {
+  setQueuePaused(paused, by)
+  if (!paused) wakeCompetitionPump()
+}
+
+/* ------------------------------------------------------------------ сводка */
+
+/** Полоса исполнителя в A1 и блок очереди в A3 — одним ответом. */
+export interface RunnerStatus {
+  backend: CompetitionBackend
+  slots: number
+  paused: boolean
+  waiting: number
+  running: Array<{ submissionId: string; competitionId: string; kind: RunKind; startedAt: number | null }>
+}
+
+export function runnerStatus(): RunnerStatus {
+  return {
+    backend: competitionBackend(),
+    slots: queueSlots(),
+    paused: queuePaused(),
+    waiting: waitingCount(),
+    running: runningRows().map((row) => ({
+      submissionId: row.submissionId,
+      competitionId: row.competitionId,
+      kind: row.kind,
+      startedAt: row.startedAt,
+    })),
+  }
+}
+

@@ -35,6 +35,11 @@ import { handleControlSocket } from './control.js'
 import { db, closeDatabase, getSession, touchLastSeenAll } from './db.js'
 import { kernelCensus, shutdownKernels } from './kernel/index.js'
 import { sweepAllStaleUploads } from './workspace.js'
+import {
+  reclaimCompetitionQueue,
+  startCompetitionPump,
+  stopCompetitionPump,
+} from './competitions/runner.js'
 import { roleFor } from './routes/sessions.js'
 import { app } from './app.js'
 import { COLLOQ_VERSION } from './version.js'
@@ -312,6 +317,19 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
    * пары, а первая комната не ждёт лишнюю секунду (kernel/perimeter.ts).
    */
   void warmRoomPerimeter()
+  /*
+   * Очередь соревнований — тоже сразу, и в этом порядке.
+   *
+   * Сначала поднимается то, что оборвал прошлый выход: строка «исполняется» с
+   * чужой меткой жизни процесса — это посылка, у которой больше нет
+   * контейнера, и без уборки она висела бы «выполняется» до конца
+   * соревнования. Насос включается только после неё: взяв работу раньше, он
+   * занял бы единственное место тем, что сейчас всё равно придётся поднять
+   * заново.
+   */
+  void reclaimCompetitionQueue()
+    .catch((err) => console.error('[competitions] не удалось поднять очередь', err))
+    .then(() => startCompetitionPump())
 })
 
 /**
@@ -422,6 +440,18 @@ async function shutdown(signal: string): Promise<void> {
   // Отметки «был здесь», не успевшие уехать пачкой: их немного, они дешёвые, а
   // без этой строки перезапуск посреди пары теряет последние пять секунд входов.
   flushLastSeen()
+
+  /*
+   * Новых посылок больше не берём, а начатую дожидаемся: её контейнер всё
+   * равно переживёт этот процесс, и бросить его на полпути значит оставить
+   * гигабайты на машине и строку «выполняется», которую поднимать будет
+   * следующая жизнь сервера.
+   */
+  try {
+    await stopCompetitionPump()
+  } catch (err) {
+    console.error('colloq: could not stop the competition queue:', err instanceof Error ? err.message : err)
+  }
 
   // Snapshots first: an unsaved notebook is the only thing here that cannot be
   // rebuilt. Kernels are disposable, and shutting them down may involve HTTP.

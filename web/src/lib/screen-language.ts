@@ -9,12 +9,17 @@ import type { Locale } from '@shared/i18n-types'
  * импортами в lib/messages/<область>-<язык>.ts — оттуда же его читает плагин
  * сборки, который и режет каталоги до одного языка.
  */
-export type MessageArea = 'room' | 'admin' | 'reader'
+/**
+ * `competitions` — четвёртая область, и заведена она потому, что три прежние
+ * ей не подходят: `/k/**` — ни комната, ни панель преподавателя, ни читалка.
+ * Общего с ними у неё только `common` и урезанный серверный каталог.
+ */
+export type MessageArea = 'room' | 'admin' | 'reader' | 'competitions'
 
 /*
  * Перечислено руками и целиком, потому что `import('./messages/' + name)`
  * сборщик разобрать не может: он либо утащит в сборку весь каталог, либо не
- * найдёт ничего. Шесть строк — цена того, чтобы Rollup видел ровно шесть
+ * найдёт ничего. Восемь строк — цена того, чтобы Rollup видел ровно восемь
  * кусков и назвал их предсказуемо (на эти имена смотрит firstPaint).
  */
 const MODULES: Record<string, () => Promise<unknown>> = {
@@ -24,6 +29,8 @@ const MODULES: Record<string, () => Promise<unknown>> = {
   'admin-en': () => import('./messages/admin-en'),
   'reader-ru': () => import('./messages/reader-ru'),
   'reader-en': () => import('./messages/reader-en'),
+  'competitions-ru': () => import('./messages/competitions-ru'),
+  'competitions-en': () => import('./messages/competitions-en'),
 }
 
 const loading = new Map<string, Promise<unknown>>()

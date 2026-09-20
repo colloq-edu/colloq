@@ -10,6 +10,7 @@ import { roomMessages } from '../shared/locales/room'
 import { adminMessages } from '../shared/locales/admin'
 import { serverMessages } from '../shared/locales/server'
 import { activityMessages } from '../shared/locales/activity'
+import { competitionsMessages } from '../shared/locales/competitions'
 import { collectEntryMessages, collectClientKeys } from './scripts/entry-messages'
 
 const API_TARGET = process.env.VITE_API_TARGET ?? 'http://localhost:3000'
@@ -69,6 +70,7 @@ function screenLanguage(): Plugin {
     admin: adminMessages,
     server: serverMessages,
     activity: activityMessages,
+    competitions: competitionsMessages,
   }
   /*
    * Серверный каталог — единственный, который режется по ключам, а не целиком.

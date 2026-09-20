@@ -4,11 +4,23 @@
   interface Props {
     title: string
     subtitle?: string
+    /**
+     * Строка НАД заголовком: раздел, из которого сюда пришли.
+     *
+     * Экран одного соревнования открывают по ссылке из чата и возвращаются на
+     * него через неделю — и без этой строки заголовок «Rohlik: сколько заказов
+     * будет завтра» не говорит, в каком разделе панели человек стоит и куда
+     * ведёт «назад». Необязательная: остальным экранам панели она не нужна,
+     * они и есть раздел.
+     */
+    eyebrow?: Snippet
+    /** Рядом с заголовком: плашка состояния, срок — то, что читается вместе с именем. */
+    beside?: Snippet
     actions?: Snippet
     children: Snippet
   }
 
-  let { title, subtitle, actions, children }: Props = $props()
+  let { title, subtitle, eyebrow, beside, actions, children }: Props = $props()
 </script>
 
 <!-- The header is fixed and the body scrolls under it: a settings page can run
@@ -31,7 +43,17 @@
            {subtitle ? 'items-start py-5' : 'min-h-16 items-center py-3'}"
   >
     <div class="min-w-0 flex-1 basis-48">
-      <h1 class="truncate text-display font-black text-ink">{title}</h1>
+      {#if eyebrow}
+        <div class="mb-1 flex min-w-0 items-center gap-1.5 text-micro text-muted">
+          {@render eyebrow()}
+        </div>
+      {/if}
+      <!-- Заголовок и то, что читается вместе с ним, — одна строка: плашка
+           «ИДЁТ» под именем читалась бы как подпись к чему-то другому. -->
+      <div class="flex min-w-0 flex-wrap items-center gap-x-3.5 gap-y-1">
+        <h1 class="min-w-0 max-w-full truncate text-display font-black text-ink">{title}</h1>
+        {#if beside}{@render beside()}{/if}
+      </div>
       {#if subtitle}
         <p class="mt-1 text-ui text-muted">{subtitle}</p>
       {/if}

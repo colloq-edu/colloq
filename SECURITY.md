@@ -85,6 +85,19 @@ at <https://colloq.ru/docs/en/security.html> (Russian original:
   the application's origin, or out to the network — is in scope.
 - **Oracle tool calls that exceed the requesting participant's permissions**
   in the room.
+- **A competition's hidden answers or metric code reaching an entrant.**
+  `solution.csv` and the teacher's `score()` live in the competition's own
+  directory under `DATA_DIR`, never under `WORKSPACE_DIR`, and they are mounted
+  only into the second, metric-only container — never into the one that runs a
+  submitted notebook. Any door, path or response that hands either of them to an
+  entrant or to an anonymous visitor is in scope, and so is the split seed: with
+  it, the private share stops being hidden.
+- **Reaching another entrant's submissions**: their notebook, their traceback,
+  their teacher-only error text, or choosing, cancelling or re-running a
+  submission that is not yours. The private score before the final leaderboard
+  opens counts as the same thing.
+- **An entry key that outlives its rotation.** Issuing a new key must end the
+  old key and every session signed with it, on every device.
 - **The production runtime broker.** Examples: accepting pod templates, images
   or host paths outside its fixed template and trusted catalog, or leaking its
   Kubernetes credentials.
@@ -112,6 +125,20 @@ at <https://colloq.ru/docs/en/security.html> (Russian original:
   refusal reaching the person who made it is a bug worth reporting.
 - **What an owner or teacher can do on an instance they control.** This
   includes reading their own classes' data.
+- **A competition is not an exam.** It scores a notebook; it does not attest to
+  who wrote it. Two entrants submitting one solution under two names, one person
+  holding two entry keys, or a key passed to someone else are all outside what
+  the server can see, and a competition that decides a grade needs invigilation
+  of its own. Fitting the public leaderboard by submitting repeatedly is a
+  strategy, not an attack; the private share and the daily quota exist to make
+  it expensive, not impossible.
+- **A submission's container is a throwaway, not an attested sandbox.** It runs
+  with no network, with data read-only, under the same hardening as a room
+  container (uid 1000, no capabilities, no-new-privileges, a process ceiling,
+  read-only root, memory and CPU caps) and it is destroyed after one submission.
+  That is the same boundary rooms get, and it is a boundary against accidents
+  and ordinary code, not against an attacker who has a Docker or kernel escape.
+  Submitted code is code the teacher chose to execute.
 - **Local classes are "my class, my computer."** `colloq start`, `make dev` and
   `make up` use the Docker development backend, which has access to the Docker
   socket. It is meant for a trusted workstation, not as a boundary against its
