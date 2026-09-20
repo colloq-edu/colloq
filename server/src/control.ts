@@ -1811,6 +1811,16 @@ function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload)
       shown: shownFor(sessionId, id, councilCellOf(sessionId, id).settings.namesOnProjector),
     })
   }
+  /*
+   * И точка: пачка кончилась.
+   *
+   * Последним кадром и всегда — даже когда перед ним не ушло ни одного: в
+   * комнате без консилиума пустота и есть ответ, и сказать её надо ровно так
+   * же явно. Без этой точки клиент не мог отличить «кадр ещё едет» от «его не
+   * будет», и пульт мигал «ячейка не в консилиуме» между заставкой и собой
+   * (shared/protocol.ts · council:ready).
+   */
+  send(ws, { t: 'council:ready' })
 }
 
 /**

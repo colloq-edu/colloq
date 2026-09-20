@@ -4,7 +4,7 @@
   import { councilLetters, type CouncilAttempt } from '@shared/protocol'
   import CellOutputs from '@/components/notebook/CellOutputs.svelte'
   import Code from '@/components/ui/Code.svelte'
-  import { attemptReview, attemptExecution, pultClock, pultDuration, pultRanFor, timedOutLimit, type PultPresence, type PultRule } from '@/lib/council-pult'
+  import { attemptReview, attemptExecution, pultClock, pultDuration, pultIdle, pultRanFor, timedOutLimit, type PultPresence, type PultRule } from '@/lib/council-pult'
   import PultActions from './PultActions.svelte'
   import PultLetters from './PultLetters.svelte'
   import PultReply from './PultReply.svelte'
@@ -28,9 +28,11 @@
   interface Props {
     attempt: CouncilAttempt | null
     presence: PultPresence
-    /** Место работы в ленте: «12 / 487». */
+    /** Место работы в видимом списке: «1 из 13». Считается по текущей вкладке и отбору. */
     index: number
     total: number
+    /** Листалка шапки: тот же ход, что у j / k и стрелок. */
+    onstep: (delta: 1 | -1) => void
     variant: number
     names: boolean
     now: number
@@ -63,6 +65,7 @@
     presence,
     index,
     total,
+    onstep,
     variant,
     names,
     now,
@@ -135,22 +138,43 @@
   })
 
   /**
-   * Состояние работы крупной плашкой, а не бледной подписью.
+   * Одна тихая строка под именем вместо трёх разнородных кусков в ряд.
    *
-   * «сдано 17:25 · не в сети» в muted 13 px не отличалось от любой другой
-   * служебной строки, и сданную работу от черновика в шапке приходилось
-   * угадывать по наличию оценки. Сдано — залитая плашка, черновик — контурная,
-   * и слова у них разные, а не только цвет.
+   * В ряд стояли: залитая плашка «СДАНО 15:19», голый текст «не в сети», плашка
+   * оценки и «2 / 13» — четыре разных веса, четыре разных смысла и слово
+   * «сдано», сказанное дважды (в плашке и в оценке «Сдано · ждёт оценки»).
+   * Теперь ролей три: КТО (аватар с точкой, имя, эта строка), ЧТО С РАБОТОЙ
+   * (одна плашка, четыре значения) и ГДЕ Я В СТОПКЕ (листалка).
+   *
+   * Пол по имени не выводится нигде в продукте, поэтому здесь «сдано в 15:19»,
+   * а не «сдал(а)»: безличная форма верна для всех и не требует знать о
+   * человеке того, чего он не говорил.
+   *
+   * «не в сети С 15:24» здесь НЕТ и быть не может. Присутствие приезжает
+   * пульту живым набором Yjs (session.peersById) — это снимок «кто сейчас», без
+   * единого времени ухода. `participants.last_seen` живёт в базе сервера и
+   * клиенту не едет, `presence.left` — запись журнала активности, тоже
+   * серверная. Выдумать час ухода нечем, а выдуманный час в строке, по которой
+   * решают «ждать ли ответа», хуже пустого места.
    */
-  const submission = $derived.by(() => {
-    if (!attempt) return null
-    return attempt.submittedAt !== null
-      ? { label: tr('room.pult.v3.workSubmitted', { time: pultClock(attempt.submittedAt) }), shape: 'fill' as const, tone: 'accent' as const }
-      : { label: tr('room.pult.v3.workDraft', { time: pultClock(attempt.updatedAt) }), shape: 'outline' as const, tone: 'neutral' as const }
+  const headLine = $derived.by(() => {
+    if (!attempt) return ''
+    const parts: string[] = []
+    if (attempt.submittedAt !== null) {
+      parts.push(tr('room.pult.v3.head.submitted', { time: pultClock(attempt.submittedAt) }))
+    } else {
+      const idle = Math.max(now - attempt.updatedAt, 0)
+      parts.push(
+        idle < 60_000
+          ? tr('room.pult.v3.head.editedNow')
+          : tr('room.pult.v3.head.edited', { duration: pultIdle(idle / 1000) }),
+      )
+    }
+    if (presence !== 'unknown') {
+      parts.push(tr(presence === 'online' ? 'room.pult.online' : 'room.pult.offline'))
+    }
+    return parts.join(' · ')
   })
-  const online = $derived(tr(presence === 'unknown'
-    ? 'room.pult.v2.workPresenceUnknown'
-    : presence === 'online' ? 'room.pult.online' : 'room.pult.offline'))
 
   /**
    * «Удалить с занятия» — в меню «⋯», а не кнопкой на самом видном месте.
@@ -178,23 +202,44 @@
 {:else}
   <div class="work" data-pult-work={attempt.participantId}>
     <header class="work-header">
-      <span class="work-avatar" style:background-color={names ? attempt.color : 'rgb(var(--line))'} aria-hidden="true">
-        {#if names}
-          <Avatar name={attempt.name} color={attempt.color} avatar={attempt.avatar} size="xs" emojiPx={20} class="!h-full !w-full" />
-        {/if}
+      <!-- Кто: аватар с точкой присутствия, имя и одна тихая строка под ним. -->
+      <span class="pult-face work-avatar" data-presence={presence} aria-hidden="true">
+        <span class="work-avatar-face" style:background-color={names ? attempt.color : 'rgb(var(--line))'}>
+          {#if names}
+            <Avatar name={attempt.name} color={attempt.color} avatar={attempt.avatar} size="xs" emojiPx={20} class="!h-full !w-full" />
+          {/if}
+        </span>
+        <span class="pult-face-dot"></span>
       </span>
+      <div class="work-id">
+        {#if !phone}
+          <h2 class="work-name">{names ? attempt.name : tr('room.ui.1255', { p0: variant })}</h2>
+        {/if}
+        <p class="work-sub" data-pult-headline>{headLine}</p>
+      </div>
+      <!--
+        Что с работой — ОДНА плашка и ровно четыре значения: «Ждёт оценки»
+        (залитая акцентом — единственное, что требует руки), «Верно», «На
+        доработку», «Черновик». Прежние две («СДАНО 15:19» и оценка) сливаются
+        в неё: они говорили об одном и том же, и «сдано» звучало дважды.
+      -->
+      <span class="pult-badge work-state" data-tone={review?.tone} data-shape={review?.shape} data-pult-state
+        title={tr('room.pult.v3.head.state')}><span class="pult-badge-dot" aria-hidden="true"></span>{review?.label}</span>
+      <!--
+        Где я в стопке. Было «2 / 13» подписью, по которой нельзя нажать, — при
+        том что переход к соседней работе это самое частое движение в окне.
+        Кнопки ходят тем же `step`, что клавиши j / k и стрелки, то есть по
+        текущей вкладке и текущему отбору; на краях гаснут.
+      -->
       {#if !phone}
-        <h2 class="work-name">{names ? attempt.name : tr('room.ui.1255', { p0: variant })}</h2>
+        <div class="work-pager" role="group" aria-label={tr('room.pult.v3.head.place')}>
+          <button type="button" class="work-page" data-pult-prev aria-label={tr('room.pult.v3.prevWork')}
+            disabled={index <= 1} onclick={() => onstep(-1)}><span aria-hidden="true">‹</span></button>
+          <span class="work-page-count">{tr('room.pult.v3.head.pager', { index, total })}</span>
+          <button type="button" class="work-page" data-pult-next aria-label={tr('room.pult.v3.nextWork')}
+            disabled={index >= total} onclick={() => onstep(1)}><span aria-hidden="true">›</span></button>
+        </div>
       {/if}
-      <span class="pult-badge work-state" data-tone={submission?.tone} data-shape={submission?.shape} data-pult-state>{submission?.label}</span>
-      <span class="pult-meta work-online">{online}</span>
-      <!-- Оценка — только у сданной: у черновика «Черновик» стояло бы дважды,
-           один раз плашкой состояния и один раз оценкой, которой нет. -->
-      {#if !writing}
-        <span class="pult-badge work-review" data-tone={review?.tone} data-shape={review?.shape} data-pult-review
-          title={tr('room.pult.v2.workReview')}>{review?.label}</span>
-      {/if}
-      <span class="pult-meta work-place">{tr('room.pult.v3.place', { index, total })}</span>
       <!-- svelte-ignore a11y_no_static_element_interactions (Escape closes the menu; the trigger and the item are buttons.) -->
       <div class="work-menu" bind:this={menu} onkeydown={(event) => {
         if (event.key !== 'Escape' || !menuOpen) return
@@ -292,15 +337,32 @@
 <style>
   .work { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; background: rgb(var(--canvas)); }
   .work-empty { display: grid; flex: 1; place-items: center; padding: 32px; text-align: center; font-size: 16px; color: rgb(var(--muted)); }
-  /* Шапка автора — 64 px и одна строка: аватар, имя, состояние, оценка, «⋯». */
-  .work-header { display: flex; align-items: center; flex-shrink: 0; flex-wrap: nowrap; gap: 8px; min-height: 52px; padding: 8px 16px; border-bottom: 1px solid rgb(var(--line)); }
-  .work-avatar { flex-shrink: 0; width: 32px; height: 32px; overflow: hidden; border-radius: 50%; }
-  .work-name { min-width: 0; flex: 1; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 17px; line-height: 22px; font-weight: 700; }
-  .work-state { flex-shrink: 0; font-size: 12px; letter-spacing: .04em; }
-  .work-online { flex-shrink: 0; white-space: nowrap; }
-  .work-review { flex-shrink: 0; }
-  .work-place { flex-shrink: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .work-menu { position: relative; flex-shrink: 0; margin-left: auto; }
+  /*
+   * Шапка автора — три роли в одну строку: кто · что с работой · где я в стопке.
+   *
+   * Пропорции взяты у макета (Paper 05d, артборд 11: аватар 44, имя 20/26,
+   * подпись 13/18, плашка и листалка по 30, зазор 14) и уменьшены на шаг:
+   * окно 900×650 — законный размер пульта, и в нём каждая лишняя строчка
+   * шапки — это строчка кода, ушедшая под сгиб. На большом окне размеры
+   * макета возвращаются целиком, ниже.
+   */
+  .work-header { display: flex; align-items: center; flex-shrink: 0; flex-wrap: nowrap; gap: 12px; min-height: 62px; padding: 9px 16px; border-bottom: 1px solid rgb(var(--line)); }
+  .work-avatar { --face-dot: 12px; width: 38px; height: 38px; }
+  .work-avatar-face { display: block; width: 100%; height: 100%; overflow: hidden; border-radius: 50%; }
+  /* Имя и подпись — одна колонка: они про одного человека и двигаются вместе. */
+  .work-id { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+  .work-name { min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 18px; line-height: 23px; font-weight: 700; }
+  .work-sub { min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgb(var(--muted)); font-size: 13px; line-height: 17px; }
+  .work-state { flex-shrink: 0; min-height: 28px; padding: 4px 10px; white-space: nowrap; font-size: 13px; }
+  /* Листалка одной коробкой: три цели в общей рамке читаются как один прибор. */
+  .work-pager { display: flex; align-items: center; flex-shrink: 0; height: 28px; border: 1px solid rgb(var(--line)); }
+  .work-page { display: flex; align-items: center; justify-content: center; width: 28px; align-self: stretch; color: rgb(var(--ink)); font-size: 15px; line-height: 1; cursor: pointer; }
+  .work-page:first-child { border-right: 1px solid rgb(var(--line)); }
+  .work-page:last-child { border-left: 1px solid rgb(var(--line)); }
+  .work-page:hover:not(:disabled) { background: rgb(var(--raised)); }
+  .work-page:disabled { color: rgb(var(--faint)); opacity: .5; cursor: default; }
+  .work-page-count { padding: 0 9px; color: rgb(var(--ink)); font-size: 13px; line-height: 18px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .work-menu { position: relative; flex-shrink: 0; }
   .work-more { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid transparent; color: rgb(var(--muted)); font-size: 18px; line-height: 1; cursor: pointer; }
   .work-more:hover { border-color: rgb(var(--line)); color: rgb(var(--ink)); }
   .work-menu-sheet { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 200px; padding: 4px; border: 1px solid rgb(var(--line)); background: rgb(var(--canvas)); box-shadow: 0 12px 32px rgb(0 0 0 / .28); }
@@ -330,21 +392,19 @@
   .work-dock { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; padding: 8px 16px 10px; border-top: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
   /* Большое окно: те же три зоны, только просторнее. */
   @media (min-width: 1200px) and (min-height: 800px) {
-    .work-header { min-height: 60px; padding: 10px 20px; }
+    /* Размеры макета целиком: там, где места хватает, тесно быть не обязано. */
+    .work-header { min-height: 72px; padding: 12px 20px; gap: 14px; }
+    .work-avatar { --face-dot: 14px; width: 44px; height: 44px; }
+    .work-name { font-size: 20px; line-height: 26px; }
+    .work-state, .work-pager { height: 30px; min-height: 30px; }
+    .work-page { width: 30px; }
     .work-content { padding: 14px 20px 18px; gap: 14px; }
     .work-dock { gap: 10px; padding: 10px 20px 12px; }
   }
   @media (max-width: 900px) {
-    .work-header { padding-inline: 12px; }
+    .work-header { gap: 10px; padding-inline: 12px; }
     .work-content { padding-inline: 12px; }
     .work-dock { padding-inline: 12px; }
-    /* Сеть уступает состоянию и оценке: она справочная, и то же слово стоит
-       в строке списка. Место в ленте держится дольше — по нему видно, сколько
-       работ ещё впереди. */
-    .work-online { display: none; }
-  }
-  @media (max-width: 760px) {
-    .work-place { display: none; }
   }
   /* Пара с окном ниже 480 px (PultWindow · .pult-work-pane): панель там снова
      страница, и работа получает высоту, при которой док не раздавлен. */
@@ -352,8 +412,16 @@
     .work { min-height: 420px; flex-shrink: 0; }
     .work-content { min-height: 120px; }
   }
+  /*
+   * Телефон: аватар с точкой, строка состояния, плашка — и всё.
+   *
+   * Имя стоит в планке экрана работы (PultWindow · .phone-bar), и второе имя
+   * подряд на 390 px — это строка, отнятая у кода. Листалки здесь тоже нет:
+   * по ленте ходят стрелками той же планки, а возврат к списку — жестом.
+   */
   @media (max-width: 650px) {
-    .work-header { min-height: 44px; padding: 6px 12px; }
+    .work-header { min-height: 48px; gap: 10px; padding: 6px 12px; }
+    .work-avatar { --face-dot: 11px; width: 32px; height: 32px; }
     .work-dock { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
     .work-more { width: 40px; height: 40px; }
   }

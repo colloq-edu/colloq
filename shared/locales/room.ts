@@ -59,7 +59,6 @@ export const roomMessages: MessageCatalog = {
   "room.goto.gone": {"ru": "Определение «{name}» было в {path}, но открыть файл не вышло", "en": "“{name}” was defined in {path}, but the file would not open"},
   "room.ban.councilConsequences": {"ru": "Попытки консилиума и заявки на запуск участника будут удалены. Его выполняющаяся попытка будет прервана; работы других участников останутся в очереди.", "en": "The participant’s Council attempts and run requests will be removed. Their running attempt will be interrupted; other participants’ jobs will stay queued."},
   "room.pult.v2.workSavedDraft": {"ru": "Черновик сохранён в {time}", "en": "Draft saved at {time}"},
-  "room.pult.v2.workPresenceUnknown": {"ru": "Статус сети неизвестен", "en": "Connection status unknown"},
   "room.pult.v2.workReview": {"ru": "Оценка преподавателя", "en": "Teacher’s review"},
   /*
    * Вывод ячейки: то, что говорит сама тетрадь, а не Python.
@@ -260,9 +259,7 @@ export const roomMessages: MessageCatalog = {
 
   "room.pult.v3.sections.submitted": {"ru": "Сдали · {count}", "en": "Submitted · {count}"},
   "room.pult.v3.sections.writing": {"ru": "Пишут · {count}", "en": "Writing · {count}"},
-  "room.pult.v3.review.waiting": {"ru": "Сдано · ждёт оценки", "en": "Submitted · awaiting review"},
-  "room.pult.v3.workSubmitted": {"ru": "СДАНО {time}", "en": "SUBMITTED {time}"},
-  "room.pult.v3.workDraft": {"ru": "ЧЕРНОВИК · правка {time}", "en": "DRAFT · edited {time}"},
+  "room.pult.v3.review.waiting": {"ru": "Ждёт оценки", "en": "Awaiting review"},
   "room.pult.v3.runDone": {"ru": "Запуск выполнен · {duration} · {time}", "en": "Execution completed · {duration} · {time}"},
   "room.pult.v3.runDoneAt": {"ru": "Запуск выполнен · {time}", "en": "Execution completed · {time}"},
   "room.pult.v3.runFailed": {"ru": "Ошибка запуска · {duration} · {time}", "en": "Execution error · {duration} · {time}"},
@@ -287,6 +284,72 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v3.shortRun": {"ru": "Запуск", "en": "Run"},
   "room.pult.v3.shortCorrect": {"ru": "Верно", "en": "Correct"},
   "room.pult.v3.shortRevise": {"ru": "Правки", "en": "Revise"},
+
+  /* Три вкладки списка и их чипы отбора — Paper 05d, артборды 11 и 12 (C). */
+  "room.pult.v3.tabs.label": {"ru": "Какая стопка работ", "en": "Which pile of work"},
+  "room.pult.v3.tabs.submitted": {"ru": "Сдали", "en": "Submitted"},
+  "room.pult.v3.tabs.writing": {"ru": "Пишут", "en": "Writing"},
+  "room.pult.v3.tabs.all": {"ru": "Все", "en": "All"},
+  "room.pult.v3.tabs.new": {"ru": "Новые", "en": "New"},
+  "room.pult.v3.tabs.ungraded": {"ru": "Без оценки", "en": "Ungraded"},
+  "room.pult.v3.tabs.error": {"ru": "С ошибкой", "en": "With an error"},
+  "room.pult.v3.tabs.unrun": {"ru": "Не запущены", "en": "Not run"},
+  "room.pult.v3.tabs.silent": {"ru": "Молчат", "en": "Silent"},
+  "room.pult.v3.tabs.failed": {"ru": "Упало", "en": "Failed"},
+  "room.pult.v3.tabs.asking": {"ru": "Просят запуск", "en": "Run requested"},
+  "room.pult.v3.tabs.empty": {"ru": "Здесь пока никого", "en": "Nobody here yet"},
+  "room.pult.v3.tabs.emptyWriting": {"ru": "Все, кто начал, уже сдали.", "en": "Everyone who started has submitted."},
+  "room.pult.v3.tabs.emptySubmitted": {"ru": "Ещё никто не сдал работу по этой ячейке.", "en": "Nobody has submitted work for this cell yet."},
+
+  /* Строка состояния пишущего — вторая строчка строки списка (артборд 12, C). */
+  "room.pult.v3.draft.silent": {
+    "ru": {"one": "молчит {duration} · {count} строка", "few": "молчит {duration} · {count} строки", "many": "молчит {duration} · {count} строк", "other": "молчит {duration} · {count} строки"},
+    "en": {"one": "silent {duration} · {count} line", "other": "silent {duration} · {count} lines"}
+  },
+  "room.pult.v3.draft.writing": {
+    "ru": {"one": "пишет · {count} строка", "few": "пишет · {count} строки", "many": "пишет · {count} строк", "other": "пишет · {count} строки"},
+    "en": {"one": "writing · {count} line", "other": "writing · {count} lines"}
+  },
+  "room.pult.v3.idle.hours": {"ru": "{count} ч", "en": "{count} h"},
+  "room.pult.v3.idle.days": {"ru": "{count} дн", "en": "{count} d"},
+  "room.pult.v3.draft.asking": {"ru": "просит запуск · ждёт {duration}", "en": "run requested · waiting {duration}"},
+  "room.pult.v3.draft.failed": {"ru": "запуск упал", "en": "run failed"},
+  "room.pult.v3.draft.failedNamed": {"ru": "запуск упал · {error}", "en": "run failed · {error}"},
+
+  /* Шапка работы: кто · что с работой · где я в стопке (артборды 11 и 12, B). */
+  "room.pult.v3.head.submitted": {"ru": "сдано в {time}", "en": "submitted at {time}"},
+  "room.pult.v3.head.edited": {"ru": "пишет · правка {duration} назад", "en": "writing · edited {duration} ago"},
+  "room.pult.v3.head.editedNow": {"ru": "пишет · правка только что", "en": "writing · just edited"},
+  "room.pult.v3.head.state": {"ru": "Состояние работы", "en": "State of the work"},
+  "room.pult.v3.head.pager": {"ru": "{index} из {total}", "en": "{index} of {total}"},
+  "room.pult.v3.head.place": {"ru": "Место в списке", "en": "Place in the list"},
+
+  /* Меню выбора ячейки (артборд 12, A) и подпись рядом с кнопкой. */
+  "room.pult.v3.cells.headCount": {
+    "ru": {"one": "{count} ячейка в консилиуме", "few": "{count} ячейки в консилиуме", "many": "{count} ячеек в консилиуме", "other": "{count} ячейки в консилиуме"},
+    "en": {"one": "{count} council cell", "other": "{count} council cells"}
+  },
+  "room.pult.v3.cells.headSubmitted": {"ru": "сдали", "en": "submitted"},
+  "room.pult.v3.cells.waiting": {
+    "ru": {"one": "{count} ждёт оценки", "few": "{count} ждут оценки", "many": "{count} ждут оценки", "other": "{count} ждут оценки"},
+    "en": {"one": "{count} awaiting review", "other": "{count} awaiting review"}
+  },
+  "room.pult.v3.cells.asking": {
+    "ru": {"one": "{count} просит запуск", "few": "{count} просят запуск", "many": "{count} просят запуск", "other": "{count} просят запуск"},
+    "en": {"one": "{count} run request", "other": "{count} run requests"}
+  },
+  "room.pult.v3.cells.queued": {"ru": "{count} в очереди", "en": "{count} queued"},
+  "room.pult.v3.cells.closed": {"ru": "консилиум закрыт · только просмотр", "en": "council closed · review only"},
+  "room.pult.v3.cells.clear": {"ru": "все сданные оценены", "en": "everything submitted is graded"},
+  "room.pult.v3.cells.place": {"ru": "ячейка {index} из {total}", "en": "cell {index} of {total}"},
+  "room.pult.v3.cells.othersWaiting": {
+    "ru": {"one": "ещё в {count} ячейке ждут оценки", "few": "ещё в {count} ячейках ждут оценки", "many": "ещё в {count} ячейках ждут оценки", "other": "ещё в {count} ячейках ждут оценки"},
+    "en": {"one": "{count} more cell awaits review", "other": "{count} more cells await review"}
+  },
+  "room.pult.v3.keys.cells": {"ru": "соседняя ячейка", "en": "neighbouring cell"},
+
+  /* Пульт ждёт первый кадр стопки — заставка вместо «ячейка не в консилиуме». */
+  "room.pult.v3.loading": {"ru": "Загружаем работы класса…", "en": "Loading the class’s work…"},
 
   "room.pult.v3.toPhone": {"ru": "На телефон", "en": "To phone"},
   "room.pult.v3.toPhoneHint": {"ru": "Ссылка на этот пульт с входом от вашего имени — открыть на телефоне", "en": "A link to this console that signs you in as yourself — open it on your phone"},

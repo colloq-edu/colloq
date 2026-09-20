@@ -55,6 +55,7 @@ export type CouncilMessage = Extract<
       | 'council:shown'
       | 'council:hint:state'
       | 'council:kernel'
+      | 'council:ready'
   }
 >
 
@@ -64,6 +65,59 @@ export type CouncilPatch = Extract<CouncilMessage, { t: 'council:patch' }>
 export interface CouncilCount {
   submitted: number
   total: number
+}
+
+/**
+ * Сколько ждать конца приветственной пачки, если сервер о нём не говорит.
+ *
+ * Кадр `council:ready` появился 20.09; сборка постарше его не шлёт, а пачка
+ * может и потеряться. Шесть секунд — это заведомо дольше самой пачки (её
+ * собирают одним обходом тетрадей и отправляют сразу после входа) и заведомо
+ * короче терпения человека, который смотрит на заставку и не понимает, живо ли
+ * окно. Дальше пульт показывает то, что знает, — пусть даже это пустота.
+ */
+export const WELCOME_WAIT_MS = 6_000
+
+/**
+ * Что пульт знает про стопку ячейки: жду, нет её, или вот она.
+ *
+ * До 20.09 развилка была одна — `board === null`, — и означала сразу два
+ * разных факта: «кадр ещё едет» и «консилиума тут нет». Пульт выбирал второе,
+ * и на каждой перезагрузке между заставкой и собой успевал мигнуть «ячейка не
+ * в консилиуме»: окно рисуется раньше первого `council:board`.
+ *
+ * Чистая функция и четыре входа, потому что «не знаю» складывается из четырёх
+ * разных обещаний:
+ *  - `settled` — сервер сказал, что пачка кончилась (или сторож устал ждать);
+ *  - `connected` — без связи пустота не значит ничего;
+ *  - `council` — замок ячейки в ДОКУМЕНТЕ: CRDT и сокет — разные каналы, и
+ *    документ, уже знающий про консилиум, спорит с молчанием сокета;
+ *  - `board` — сама стопка.
+ *
+ * Стопка, у которой консилиум снят и попыток не осталось, — это «нет»: её
+ * незачем показывать, и раньше эта же ветка отвечала за пустой экран.
+ */
+export type BoardPhase = 'waiting' | 'missing' | 'ready'
+
+export function boardPhase(input: {
+  board: CouncilBoard | null
+  settled: boolean
+  connected: boolean
+  council: boolean
+}): BoardPhase {
+  const { board, settled, connected, council } = input
+  if (board !== null) {
+    return board.lock === 'council' || board.counts.attempts > 0 ? 'ready' : 'missing'
+  }
+  // Пачка ещё едет — молчание не ответ.
+  if (!settled) return 'waiting'
+  /*
+   * Сторож отпустил, а документ говорит «здесь консилиум»: стопка приедет
+   * своим кадром, потому что сервер шлёт её на смену замка. Ждём дальше — но
+   * только пока связь жива: без неё приехать ей неоткуда, и вечная заставка
+   * была бы ответом хуже пустоты.
+   */
+  return council && connected ? 'waiting' : 'missing'
 }
 
 /**
@@ -340,6 +394,15 @@ export class CouncilState {
    * «в очереди: 12» (shared/protocol.ts · CouncilKernel).
    */
   kernels = $state.raw<Record<string, CouncilKernel>>({})
+  /**
+   * Приветственная пачка консилиума кончилась — хотя бы раз за жизнь окна.
+   *
+   * Поднимается кадром `council:ready` (shared/protocol.ts) и больше НЕ
+   * гаснет: переподключение везёт пачку заново, и сбросить флаг на разрыве
+   * значило бы вернуть ту самую вспышку «ячейка не в консилиуме» — теперь уже
+   * посреди занятия, у пульта, который просто на секунду потерял сеть.
+   */
+  welcomed = $state(false)
 
   readonly #send: (message: ControlClientMessage) => void
   readonly #outbox: DraftOutbox
@@ -369,6 +432,10 @@ export class CouncilState {
   }
 
   receive(message: CouncilMessage): void {
+    if (message.t === 'council:ready') {
+      this.welcomed = true
+      return
+    }
     if (message.t === 'council:mine') {
       this.mine = { ...this.mine, [message.cellId]: message.state }
       // Закрытый консилиум не принимает снимков — придержанный уходит без

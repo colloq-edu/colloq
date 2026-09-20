@@ -1,3 +1,27 @@
+<script module lang="ts">
+  /**
+   * Вкладка списка переживает перемонтаж окна — и только она.
+   *
+   * Смена ячейки монтирует пульт заново ({#key councilCell} в SessionScreen), и
+   * это намеренно: перемонтаж гасит девять состояний окна разом — прочитанное,
+   * черновики писем, набор «новых», придержанные сдачи, момент заморозки,
+   * снимок списка, момент открытия, раскрытое и курсор. Всё перечисленное
+   * ПРИВЯЗАНО К ЛЮДЯМ этой ячейки, и утащить его в следующую значило бы
+   * написать письмо не тому.
+   *
+   * Вкладка — единственное, что к ячейке не привязано: «я сейчас разбираю
+   * сданное» или «я слежу за теми, кто пишет» — это способ вести пару, а не
+   * свойство ячейки, и заново выбирать его на каждом переключении значит
+   * терять место, куда смотришь. Поэтому она живёт в module-переменной: та
+   * переживает перемонтаж и умирает вместе с окном, чего и хотелось.
+   *
+   * Отбор (чипы) остаётся сбрасываемым, как и был: его числа считаны по ЭТОЙ
+   * ячейке («Без оценки 9»), и перенесённый в соседнюю он обещал бы отбор,
+   * которому там может не соответствовать никто.
+   */
+  let lastTab: 'submitted' | 'writing' | 'all' = 'submitted'
+</script>
+
 <script lang="ts">
   import { tr } from '@shared/i18n'
   import './pult.css'
@@ -9,6 +33,8 @@
     allBooks,
     allCellArrays,
     cellId as idOf,
+    cellLock,
+    cellType,
     rootOfCell,
     type CouncilSettings,
   } from '@shared/notebook'
@@ -19,11 +45,16 @@
   import { askToBan, banTargetOf } from '@/lib/bans'
   import { OFFLINE_REASON } from '@/lib/controls'
   import {
+    cellHeadline,
+    filterCounts,
+    filterInTab,
     heldArrivals,
     holdsArrivals,
     kernelView,
     listRows,
+    markdownHeadline,
     moveCursor,
+    neighbourCell,
     pultCells,
     pultKeyAction,
     pultShortcutAllowed,
@@ -32,16 +63,20 @@
     rulesSentence,
     runStats,
     selectable,
+    tabCounts,
     unreadIds,
     variantNumbers,
     type PultCellRow,
     type PultFilter,
     type PultFocus,
     type PultRule,
+    type PultTab,
   } from '@/lib/council-pult'
+  import { boardPhase, WELCOME_WAIT_MS } from '@/lib/council.svelte'
   import { announcePult, availScreen, savePultPlace, savesPlace } from '@/lib/council-pult-window'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn, spell } from '@/lib/utils'
+  import Splash from '@/components/ui/Splash.svelte'
   import PultFilters from './PultFilters.svelte'
   import PultHeader from './PultHeader.svelte'
   import PultKeys from './PultKeys.svelte'
@@ -202,6 +237,7 @@
   const offline = $derived(!session.connected)
   const disabled = $derived(offline || !host)
 
+
   /**
    * Где ячейки стоят в документе: номер и тетрадь, по id.
    *
@@ -214,11 +250,19 @@
    * секунды в номере ячейки не видна никому, а тридцати обходов в секунду на
    * полном классе не случается.
    */
-  let places = $state.raw<ReadonlyMap<string, { index: number; book: string }>>(new Map())
+  interface CellPlace {
+    index: number
+    book: string
+    /** Название задания — первая строка ячейки или заголовок markdown над ней. */
+    title: string
+    /** Замок ячейки в ДОКУМЕНТЕ: он приезжает своим каналом, раньше или позже сокета. */
+    council: boolean
+  }
+  let places = $state.raw<ReadonlyMap<string, CellPlace>>(new Map())
   $effect(() => {
     const doc = session.doc
     const build = (): void => {
-      const next = new Map<string, { index: number; book: string }>()
+      const next = new Map<string, CellPlace>()
       const books = allBooks(doc)
       const lists =
         books.length > 0
@@ -226,7 +270,31 @@
           : allCellArrays(doc).map((cells) => ({ name: '', cells }))
       for (const { name, cells } of lists) {
         const all = cells.toArray()
-        for (let at = 0; at < all.length; at += 1) next.set(idOf(all[at]), { index: at + 1, book: name })
+        /*
+         * Заголовок ближайшей markdown-ячейки ВЫШЕ — на случай, когда ячейка
+         * начинается кодом. Условие задачи в тетради чаще стоит отдельной
+         * ячейкой над кодом, чем комментарием внутри него, и «imp =
+         * clf.feature_importances_» в меню хуже честной «ячейки 03».
+         *
+         * Текст читается у всех ячеек, а не только у консилиумных: какие из них
+         * консилиумные, знает не документ, а стопки, и спрашивать их отсюда
+         * значило бы пересобирать этот обход на каждый кадр сети. Обход и так
+         * сгущён до раза в треть секунды, а первые строки — это то, что Y.Text
+         * и без того держит в памяти.
+         */
+        let above = ''
+        for (let at = 0; at < all.length; at += 1) {
+          const cell = all[at]
+          const text = String(cell.get('source') ?? '')
+          const council = cellLock(cell) === 'council'
+          if (cellType(cell) === 'markdown') {
+            const heading = markdownHeadline(text)
+            if (heading) above = heading
+            next.set(idOf(cell), { index: at + 1, book: name, title: heading, council })
+            continue
+          }
+          next.set(idOf(cell), { index: at + 1, book: name, title: cellHeadline(text) || above, council })
+        }
       }
       places = next
     }
@@ -259,6 +327,7 @@
       Object.entries(session.council.boards).map(([id, one]) => ({
         cellId: id,
         index: places.get(id)?.index ?? null,
+        title: places.get(id)?.title ?? '',
         book: places.get(id)?.book ?? '',
         lock: one.lock,
         counts: one.counts,
@@ -269,9 +338,54 @@
     ),
   )
 
+  /**
+   * Сторож приветственной пачки: ждать первый кадр — но не вечно.
+   *
+   * Признака могло и не прийти вовсе (сервер постарше кадра `council:ready`,
+   * потерянный кадр), и тогда пульт стоял бы под заставкой до перезагрузки.
+   * Через WELCOME_WAIT_MS ожидание кончается, и окно показывает то, что знает.
+   */
+  let waited = $state(false)
+  $effect(() => {
+    const timer = setTimeout(() => (waited = true), WELCOME_WAIT_MS)
+    return () => clearTimeout(timer)
+  })
+  /**
+   * Жду · нет её · вот она — вместо одного `board === null`.
+   *
+   * Окно рисуется раньше первого кадра стопки, и `null` значил сразу два разных
+   * факта: «кадр ещё едет» и «консилиума тут нет». Пульт выбирал второе и на
+   * каждой перезагрузке успевал мигнуть «ячейка не в консилиуме» ровно между
+   * заставкой приложения и собой. Правило целиком — council.svelte.ts ·
+   * boardPhase; сюда сходятся четыре его входа, в том числе замок из ДОКУМЕНТА:
+   * CRDT и сокет — разные каналы, и документ, уже знающий про консилиум, спорит
+   * с молчанием сокета.
+   */
+  const phase = $derived(
+    boardPhase({
+      board,
+      settled: session.council.welcomed || waited,
+      connected: session.connected,
+      council: places.get(cellId)?.council === true,
+    }),
+  )
+
   /* -------------------------------------------------- состояние экрана */
 
-  let filter = $state<PultFilter>('all')
+  /**
+   * Вкладка списка и отбор внутри неё.
+   *
+   * Отбор — СВОЙ У КАЖДОЙ вкладки: «Без оценки» и «Молчат» отвечают на разные
+   * вопросы, и один чип на три стопки означал бы, что переключение вкладки
+   * молча меняет ещё и отбор. Вкладка начинается с той, на которой её оставили
+   * в прошлой ячейке (module-переменная `lastTab` выше), отбор — всегда с «Все».
+   */
+  let listTab = $state<PultTab>(lastTab)
+  $effect(() => {
+    lastTab = listTab
+  })
+  let filters = $state<Record<PultTab, PultFilter>>({ submitted: 'all', writing: 'all', all: 'all' })
+  const filter = $derived(filterInTab(listTab, filters[listTab]))
   let search = $state('')
   let searching = $state(false)
   let cursor = $state<string | null>(null)
@@ -363,12 +477,17 @@
   const rows = $derived(
     listRows({
       attempts,
+      tab: listTab,
       filter,
       search: names ? search : '',
       unread: filter === 'new' ? newPool : unread,
       held,
+      now,
     }),
   )
+  /** Числа на вкладках и в чипах — тем же ситом, каким список и отбирает. */
+  const tabs = $derived(tabCounts(attempts))
+  const chips = $derived(filterCounts(attempts, listTab, filter === 'new' ? newPool : unread, now))
   const ids = $derived(selectable(rows))
   const current = $derived<CouncilAttempt | null>(
     attempts.find((attempt) => attempt.participantId === cursor) ?? null,
@@ -676,6 +795,22 @@
         tab = 'work'
         void scrollToCursor(at !== 'search')
         return
+      /*
+       * Соседняя ячейка — ТЕМ ЖЕ переходом, что выбор из меню.
+       *
+       * То есть адресом (`onpick`), а не присваиванием: окно одно на комнату, и
+       * его адрес обязан называть ту ячейку, которую видно, — иначе ссылка «на
+       * телефон» уведёт в другую, а перезагрузка вернёт не туда, где были.
+       * Порядок — тот же, что в меню (`cells`), и на краях ничего не
+       * происходит: заворачивать по кругу значит увести пульт с первой ячейки
+       * на последнюю, ничем об этом не сказав.
+       */
+      case 'nextCell':
+      case 'prevCell': {
+        const next = neighbourCell(cells, cellId, action === 'nextCell' ? 1 : -1)
+        if (next !== null) onpick(next)
+        return
+      }
       case 'search':
         tab = 'work'
         searching = true
@@ -736,11 +871,21 @@
     <p class="text-title font-bold text-ink">{tr('room.ui.1357')}</p>
     <p class="text-ui text-muted">{tr('room.ui.1358')}</p>
   </div>
-{:else if board === null || (board.lock !== 'council' && board.counts.attempts === 0)}
-  <div class="flex h-full w-full flex-col items-center justify-center gap-2 bg-canvas px-10 text-center">
-    <p class="text-title font-bold text-ink">{tr('room.ui.1359')}</p>
-    <p class="text-ui text-muted">{tr('room.ui.1360')}</p>
-  </div>
+{:else if board === null || phase !== 'ready'}
+  <!--
+    «Жду» и «нет» — две разные картинки, и раньше на месте обеих стояла вторая.
+    Пока стопка в пути, здесь та же заставка, что у комнаты (Splash), а не
+    приговор «ячейка не в консилиуме»: окно рисуется раньше первого кадра сети,
+    и приговор успевал мигнуть на каждой перезагрузке пульта.
+  -->
+  {#if phase === 'waiting'}
+    <div class="flex h-full w-full bg-canvas"><Splash size="pane" label={tr('room.pult.v3.loading')} /></div>
+  {:else}
+    <div class="flex h-full w-full flex-col items-center justify-center gap-2 bg-canvas px-10 text-center">
+      <p class="text-title font-bold text-ink">{tr('room.ui.1359')}</p>
+      <p class="text-ui text-muted">{tr('room.ui.1360')}</p>
+    </div>
+  {/if}
 {:else}
   <div class="pult-root relative flex h-full min-h-0 w-full flex-col bg-canvas text-ink" data-council-pult={cellId} data-pult-pane={pane}>
     <div class="pult-head" bind:clientHeight={headHeight}>
@@ -782,13 +927,16 @@
     <section class="pult-work-layout" hidden={tab !== 'work'} aria-label={tr('room.pult.v2.workTab')}>
       <aside class="pult-sidebar">
     <PultFilters
+      tab={listTab}
       {filter}
+      {tabs}
+      {chips}
       {search}
       {searching}
       {names}
       {counts}
-      {phone}
-      onfilter={(next) => (filter = next)}
+      ontab={(next) => (listTab = next)}
+      onfilter={(next) => (filters = { ...filters, [listTab]: next })}
       onsearch={(text) => (search = text)}
       onclose={() => { searching = false; search = '' }}
       onopensearch={() => (searching = true)}
@@ -797,6 +945,7 @@
         people={session.peersById}
         connected={presenceKnown}
         filtered={filter !== 'all' || search.trim() !== ''}
+        tab={listTab}
         {rows}
         {cursor}
         keyboard={keyboard && focus !== 'reply'}
@@ -836,6 +985,7 @@
             presence={current ? pultPresence(presenceKnown, session.peersById, current.participantId) : 'unknown'}
             index={place}
             total={ids.length}
+            onstep={step}
             variant={current ? (variants.get(current.participantId) ?? 0) : 0}
             {names}
             {now}

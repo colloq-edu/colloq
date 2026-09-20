@@ -891,9 +891,10 @@ export class SessionState {
         message.t === 'council:count' ||
         message.t === 'council:shown' ||
         message.t === 'council:hint:state' ||
-        message.t === 'council:kernel'
+        message.t === 'council:kernel' ||
+        message.t === 'council:ready'
       ) {
-        // Семь кадров консилиума — одному разборщику: он знает, кому какой
+        // Восемь кадров консилиума — одному разборщику: он знает, кому какой
         // адресован, и хранит их по ячейкам.
         this.council.receive(message)
         return

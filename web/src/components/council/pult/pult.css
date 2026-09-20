@@ -90,6 +90,49 @@
 [data-council-pult] .pult-badge[data-shape="fill"][data-tone="warning"] { background: rgb(var(--warning)); color: rgb(var(--canvas)); }
 [data-council-pult] .pult-badge[data-shape="fill"][data-tone="danger"] { background: rgb(var(--danger)); color: rgb(var(--canvas)); }
 [data-council-pult] .pult-badge[data-shape="outline"] { background: transparent; box-shadow: inset 0 0 0 1px rgb(var(--line)); color: rgb(var(--muted)); font-weight: 600; }
+/*
+ * Точка слева в плашке состояния — Paper 05d, артборд 12 (B).
+ *
+ * Третий признак поверх цвета и формы, и стоит он дёшево: 6 px круга, который
+ * ловится боковым зрением раньше слова. Цвет берётся у самой плашки
+ * (`currentColor`), поэтому заводить его ещё раз для каждого тона не надо;
+ * контурная плашка получает и точку контурную — иначе «Черновик» выглядел бы
+ * залитым состоянием, которого от вас ждут.
+ */
+[data-council-pult] .pult-badge-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+[data-council-pult] .pult-badge[data-shape="outline"] .pult-badge-dot { background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; }
+/*
+ * Присутствие — точкой НА АВАТАРЕ, а не словом в строке.
+ *
+ * «не в сети» подписью под каждым вторым именем — это десять одинаковых слов в
+ * списке из двадцати, и читаются они как шум, сквозь который ищут то, что
+ * отличается. Точка занимает угол картинки, которая и так нарисована.
+ *
+ * Три состояния и три вида: в сети — залитая positive с обводкой цвета холста;
+ * не в сети — полая, обводка faint; неизвестно (связи нет, ростер не доехал) —
+ * точки нет вовсе. Последнее важнее всего: выключенная лампочка и лампочка,
+ * про которую мы ничего не знаем, — разные утверждения.
+ */
+[data-council-pult] .pult-face { position: relative; flex-shrink: 0; }
+[data-council-pult] .pult-face-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  box-sizing: border-box;
+  width: var(--face-dot, 11px);
+  height: var(--face-dot, 11px);
+  border: 2px solid rgb(var(--canvas));
+  border-radius: 50%;
+}
+[data-council-pult] .pult-face[data-presence="online"] .pult-face-dot { background: rgb(var(--positive)); }
+[data-council-pult] .pult-face[data-presence="offline"] .pult-face-dot { background: rgb(var(--canvas)); border-color: rgb(var(--faint)); }
+[data-council-pult] .pult-face[data-presence="unknown"] .pult-face-dot { display: none; }
 [data-council-pult] button:focus-visible, [data-council-pult] input:focus-visible,
 [data-council-pult] select:focus-visible, [data-council-pult] textarea:focus-visible {
   outline: 2px solid rgb(var(--accent-text)); outline-offset: 2px;

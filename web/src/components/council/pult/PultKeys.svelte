@@ -28,7 +28,10 @@
 
   const ROWS: { keys: string[]; what: string }[] = [
     { keys: ['j', 'k', '↑↓'], what: tr('room.ui.1374') },
-    { keys: ['⌘F'], what: tr('room.ui.1376') },
+    // Пульт один на комнату, и ячейку в нём переключают чаще, чем кажется:
+    // скобки делают это, не открывая меню (council-pult.ts · pultKeyAction).
+    { keys: ['[', ']'], what: tr('room.pult.v3.keys.cells') },
+    { keys: ['⌘F', '/'], what: tr('room.ui.1376') },
     { keys: ['Tab'], what: tr('room.ui.1377') },
     { keys: ['Enter'], what: tr('room.ui.1378') },
     { keys: ['R', '1', '2'], what: tr('room.ui.1379') },

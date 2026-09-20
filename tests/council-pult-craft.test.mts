@@ -130,7 +130,26 @@ test('сохранённый черновик не выдаётся за тек�
   assert.match(ROW, /attemptReview\(attempt\)/, 'оценка и черновик определяются отдельно от запуска')
   assert.doesNotMatch(ROW, /room\.ui\.1312/, 'нельзя ставить «сейчас» по наличию черновика')
   assert.match(ROW, /pultClock\(attempt\.submittedAt \?\? attempt\.updatedAt\)/)
-  assert.match(ROW, /presence\s*===\s*'offline'/)
+  // «Пишет · 14 строк» — это про набранное, а не про то, что пальцы на
+  // клавишах прямо сейчас; сколько человек молчит, считается от времени правки.
+  assert.match(ROW, /draftLine\(attempt, now\)/)
+})
+
+test('присутствие — точка на аватаре, а не подпись «не в сети» в каждой строке', () => {
+  /*
+   * Десять одинаковых подписей в списке из двадцати — это шум, сквозь который
+   * ищут то, что отличается. Точка занимает угол картинки, которая и так
+   * нарисована, и различает ТРИ состояния, а не два: неизвестно (связи нет,
+   * ростер не доехал) — точки нет вовсе.
+   */
+  assert.doesNotMatch(ROW, /room\.pult\.offline/, '«не в сети» вернулось словом в строку списка')
+  assert.match(ROW, /class="pult-face pult-avatar" data-presence=\{presence\}/)
+  assert.match(ROW, /<span class="pult-face-dot">/)
+  const css = read(`${PULT}/pult.css`)
+  assert.match(css, /\.pult-face\[data-presence="unknown"\] \.pult-face-dot \{ display: none/)
+  assert.match(css, /\.pult-face\[data-presence="offline"\][\s\S]{0,120}border-color: rgb\(var\(--faint\)\)/)
+  // И в шапке работы — та же точка на том же аватаре, одним правилом.
+  assert.match(WORK, /class="pult-face work-avatar" data-presence=\{presence\}/)
 })
 
 test('сданная работа отличается от черновика словом и формой, а не только цветом', () => {
@@ -306,10 +325,13 @@ test('регламент читается предложением в шапке
   assert.match(HEADER, /class="pult-value"[\s\S]{0,400}?onrules\(part\.rule, event\.currentTarget\)/)
   assert.match(HEADER, /aria-expanded=\{openRule === part\.rule\}/, 'не видно, о чём открыт лист')
   assert.doesNotMatch(HEADER, /room\.pult\.v2\.private/, 'строка «личный пульт» вернулась на место регламента')
-  // Ниже 860 px от предложения остаётся имя — и оно же дверь. Порог переехал
-  // с 650: в одной строке с заголовком и подписью предложение перестаёт
-  // помещаться раньше, чем окно становится телефоном.
-  assert.match(HEADER, /@media\(max-width:860px\)[\s\S]*?\.pult-rules-line \{ display:none/)
+  // Ниже 1200 px от предложения остаётся имя — и оно же дверь. Порог переехал
+  // с 860 вместе с названием задания: в одной строке с заголовком, названием и
+  // «ячейка 2 из 4 · ещё в N ждут оценки» предложение перестаёт помещаться
+  // намного раньше, чем окно становится телефоном. Обрезаться посередине ему
+  // нельзя — половина правила, по которой принимают решение, хуже его имени.
+  assert.match(HEADER, /@media\(max-width:1200px\)[\s\S]*?\.pult-rules-line \{ display:none/)
+  assert.match(HEADER, /\.pult-rules-line \{[^}]*flex-shrink:0/, 'предложение снова сжимается и рвётся посередине')
 })
 
 test('шапка окна — одна строка, а не три', () => {
@@ -624,4 +646,15 @@ test('переключили тему в тетради — пульт рядо�
   assert.match(theme, /window\.addEventListener\('storage', onStorage\)/)
   assert.match(theme, /event\.key !== STORAGE_KEY/)
   assert.match(theme, /if \(!borrowed\) apply\(next\)/, 'одолжённый экран слушается чужого выбора')
+})
+
+test('меню ячеек: одна тетрадь — имя в шапке, несколько — в каждой строке', () => {
+  const cells = code(read('web/src/components/council/pult/PultCells.svelte'))
+  // Две девятых ячейки из разных тетрадей неразличимы по номеру — значит имя
+  // тетради обязано стоять в строке, как только тетрадей больше одной.
+  assert.match(cells, /const manyBooks = \$derived\(books\.length > 1\)/)
+  assert.match(cells, /\{#if manyBooks && cell\.book\}/)
+  assert.match(cells, /class="pult-cells-book"/)
+  // А пока тетрадь одна, имя стоит один раз в шапке и не шумит в строках.
+  assert.match(cells, /const book = \$derived\(books\.length === 1 \? books\[0\] : ''\)/)
 })

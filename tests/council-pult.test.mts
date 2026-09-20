@@ -26,8 +26,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { CouncilAttempt, CouncilBoard } from '../shared/protocol.js'
 import {
-  FILTERS,
   attemptRunLine,
+  tabFilters,
   bySubmissionDesc,
   classBar,
   heldArrivals,
@@ -90,10 +90,13 @@ const NONE = new Set<string>()
 function rows(attempts: CouncilAttempt[], over: Partial<Parameters<typeof listRows>[0]> = {}) {
   return listRows({
     attempts,
+    // «Все» — прежний единый список с двумя секциями: эти проверки про него.
+    tab: 'all',
     filter: 'all',
     search: '',
     unread: NONE,
     held: NONE,
+    now: T,
     ...over,
   })
 }
@@ -181,15 +184,18 @@ test('пустая половина заголовка не получает, а
     attempt({ participantId: 'draft', submittedAt: null, text: 'b' }),
   ]
   // Под отбором заголовок «Сдали · 5» говорил бы о числе, которого в списке
-  // нет: отбор уже разрезал ленту по другому признаку.
-  assert.ok(!rows(mixed, { filter: 'writing' }).some((row) => row.kind === 'section'))
+  // нет: отбор уже разрезал ленту по другому признаку. Во вкладках их нет по
+  // тому же доводу: половина ленты там и так одна.
+  assert.ok(!rows(mixed, { tab: 'writing' }).some((row) => row.kind === 'section'))
+  assert.ok(!rows(mixed, { tab: 'submitted' }).some((row) => row.kind === 'section'))
+  assert.ok(!rows(mixed, { filter: 'new', unread: new Set(['ok']) }).some((row) => row.kind === 'section'))
   assert.ok(!rows(mixed, { search: 'ok' }).some((row) => row.kind === 'section'))
   assert.ok(rows(mixed).some((row) => row.kind === 'section'))
 })
 
 /* -------------------------------------------------------------- фильтры */
 
-test('пять чипов отбирают то, что обещают', () => {
+test('чипы отбирают то, что обещают, и у каждой вкладки свой набор', () => {
   const failed = attempt({ participantId: 'f', status: 'failed', run: { state: 'error', outputs: [], execCount: 1, ranMs: 10, startedAt: T, by: 'host' } })
   const wrong = attempt({ participantId: 'w', status: 'wrong', correct: false })
   const ran = attempt({
@@ -205,12 +211,20 @@ test('пять чипов отбирают то, что обещают', () => {
   assert.equal(matchesFilter(ran, 'error', unread), false)
   assert.equal(matchesFilter(ran, 'unrun', unread), false, 'запускали — значит не сюда')
   assert.equal(matchesFilter(failed, 'unrun', unread), false)
-  assert.equal(matchesFilter(draft, 'writing', unread), true)
-  assert.equal(matchesFilter(ran, 'writing', unread), false)
   assert.equal(matchesFilter(failed, 'new', unread), true)
   assert.equal(matchesFilter(ran, 'new', unread), false)
-  // Чипа «группы» больше нет — отбирать по невидимому нечем.
-  assert.equal(FILTERS.includes('groups' as never), false)
+  // «Без оценки» — про руку преподавателя: сдано, а отметки нет. Черновик сюда
+  // не попадает ни при каких условиях: его не оценивают.
+  assert.equal(matchesFilter(ran, 'ungraded', unread), true)
+  assert.equal(matchesFilter(wrong, 'ungraded', unread), false, 'отметка стоит — значит оценено')
+  assert.equal(matchesFilter(draft, 'ungraded', unread), false)
+  // Чипа «группы» больше нет — отбирать по невидимому нечем; «черновики» стали
+  // вкладкой, а не чипом среди отборов внутри одной стопки.
+  assert.equal(tabFilters('submitted').includes('groups' as never), false)
+  assert.equal(tabFilters('submitted').includes('writing' as never), false)
+  assert.deepEqual(tabFilters('submitted'), ['all', 'ungraded', 'new', 'error'])
+  assert.deepEqual(tabFilters('writing'), ['all', 'silent', 'failed', 'asking'])
+  assert.deepEqual(tabFilters('all'), ['all', 'new'])
 })
 
 test('поиск идёт по имени и не путает регистр', () => {
@@ -599,12 +613,19 @@ test('список ячеек: порядок по тетради и номер�
   assert.equal(list[0].total, 3)
 })
 
-test('одна тетрадь — имени тетради в списке нет', () => {
+test('имя тетради едет всегда — прячет его меню, а не сборка списка', () => {
+  /*
+   * 20.09.2026, просьба с пары: «в этом списке добавь название ноутбука — тут
+   * вполне может быть две девятых ячейки из разных файлов». Номер уникален
+   * только внутри тетради, поэтому имя обязано доезжать до меню в КАЖДОЙ
+   * строке; показывать его в строках или один раз в шапке — решение меню
+   * (PultCells.svelte · manyBooks), и оно проверяется отдельно.
+   */
   const one = pultCells([
     { cellId: 'a', index: 2, book: 'lab.ipynb', lock: 'council', counts: board().counts, room: null, attempts: [], onScreen: false },
     { cellId: 'b', index: 5, book: 'lab.ipynb', lock: 'council', counts: board().counts, room: null, attempts: [], onScreen: false },
   ])
-  assert.deepEqual(one.map((cell) => cell.book), ['', ''])
+  assert.deepEqual(one.map((cell) => cell.book), ['lab.ipynb', 'lab.ipynb'])
   // Ячейку удалили из документа — она уходит в хвост, а не встаёт первой.
   const gone = pultCells([
     { cellId: 'a', index: null, book: '', lock: 'council', counts: board().counts, room: null, attempts: [], onScreen: false },

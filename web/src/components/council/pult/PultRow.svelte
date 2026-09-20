@@ -2,7 +2,7 @@
   import { tr } from '@shared/i18n'
   import type { CouncilAttempt } from '@shared/protocol'
   import Avatar from '@/components/ui/Avatar.svelte'
-  import { attemptReview, attemptRunLine, pultClock, type PultPresence, type RowMeaning } from '@/lib/council-pult'
+  import { attemptReview, attemptRunLine, draftLine, pultClock, type PultPresence, type RowMeaning } from '@/lib/council-pult'
   interface Props {
     attempt: CouncilAttempt; presence: PultPresence; unread: boolean; variant: number;
     names: boolean; selected: boolean; focused: boolean; meaning: RowMeaning;
@@ -12,34 +12,54 @@
   }
   let { attempt, presence, unread, variant, names, selected, focused, meaning, now, onlet, onopen }: Props = $props()
   const review = $derived(attemptReview(attempt))
-  // Строка запуска целиком: что случилось, сколько считалось и когда. Час
-  // запуска — просьба с пары 19.09: по нему сопоставляют запуск с тем, что
-  // происходило в аудитории минуту назад.
-  const execution = $derived(attemptRunLine(attempt, now))
   const title = $derived(names ? attempt.name : tr('room.ui.1255',{p0:variant}))
   const draft = $derived(attempt.submittedAt === null)
-  const runText = $derived(draft && !attempt.run && attempt.runRequest?.status !== 'pending' && presence !== 'unknown'
-    ? tr(presence === 'online' ? 'room.pult.online' : 'room.pult.offline') : execution.label)
-  // Знак от самого состояния, если оно его прислало: у остановленного пределом
-  // тон общий с упавшим (красный), а часы говорят, что ошибки в коде не было.
-  const runIcon = $derived(execution.icon ?? (execution.tone === 'danger' ? '×' : execution.tone === 'accent' ? '▶' : execution.tone === 'warning' ? '◷' : ''))
+  /*
+   * Две строки на строку, и вторая у сдавших и пишущих РАЗНАЯ.
+   *
+   * У сдавших — плашка оценки и строка запуска целиком: что случилось, сколько
+   * считалось и когда (час запуска — просьба с пары 19.09, по нему сличают
+   * запуск с тем, что было в аудитории минуту назад).
+   *
+   * У пишущих плашки нет вовсе: «Черновик» в каждой второй строке — десять
+   * одинаковых слов подряд. Вместо неё одна строка состояния, и она отвечает
+   * на единственный вопрос вкладки «Пишут»: кто застрял. Раньше на этом месте
+   * стояло «не в сети» — подпись, повторённая у половины класса и не
+   * говорящая ничего; присутствие теперь точка на аватаре.
+   */
+  const execution = $derived(draft ? draftLine(attempt, now) : attemptRunLine(attempt, now))
+  /*
+   * Знак от самого состояния, если оно его прислало: у остановленного пределом
+   * тон общий с упавшим (красный), а часы говорят, что ошибки в коде не было.
+   *
+   * У пишущих знака нет вовсе. Там строка состояния — единственная строка
+   * человека, и начинается она со слова, которое и есть ответ («молчит 7 мин»);
+   * значок перед ним читался бы как ещё один вид состояния, которого нет.
+   */
+  const runIcon = $derived(draft
+    ? ''
+    : (execution.icon ?? (execution.tone === 'danger' ? '×' : execution.tone === 'accent' ? '▶' : execution.tone === 'warning' ? '◷' : '')))
 </script>
 <div class="pult-row" class:selected class:focused class:asking={meaning==='asking'} class:on-screen={meaning==='screen'} data-pult-row={attempt.participantId} data-selected={selected?'yes':'no'} data-presence={presence} data-draft={draft?'yes':'no'}>
   <button type="button" class="pult-row-select" data-pult-select tabindex={selected?0:-1} aria-pressed={selected} title={title} onclick={onopen}>
     <span class="pult-unread" class:unread aria-hidden="true"></span>
-    <span class="pult-avatar" aria-hidden="true">
+    <span class="pult-face pult-avatar" data-presence={presence} aria-hidden="true">
       {#if names}<Avatar name={attempt.name} color={attempt.color} avatar={attempt.avatar} size="md" emojiPx={18} />{:else}<span class="pult-anonymous"></span>{/if}
+      <span class="pult-face-dot"></span>
     </span>
     <span class="pult-row-main">
       <span class="pult-row-name">{title}</span>
-      <span class="pult-row-tags">
-        <!-- Залитая плашка «Сдано · ждёт оценки», контурный «Черновик», и у
-             оценённых прежние тона: различие читается словом и формой, а не
-             только цветом. -->
-        <span class="pult-badge" data-tone={review.tone} data-shape={review.shape}>{#if review.tone==='positive'}<span aria-hidden="true">✓</span>{:else if review.tone==='warning'}<span aria-hidden="true">↺</span>{/if}{review.label}</span>
-        {#if meaning==='screen'}<span class="pult-badge" data-tone="positive" data-shape="fill">{tr('room.ui.1313')}</span>{/if}
-      </span>
-      <span class="pult-run-state" data-tone={execution.tone} title={runText}>{#if runIcon}<span aria-hidden="true">{runIcon} </span>{/if}{runText}</span>
+      <!-- Плашка — только у сдавшего: у пишущего её место занимает строка
+           состояния, а «Черновик» и так сказан приглушённой строкой. -->
+      {#if !draft}
+        <span class="pult-row-tags">
+          <span class="pult-badge" data-tone={review.tone} data-shape={review.shape}>{#if review.tone==='positive'}<span aria-hidden="true">✓</span>{:else if review.tone==='warning'}<span aria-hidden="true">↺</span>{/if}{review.label}</span>
+          {#if meaning==='screen'}<span class="pult-badge" data-tone="positive" data-shape="fill">{tr('room.ui.1313')}</span>{/if}
+        </span>
+      {:else if meaning==='screen'}
+        <span class="pult-row-tags"><span class="pult-badge" data-tone="positive" data-shape="fill">{tr('room.ui.1313')}</span></span>
+      {/if}
+      <span class="pult-run-state" data-tone={execution.tone} data-loud={draft && execution.tone!=='neutral' ? 'yes' : 'no'} title={execution.label}>{#if runIcon}<span aria-hidden="true">{runIcon} </span>{/if}{execution.label}</span>
     </span>
   </button>
   <div class="pult-row-tail">
@@ -48,7 +68,6 @@
     {:else}
       <time class="pult-meta" datetime={new Date(attempt.submittedAt ?? attempt.updatedAt).toISOString()}>{pultClock(attempt.submittedAt ?? attempt.updatedAt)}</time>
     {/if}
-    {#if presence==='offline' && !draft}<span class="pult-meta">{tr('room.pult.offline')}</span>{/if}
   </div>
 </div>
 <style>
@@ -69,8 +88,8 @@
   .pult-row-select { display:flex; align-items:center; gap:9px; min-width:0; flex:1; text-align:left; cursor:pointer; }
   .pult-unread { width:6px; height:6px; flex-shrink:0; border-radius:50%; background:transparent; }
   .pult-unread.unread { background:rgb(var(--accent)); }
-  .pult-avatar,.pult-anonymous { display:block; width:30px; height:30px; flex-shrink:0; }
-  .pult-anonymous { background:rgb(var(--line)); border-radius:50%; }
+  .pult-avatar { --face-dot:11px; display:block; width:30px; height:30px; flex-shrink:0; }
+  .pult-anonymous { display:block; width:100%; height:100%; background:rgb(var(--line)); border-radius:50%; }
   .pult-row-main { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
   .pult-row-name { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:15px; font-weight:700; line-height:18px; }
   .pult-row-tags { display:flex; gap:4px; flex-wrap:wrap; }
@@ -80,6 +99,9 @@
   .pult-run-state[data-tone="danger"] { color:rgb(var(--danger)); }
   .pult-run-state[data-tone="warning"] { color:rgb(var(--warning)); }
   .pult-run-state[data-tone="accent"] { color:rgb(var(--accent-text)); }
+  /* У пишущего эта строка — единственное, что о нём сказано: тревожная набрана
+     жирным, чтобы «молчит 7 мин» ловилось раньше соседних «пишет · 14 строк». */
+  .pult-run-state[data-loud="yes"] { font-weight:700; }
   .pult-row-tail { display:flex; flex-direction:column; gap:3px; align-items:flex-end; width:58px; flex-shrink:0; text-align:right; }
   .pult-allow { min-height:34px; padding:5px 8px; background:rgb(var(--warning)/.12); border:1px solid rgb(var(--warning)/.45); color:rgb(var(--warning)); font-size:13px; font-weight:600; cursor:pointer; }
   @media(max-width:800px) { .pult-row { padding-right:8px; }.pult-row-tail { width:54px; } }

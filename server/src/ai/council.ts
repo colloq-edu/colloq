@@ -43,6 +43,7 @@ import type {
   CouncilStatus,
 } from '@shared/protocol'
 import { attemptStatus } from '@shared/protocol'
+import { COUNCIL_SILENCE_MS } from '@shared/notebook'
 import type { ReasoningEffort } from '@shared/admin'
 import { randomUUID } from 'node:crypto'
 import { getOracleSettings } from '../admin/settings.js'
@@ -114,8 +115,14 @@ const MAX_TASK_SOURCE = 4_000
 /** Сколько кода одного листа едет в кадре: экран, а не файл. */
 const MAX_SHEET_SOURCE = 900
 
-/** Пять минут без единой правки — «застрял»: лист открыт, в нём ничего не происходит. */
-const SILENCE_MS = 5 * 60_000
+/**
+ * Пять минут без единой правки — «застрял»: лист открыт, в нём ничего не происходит.
+ *
+ * Число берётся из `@shared/notebook`: им же красится строка «молчит 7 мин» и
+ * считается чип «Молчат N» во вкладке «Пишут» у пульта. Свою копию здесь держали
+ * до 20.09 — и любая правка одной из них разводила сводку оракула со списком.
+ */
+const SILENCE_MS = COUNCIL_SILENCE_MS
 
 /**
  * Какую долю СВОБОДНОГО места забирают строки по людям.

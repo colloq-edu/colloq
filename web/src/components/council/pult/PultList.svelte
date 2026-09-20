@@ -17,7 +17,7 @@
    * двигается.
    */
   import type { CouncilAttempt } from '@shared/protocol'
-  import { pultPresence, rowMeaning, type PultRow as Row } from '@/lib/council-pult'
+  import { pultPresence, rowMeaning, type PultRow as Row, type PultTab } from '@/lib/council-pult'
   import { cn } from '@/lib/utils'
   import PultRow from './PultRow.svelte'
 
@@ -26,6 +26,8 @@
     people: ReadonlyMap<string, unknown>
     connected: boolean
     filtered?: boolean
+    /** Какая стопка открыта: пустая «Пишут» и пустая «Сдали» — разные новости. */
+    tab: PultTab
     /** Выбранная работа — она же открыта справа. */
     cursor: string | null
     /** Пришли с клавиатуры: только тогда рисуется кольцо. */
@@ -51,6 +53,7 @@
     people,
     connected,
     filtered = false,
+    tab,
     cursor,
     keyboard,
     names,
@@ -127,9 +130,24 @@
         </div>
       {/if}
     {:else}
+      <!--
+        Пустота объясняется по своей причине. Отбор ничего не нашёл — это одно;
+        «Пишут» пуста, потому что все уже сдали, — совсем другое, и на паре это
+        хорошая новость, а не отсутствие данных.
+      -->
       <div class="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
-        <p class="text-ui-lg font-bold text-muted">{tr(filtered ? 'room.pult.v2.noMatches' : 'room.pult.v2.noAttempts')}</p>
-        <p class="text-[14px] leading-relaxed text-muted">{tr(filtered ? 'room.pult.v2.changeFilter' : 'room.pult.v2.noAttemptsHint')}</p>
+        <p class="text-ui-lg font-bold text-muted">{tr(
+          filtered ? 'room.pult.v2.noMatches' : tab === 'all' ? 'room.pult.v2.noAttempts' : 'room.pult.v3.tabs.empty',
+        )}</p>
+        <p class="text-[14px] leading-relaxed text-muted">{tr(
+          filtered
+            ? 'room.pult.v2.changeFilter'
+            : tab === 'writing'
+              ? 'room.pult.v3.tabs.emptyWriting'
+              : tab === 'submitted'
+                ? 'room.pult.v3.tabs.emptySubmitted'
+                : 'room.pult.v2.noAttemptsHint',
+        )}</p>
       </div>
     {/each}
   </div>
