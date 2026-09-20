@@ -72,4 +72,33 @@ export const commonMessages: MessageCatalog = {
     ru: 'Адрес API должен начинаться с http:// или https://.',
     en: 'the base URL must start with http:// or https://',
   },
+  'common.mustBeFlag': {
+    ru: 'Поле «{field}» должно быть да/нет.',
+    en: '{field} must be true or false',
+  },
+  'common.unknownEffort': {
+    ru: 'Неизвестный уровень размышлений.',
+    en: 'unknown reasoning level',
+  },
+  'common.sendNames': { ru: 'Имена учащихся в запросах к модели', en: 'Student names in model requests' },
+  'common.sendNamesOn': {
+    ru: 'Оракул видит настоящие имена и ссылается на людей по имени.',
+    en: 'The oracle sees real names and refers to people by name.',
+  },
+  'common.sendNamesOff': {
+    ru: 'Провайдеру уезжают метки S1…SN; имя подставляет сервер уже в ответе.',
+    en: 'The provider gets labels S1…SN; the server puts names back into the answer.',
+  },
+  'common.sendNamesNote': {
+    ru: 'Имена внутри самих решений уезжают в любом случае — их пишут студенты.',
+    en: 'Names written inside the solutions themselves are sent either way — students put them there.',
+  },
+  'common.reasoning': { ru: 'Уровень размышлений', en: 'Reasoning level' },
+  'common.reasoningInstant': { ru: 'сразу', en: 'instant' },
+  'common.reasoningNormal': { ru: 'обычно', en: 'normal' },
+  'common.reasoningDeep': { ru: 'подробно', en: 'thorough' },
+  'common.reasoningNote': {
+    ru: 'Умолчание для всех запросов. «Обычно» не добавляет к запросу ничего; «сразу» просит модель не рассуждать вслух, «подробно» — думать дольше. Понизить уровень может любой участник, поднять — только преподаватель.',
+    en: 'The default for every request. “Normal” adds nothing to the request; “instant” asks the model not to think out loud, “thorough” lets it think longer. Anyone may lower the level; only the teacher may raise it.',
+  },
 }

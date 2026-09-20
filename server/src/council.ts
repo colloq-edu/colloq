@@ -285,7 +285,7 @@ function settleGhostOracle(oracle: CouncilOracle): CouncilOracle {
    * заданным вопросом. Сама лента (`answers`) остаётся — она про разговор, а
    * не про запрос, и её перезапуск сервера не касается.
    */
-  return oracle.summary.length > 0
+  return oracle.answers.length > 0
     ? { ...oracle, state: 'ready', pending: null, error: ORACLE_RESTARTED() }
     : { ...oracle, state: 'idle', askedAt: null, basedOn: 0, pending: null, error: ORACLE_RESTARTED() }
 }
@@ -700,28 +700,25 @@ export function recordRun(
 }
 
 /**
- * Ответ автору или всей группе (все сданные попытки с этим ключом группы).
- * Возвращает participantId адресатов — им control.ts шлёт `council:mine`.
+ * Ответ АВТОРУ. Возвращает participantId адресатов — им control.ts шлёт
+ * `council:mine`; список, а не одно имя, потому что адресата может уже не быть.
+ *
+ * Рассылки группе одинаковых решений здесь больше нет. Она была написана по
+ * ключу группы (`normalizeAttempt`), то есть по тексту, совпавшему после
+ * выкидывания пробелов и комментариев, — и письмо «посмотрите на накопитель»
+ * приходило пятерым, из которых четверо этого накопителя не писали. Ушла она
+ * вместе со всей группировкой: преподаватель читает класс поимённо.
  */
 export function setReply(
   sessionId: string,
   cellId: string,
-  to: { participantId: string } | { groupKey: string },
+  to: { participantId: string },
   reply: CouncilReply,
 ): string[] {
-  const targets: StoredAttempt[] = []
-  const personal = 'participantId' in to
-  if (personal) {
-    const one = attemptOf(sessionId, cellId, to.participantId)
-    if (one) targets.push(one)
-  } else {
-    for (const attempt of attemptsOf(sessionId, cellId)) {
-      if (attempt.submittedAt !== null && attempt.groupKey === to.groupKey) targets.push(attempt)
-    }
-  }
-  const addressed: CouncilReply = { ...reply, to: personal ? 'person' : 'group' }
-  for (const attempt of targets) save({ ...attempt, replies: keeping(attempt.replies, addressed) })
-  return targets.map((attempt) => attempt.participantId)
+  const one = attemptOf(sessionId, cellId, to.participantId)
+  if (!one) return []
+  save({ ...one, replies: keeping(one.replies, { ...reply, to: 'person' }) })
+  return [one.participantId]
 }
 
 /**
@@ -1036,8 +1033,8 @@ function toAttempt(attempt: StoredAttempt): CouncilAttempt {
  * внутри компаратора. Пульт и оракул считали то же самое чуть иначе, и однажды
  * это дало бы им разных представителей одной группы.
  */
-function groupsOf(attempts: CouncilAttempt[], labels: Record<string, string>): CouncilGroup[] {
-  return groupAttempts(attempts, labels)
+function groupsOf(attempts: CouncilAttempt[]): CouncilGroup[] {
+  return groupAttempts(attempts)
 }
 
 /** Одна попытка глазами преподавателя — для `council:patch`. `null` — её больше нет. */
@@ -1093,7 +1090,9 @@ export function boardFor(
     .map(toAttempt)
     .sort((a, b) => a.updatedAt - b.updatedAt)
   const oracle = oracleOf(sessionId, cellId)
-  const groups = groupsOf(attempts, oracle?.groupLabels ?? {})
+  // Без подписей от оракула: группам он имён больше не даёт — их сняли вместе
+  // с самой группировкой, и стопка теперь подписывается первой строкой кода.
+  const groups = groupsOf(attempts)
   return {
     lock: cell.lock,
     settings: cell.settings,

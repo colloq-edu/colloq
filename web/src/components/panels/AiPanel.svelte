@@ -21,7 +21,13 @@
   } from '@shared/protocol'
   import { oracleModeIn, readRules } from '@shared/rules'
   import { kindOf } from '@shared/paths'
-  import type { OracleMode } from '@shared/admin'
+  import {
+    effortRank,
+    REASONING_EFFORTS,
+    type OracleMode,
+    type ReasoningEffort,
+  } from '@shared/admin'
+  import { rememberEffort, rememberedEffort } from '@/lib/oracle-effort'
   import { api, ApiError } from '@/lib/api'
   import { oracleDraft } from '@/lib/drafts.svelte'
   import { getSessionState } from '@/lib/session.svelte'
@@ -40,7 +46,12 @@
   // Raw: the whole array is rebuilt on every observer fire, so deep-proxying
   // each snapshot would be work spent on objects that are replaced next frame.
   let entries = $state.raw<ChatSnapshot[]>(chat.map(readChatEntry))
-  let status = $state<{ enabled: boolean; model: string; mode: OracleMode } | null>(null)
+  let status = $state<{
+    enabled: boolean
+    model: string
+    mode: OracleMode
+    reasoningEffort?: ReasoningEffort
+  } | null>(null)
   /*
    * Вопрос переживает закрытие панели.
    *
@@ -575,6 +586,10 @@
 
   async function ask(body: AiAskRequest) {
     if (offline) return
+    // Уровень — на каждый вопрос, включая те, что уходят из тетради («Спросить
+    // оракула», «Починить») и повтором хода: выбран он у поля, а действует на
+    // всё, что спрашивает эта вкладка.
+    if (effort !== null) body = { ...body, effort }
     stopComposing()
     sendErrorRender = () => (null)
     pinned = true
@@ -631,6 +646,36 @@
    * между вопросами и гаснет там, где режим запрещён правилом комнаты.
    */
   let doing = $state(false)
+
+  /**
+   * Уровень размышлений — рядом со «Спросить/Сделать» и по той же логике:
+   * выбор, а не догадка, помнится между вопросами, живёт в этом браузере.
+   *
+   * `null` — «как на этом Colloq»: тогда в запросе не уходит ни одного нового
+   * поля, и чужие инстансы ведут себя ровно как до появления ручки.
+   *
+   * Понизить может любой — ответ придёт быстрее и обойдётся дешевле. Поднять
+   * выше инстансового умолчания может только преподаватель: ждать и платить за
+   * «подробно» на весь класс решает тот, кто ведёт пару. Сервер это правило и
+   * держит (routes/ai.ts), а здесь оно нарисовано — кнопка, которая ничего не
+   * делает, хуже кнопки, которой нет.
+   */
+  let effort = $state<ReasoningEffort | null>(rememberedEffort())
+  const instanceEffort = $derived<ReasoningEffort>(status?.reasoningEffort ?? 'normal')
+  const effortLabel: Record<ReasoningEffort, string> = {
+    instant: tr('common.reasoningInstant'),
+    normal: tr('common.reasoningNormal'),
+    deep: tr('common.reasoningDeep'),
+  }
+  const mayEffort = (one: ReasoningEffort): boolean =>
+    isHost || effortRank(one) <= effortRank(instanceEffort)
+  function pickEffort(next: ReasoningEffort): void {
+    if (!mayEffort(next)) return
+    // Тот же уровень второй раз — снять выбор: вернулись к умолчанию инстанса.
+    effort = effort === next ? null : next
+    rememberEffort(effort)
+  }
+
   const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
   const mayDo = $derived(may.agent)
   /*
@@ -1025,8 +1070,8 @@
           комнаты или режимом подсказок, — переключателя нет вовсе, а не есть и
           отказывает.
         -->
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pb-0.5 pt-1.5">
         {#if canDo}
-          <div class="flex items-center gap-1 px-2 pb-0.5 pt-1.5">
             <div class="flex items-stretch border border-line bg-canvas">
               <button
                 type="button"
@@ -1041,8 +1086,26 @@
                 onclick={() => (doing = true)}
               > {tr('room.ui.514')} </button>
             </div>
-          </div>
         {/if}
+          <!--
+            Уровень размышлений. Выключенных кнопок не рисуем там, где уровень
+            поднять нельзя: студент видит ровно то, что ему доступно.
+          -->
+          <div class="flex items-stretch border border-line bg-canvas" data-oracle-effort>
+            {#each REASONING_EFFORTS as one (one)}
+              {#if mayEffort(one)}
+                <button
+                  type="button"
+                  class="px-2 py-0.5 text-2xs font-semibold transition-colors duration-100
+                         {effort === one ? 'bg-accent text-canvas' : 'text-muted hover:text-ink'}"
+                  aria-pressed={effort === one}
+                  title={tr('common.reasoning')}
+                  onclick={() => pickEffort(one)}
+                > {effortLabel[one]} </button>
+              {/if}
+            {/each}
+          </div>
+        </div>
 
         <div class="flex items-end gap-2 py-1 pl-2 pr-1.5">
         <!-- Your face before you type, so it is obvious the room will see this. -->

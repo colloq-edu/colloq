@@ -14,6 +14,7 @@
   } from '@shared/notebook'
   import { baseOf } from '@shared/paths'
   import type { CouncilAttempt } from '@shared/protocol'
+  import type { ReasoningEffort } from '@shared/admin'
   import { api } from '@/lib/api'
   import { askToBan, banTargetOf } from '@/lib/bans'
   import { OFFLINE_REASON } from '@/lib/controls'
@@ -599,11 +600,15 @@
    * `question` — свободный вопрос о состоянии класса; без него сервер готовит
    * прежнюю сводку по решениям (server/src/routes/council.ts).
    */
-  async function askOracle(stop: boolean, question?: string): Promise<void> {
+  async function askOracle(
+    stop: boolean,
+    question?: string,
+    effort?: ReasoningEffort,
+  ): Promise<void> {
     oracleError = ''
     try {
       if (stop) await api.councilStopOracle(session.session.id, session.token, cellId)
-      else await api.councilAsk(session.session.id, session.token, cellId, question)
+      else await api.councilAsk(session.session.id, session.token, cellId, question, effort)
     } catch (error) {
       oracleError = error instanceof Error ? error.message : tr('room.pult.oracleError')
     }
@@ -862,7 +867,8 @@
         ondecline={declineRun} onapproveall={approveAll} onopen={open} ondrop={dropRun} onremove={remove} />
     {:else if tab === 'oracle'}
       <PultOracleTab oracle={board.oracle} {attempts} submitted={counts.submitted} {names} {variants}
-        askWhy={offline ? tr(OFFLINE_REASON) : null} onask={(question) => void askOracle(false, question)}
+        askWhy={offline ? tr(OFFLINE_REASON) : null}
+        onask={(question, effort) => void askOracle(false, question, effort)}
         onstop={() => void askOracle(true)} onopen={open} />
     {/if}
 

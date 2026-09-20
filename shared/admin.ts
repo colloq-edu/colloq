@@ -386,6 +386,37 @@ export type AiProviderId = 'openai' | 'ollama' | 'vllm' | 'openrouter' | 'custom
 /** What a seminar's oracle is allowed to do. A seminar may lower this, never raise it. */
 export type OracleMode = 'off' | 'hints' | 'full'
 
+/**
+ * Сколько модели думать вслух перед ответом.
+ *
+ * Три положения, и среднее — «ничего не менять». `normal` НЕ шлёт провайдеру
+ * ни одного нового поля: инстанс, которому эта ручка не нужна, должен вести
+ * себя ровно как до неё, а «мы всегда шлём reasoning: medium» — это тихая
+ * смена поведения у всех, включая шлюзы, которые на незнакомое поле отвечают
+ * 400 посреди пары.
+ *
+ * `instant` — это не только параметр: он же стоит строкой в системном кадре
+ * («отвечай сразу, коротко, без рассуждений вслух»). Половина моделей ручку
+ * рассуждений не имеет вовсе, и просьба словами работает на всех.
+ */
+export type ReasoningEffort = 'instant' | 'normal' | 'deep'
+
+export const REASONING_EFFORTS: readonly ReasoningEffort[] = ['instant', 'normal', 'deep']
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return REASONING_EFFORTS.includes(value as ReasoningEffort)
+}
+
+/**
+ * Порядок положений — по нему решается, кто вправе его менять.
+ *
+ * Понизить может кто угодно (это дешевле и быстрее), повысить — только
+ * преподаватель: «подробно» на весь класс оплачивает владелец ключа.
+ */
+export function effortRank(effort: ReasoningEffort): number {
+  return effort === 'instant' ? 0 : effort === 'normal' ? 1 : 2
+}
+
 export interface OracleSettings {
   provider: AiProviderId
   baseUrl: string
@@ -410,6 +441,22 @@ export interface OracleSettings {
   contextChars: number
   /** Tool actions per Do request; 0 means unlimited. */
   agentSteps: number
+  /**
+   * Уезжают ли к модели НАСТОЯЩИЕ ИМЕНА учащихся.
+   *
+   * Включено по умолчанию, и это сознательный выбор владельца: оракул, который
+   * видит класс метками S1…SN, отвечает «S7 и S12 застряли» — преподаватель
+   * читает это как шифр, а модель на просьбу «напиши, кому подойти» выдумывает
+   * имена. С именами она ссылается на людей так же, как это сделал бы коллега.
+   *
+   * Выключенное возвращает прежнее поведение: в кадр едут метки, соответствие
+   * «метка → человек» остаётся на сервере. Это одна настройка инстанса, а не
+   * правило комнаты: она про то, что уходит ЧУЖОМУ провайдеру, и решает это
+   * тот, чей ключ, а не тот, чья пара.
+   */
+  sendNames: boolean
+  /** Умолчание уровня размышлений; запрос может его понизить, поднять — только преподаватель. */
+  reasoningEffort: ReasoningEffort
   /** Whether the environment supplied a key, in which case the UI must not
    *  claim the instance is unconfigured while OPENAI_API_KEY is doing the job. */
   keyFromEnvironment: boolean
@@ -427,6 +474,8 @@ export interface UpdateOracleRequest {
   slowModeSeconds?: number
   contextChars?: number
   agentSteps?: number
+  sendNames?: boolean
+  reasoningEffort?: ReasoningEffort
 }
 
 export interface OracleTestResult {

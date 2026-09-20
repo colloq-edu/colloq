@@ -31,6 +31,7 @@ import type { CouncilRun } from '@shared/protocol'
 import { getOracleSettings } from '../admin/settings.js'
 import { noteTokens } from '../admin/usage.js'
 import { streamChat, type ChatTurn } from './provider.js'
+import { COUNCIL_WATCH, watchSilence } from './watch.js'
 import { clip as clipTo, flatten } from './text.js'
 
 /** Что подсказке нужно от попытки: код, задание вокруг и то, чем всё кончилось. */
@@ -147,15 +148,46 @@ export interface AskHint extends HintInput {
 /**
  * Спросить и вернуть текст подсказки. Бросает то же, что и провайдер: словами,
  * которые можно показать человеку.
+ *
+ * Под тем же сторожем, что и оракул консилиума (ai/watch.ts). Подсказку просит
+ * один студент по одной упавшей попытке — ждать её полчаса некому, и висящая
+ * «оракул думает» в карточке ничем не лучше висящей сводки. Сроки те же:
+ * полторы минуты до первого кадра, сорок пять секунд между кадрами, три минуты
+ * на всё.
  */
 export async function askCouncilHint(input: AskHint): Promise<string> {
-  const text = await streamChat(
-    hintPrompt(input),
-    () => {},
-    input.signal,
-    (tokens) => {
-      if (input.usageId !== undefined) noteTokens(input.usageId, tokens)
-    },
-  )
-  return text.trim()
+  /*
+   * Свой контроллер поверх чужого сигнала: сторожу нужно, что обрывать, а
+   * отмена снаружи (человек ушёл, комнату снесли) должна доходить сюда как
+   * была. Слушатель снимается в `finally` — иначе долгоживущий сигнал комнаты
+   * копил бы по слушателю на каждую подсказку.
+   */
+  const controller = new AbortController()
+  const relay = () => controller.abort()
+  if (input.signal?.aborted) return ''
+  input.signal?.addEventListener('abort', relay, { once: true })
+  const guard = watchSilence(controller, COUNCIL_WATCH)
+  try {
+    const text = await streamChat(
+      hintPrompt(input),
+      () => guard.heard(),
+      controller.signal,
+      (tokens) => {
+        if (input.usageId !== undefined) noteTokens(input.usageId, tokens)
+      },
+    )
+    // Оборвал сторож, а не человек — это отказ, и назвать его надо словами:
+    // пустая подсказка выглядит как «модели нечего сказать», а она молчит.
+    if (guard.why !== null) {
+      throw new Error(
+        guard.spoke
+          ? tr('server.theModelStoppedSendingItsResponseTry.3aa75a')
+          : tr('server.theModelDidNotRespondWithinThe.be1746'),
+      )
+    }
+    return text.trim()
+  } finally {
+    guard.stop()
+    input.signal?.removeEventListener('abort', relay)
+  }
 }

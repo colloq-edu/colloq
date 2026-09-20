@@ -1911,7 +1911,7 @@ onRefusal((sessionId, participantId, refusal) => {
  * модули друг на друга — как и у onRefusal.
  *
  * И БЕЗ стопки следом. Она уезжала здесь ради подписей на чипах сводки, но
- * подписи и черновики едут в самом кадре (`oracle.groupLabels`), а пульт
+ * ни сводки, ни подписей больше нет, а пульт
  * кладёт оракула в свою стопку сам (council.svelte.ts · withOracle). Стоила эта
  * лишняя строка двух полных стопок на один вопрос — «читаю» и «готово», — то
  * есть двух кадров со всеми попытками и их выводами на каждое нажатие
@@ -4670,7 +4670,9 @@ export function dispatch(
           message:
             outcome.position === 0
               ? tr("server.thisAttemptIsAlreadyRunning.0efa94")
-              : tr("server.thisAttemptIsAlreadyQueuedAtPosition.0c6a86", { p0: outcome.position }),
+              : here !== null
+                ? tr("server.thisAttemptIsAlreadyQueuedAtPosition.0c6a86", { p0: outcome.position })
+                : tr('server.council.alreadyQueuedHere', { p0: outcome.position }),
         })
       }
       return
@@ -4689,15 +4691,17 @@ export function dispatch(
         send(ws, { t: 'error', message: tr("server.aReplyMayContainUpToCharacters.1d0ef3", { p0: MAX_REPLY_CHARS }) })
         return
       }
-      const to = message.to as { participantId?: unknown; groupKey?: unknown } | undefined
+      /*
+       * Адресат — только человек. Рассылка группе одинаковых решений («Всем
+       * N») снята вместе с самой группировкой: письмо, написанное по чужому
+       * тексту, приходило людям, которые его не писали, — совпал лишь код
+       * после нормализации. Старый клиент, приславший `{groupKey}`, получает
+       * молчание, а не рассылку: лучше не отправить, чем отправить не тем.
+       */
+      const to = message.to as { participantId?: unknown } | undefined
       const participantId = optionalId(to?.participantId)
-      const address =
-        participantId !== undefined
-          ? { participantId }
-          : typeof to?.groupKey === 'string'
-            ? { groupKey: to.groupKey }
-            : null
-      if (!address) return
+      if (participantId === undefined) return
+      const address = { participantId }
       // Подпись преподавателя, не оракула: черновик модели сюда попадает уже
       // правленым текстом, и в ленте студента отвечает человек.
       const reply = { text, at: Date.now(), by: displayName(sessionId, payload.participantId) }

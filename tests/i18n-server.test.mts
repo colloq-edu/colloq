@@ -96,17 +96,17 @@ test('publication HTML translates chrome and dates while preserving user names, 
   assert.match(rendered, /Не переводить этот вывод/)
 })
 
-test('Council keeps its JSON contract and selects the default answer language at request time', () => {
+test('Council picks the default answer language at request time', () => {
   use('en')
-  const en = oraclePrompt({source:'Задание пользователя', before:'', reference:''}, [], [], 10_000).turns
+  const en = oraclePrompt({source:'Задание пользователя', before:'', reference:''}, [], 'How is it going?', {budget: 10_000}).turns
   assert.match(en[0].content, /Answer in English by default/)
   assert.match(en[0].content, /explicitly requests another language/)
-  assert.match(en[0].content, /"summary"/)
-  assert.match(en[0].content, /"groupLabels"/)
-  assert.match(en[0].content, /"drafts"/)
+  // JSON-договора у оракула больше нет: сводка по группам снята целиком, и
+  // ответ теперь одна проза в ленту (server/src/ai/council.ts).
+  assert.doesNotMatch(en[0].content, /"summary"|"groupLabels"|"drafts"/)
   assert.match(en[1].content, /Задание пользователя/)
   use('ru')
-  const ru = oraclePrompt({source:'User task', before:'', reference:''}, [], [], 10_000).turns
+  const ru = oraclePrompt({source:'User task', before:'', reference:''}, [], 'Как дела?', {budget: 10_000}).turns
   assert.match(ru[0].content, /По умолчанию отвечайте по-русски/)
   assert.match(ru[1].content, /User task/)
 })

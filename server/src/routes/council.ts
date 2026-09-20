@@ -15,26 +15,22 @@ import { tr } from '@shared/i18n'
  *          словами: 403 выключен / 503 нет ключа / 429 лимит / 409 уже читает
  *   DELETE /api/sessions/:id/council/:cellId/oracle  — «Стоп»
  *
- * У POST два вида, и различает их тело `{ question?: string }`:
+ * У POST один вид: вопрос о классе. Тело `{ question?: string }` — свои слова
+ * преподавателя, а пустое тело значит заготовку, которую ставит СЕРВЕР
+ * (`server.council.statusQuestion`): она едет модели в промпте и должна быть
+ * одна для любого клиента, включая тот, что откроют через полгода.
  *
- *   вопрос есть        — свободный вопрос о КЛАССЕ: модель видит весь класс,
- *                        включая черновики и запуски, и отвечает прозой;
- *   вопроса нет,
- *   кто-то сдал        — прежняя сводка по решениям (строгий JSON, три абзаца);
- *   вопроса нет,
- *   не сдал никто      — заготовка «как идут дела у класса»: пока все пишут,
- *                        читать сводку не из чего, а спросить уже есть о чём.
+ * Спросить можно ВСЕГДА. 400 «в этой ячейке ещё никто ничего не написал» здесь
+ * был и снят: на пустой ячейке кадр всё равно несёт текст общей ячейки и
+ * markdown над ней, а «что это вообще за задание и как им действовать» —
+ * законный вопрос ровно в те минуты, когда ещё никто ничего не написал.
  *
- * 400 остался ровно на один случай: в ячейке нет ни одного листа. Раньше им
- * отвечали и на «никто не сдал», и это была главная жалоба с живого семинара
- * 19.09: половина класса пишет, двое застряли, а оракул молчит, потому что
- * ждёт сдач.
- *
- * Модель видит тексты по группам с числами, задание (текст общей ячейки) и
- * эталон, если есть; имён не видит — к людям её метки привязывает сервер
- * (`CouncilOracleAnswer.people`), к группам — пульт по ключам групп.
- * Сборка кадра, разбор ответа и состояние — ai/council.ts; здесь только
- * право, лимит и ячейка.
+ * Модель видит задание, весь класс — черновики, запуски, отметки, тишину — и
+ * решения поимённо. Имена настоящие, если инстанс это разрешает
+ * (`OracleSettings.sendNames`, по умолчанию да); выключено — едут метки, и
+ * соответствие «метка → человек» остаётся на сервере
+ * (`CouncilOracleAnswer.people`). Сборка кадра и состояние — ai/council.ts;
+ * здесь только право, лимит и ячейка.
  *
  * Хранение — council.ts, но через `deps`, а не напрямую: тесты подменяют его
  * списком в памяти, и маршрут проверяется без таблицы попыток — она живёт у
@@ -44,6 +40,7 @@ import { json, Router, type Request, type Response } from 'express'
 import { cellSource, findCell } from '@shared/notebook'
 import { mayLeadCouncil, oracleLimitsIn, oracleModeIn } from '@shared/rules'
 import { MAX_ORACLE_QUESTION, SESSION_MISSING, type CouncilOracle } from '@shared/protocol'
+import { effortRank, isReasoningEffort, type ReasoningEffort } from '@shared/admin'
 import { getOracleSettings } from '../admin/settings.js'
 import { countRoomQuestions, recordQuestion } from '../admin/usage.js'
 import {
@@ -57,7 +54,7 @@ import {
 import { aiReady } from '../ai/index.js'
 import { visitSessionDoc } from './doc-visit.js'
 import { attemptsOf, oracleOf, setOracle } from '../council.js'
-import { getRules, getSession } from '../db.js'
+import { getParticipant, getRules, getSession } from '../db.js'
 /*
  * Потолок комнаты — тот же самый, а не такое же число.
  *
@@ -77,7 +74,28 @@ export interface CouncilOracleDeps extends OracleStore {
   attemptsOf(sessionId: string, cellId: string): OracleAttempt[]
 }
 
-const live: CouncilOracleDeps = { attemptsOf, oracleOf, setOracle }
+/**
+ * Имя к попытке — здесь, а не в council.ts.
+ *
+ * Стопка преподавателя и так собирает имена (`toAttempt`), но оракулу едет не
+ * стопка, а голые строки: подтягивать участника имеет смысл ровно на тех
+ * попытках, которые сейчас уезжают в кадр, и ровно тогда, когда инстанс
+ * разрешил слать имена. Строки участника может не быть вовсе — человек вышел,
+ * его сняли, — и тогда кадр зовёт его меткой (ai/council.ts · namesFor).
+ */
+function named(sessionId: string, cellId: string): OracleAttempt[] {
+  return attemptsOf(sessionId, cellId).map((attempt) => {
+    let name: string | null = null
+    try {
+      name = getParticipant(sessionId, attempt.participantId)?.name ?? null
+    } catch {
+      /* строки участника нет — кадр обойдётся меткой */
+    }
+    return { ...attempt, name }
+  })
+}
+
+const live: CouncilOracleDeps = { attemptsOf: named, oracleOf, setOracle }
 
 export function councilRoutes(deps: CouncilOracleDeps = live): Router {
   const router = Router()
@@ -204,31 +222,37 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     }
 
     /*
-     * Вид запроса. Пустая строка — это «вопроса нет», а не «вопрос из пробелов»:
-     * поле ввода пульта отправляет то, что в нём лежит, и Enter на пробеле не
-     * должен уезжать к модели отдельным видом.
+     * Вопрос. Пустая строка — это «вопроса нет», а не «вопрос из пробелов»:
+     * поле ввода пульта отправляет то, что в нём лежит, и Enter на пробеле
+     * уезжать к модели не должен.
+     *
+     * Ни одного листа в ячейке — тоже законный случай, и раньше он был
+     * единственным 400. Спросить «что это за задание и как им действовать»
+     * хочется ровно тогда, когда никто ещё ничего не написал; кадр в этот
+     * момент несёт текст общей ячейки и markdown над ней — этого хватает.
      */
-    const body = (req.body ?? {}) as { question?: unknown }
+    const body = (req.body ?? {}) as { question?: unknown; effort?: unknown }
     const asked =
       typeof body.question === 'string' ? body.question.trim().slice(0, MAX_ORACLE_QUESTION) : ''
+    const question = asked !== '' ? asked : tr('server.council.statusQuestion')
+
+    /*
+     * Уровень размышлений — понизить может любой, поднять выше инстансового
+     * может только преподаватель. Сюда доходит только преподаватель
+     * (`mayLeadCouncil` выше), так что здесь проверяется лишь само значение;
+     * права разбирает дверь /ai/ask, куда ходит вся комната.
+     */
+    const effort: ReasoningEffort | undefined = isReasoningEffort(body.effort)
+      ? body.effort
+      : undefined
 
     const attempts = deps.attemptsOf(sessionId, cellId)
-    if (attempts.length === 0) {
-      return res.status(400).json({ error: tr('server.council.noSheetsYet') })
-    }
-    const anySubmitted = attempts.some((a) => a.submittedAt !== null)
-    /*
-     * Сводка по решениям — только когда есть что сводить; во всех остальных
-     * случаях вопрос о классе, своими словами или заготовкой. Заготовку ставит
-     * СЕРВЕР, а не пульт: она едет модели в промпте и должна быть одна для
-     * любого клиента, включая тот, что откроют через полгода.
-     */
-    const question = asked !== '' ? asked : anySubmitted ? null : tr('server.council.statusQuestion')
 
     /*
      * Строка расхода — при приёме, как у /ai/ask: запрос к провайдеру уйдёт,
-     * чем бы он ни кончился. Своё действие в учёте: сводка в разбивке панели
-     * не должна прятаться среди «спросили».
+     * чем бы он ни кончился. Своё действие в учёте: оракул консилиума в
+     * разбивке панели не должен прятаться среди «спросили». Кончится запрос
+     * ничем — строка снимается (ai/council.ts · wasted).
      */
     const usageId = recordQuestion({
       sessionId,
@@ -244,6 +268,7 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
       store: deps,
       usageId,
       question,
+      effort,
     })
     // 202: вопрос ушёл, ответ приедет сокетом (`council:oracle`) — как у /ai/ask.
     res.status(202).json(oracle satisfies CouncilOracle)
@@ -252,9 +277,17 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
   router.delete('/api/sessions/:id/council/:cellId/oracle', (req, res) => {
     const who = lead(req, res)
     if (!who) return
-    // Остановить нечего — тоже не ошибка: кнопка «Стоп» и опоздавший ответ
-    // встречаются постоянно, и красить это красным незачем.
-    stopCouncilOracle(who.sessionId, who.cellId)
+    /*
+     * «Стоп» обязан работать ВСЕГДА, и «остановить нечего» — не ошибка.
+     *
+     * Кнопка и опоздавший ответ встречаются постоянно, и красить это красным
+     * незачем. Но есть случай хуже: ячейка, застрявшая в `reading` без живого
+     * чтения. Тогда «Стоп» раньше не делал ничего, а следующий вопрос получал
+     * 409 «уже готовится» — до перезапуска сервера. Поэтому store едет внутрь:
+     * не нашлось, что обрывать, а состояние всё ещё «читает» — привести в
+     * порядок и ответить успехом.
+     */
+    stopCouncilOracle(who.sessionId, who.cellId, deps)
     res.json({ ok: true })
   })
 

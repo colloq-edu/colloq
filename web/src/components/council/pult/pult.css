@@ -98,3 +98,21 @@
 @media (max-width: 900px) { [data-council-pult] { --pult-pad: 20px; } }
 @media (max-width: 650px) { [data-council-pult] { --pult-pad: 16px; } }
 @media (prefers-reduced-motion: reduce) { [data-council-pult] * { transition: none !important; animation: none !important; } }
+
+/*
+ * Ссылка «На телефон» в шапке.
+ *
+ * Правило стоит здесь, а не в PultHeader: класс уезжает пропом внутрь
+ * ConsoleLink (lecture/ConsoleLink.svelte), и scoped-стиль шапки до чужой
+ * разметки не достаёт — Svelte такое правило просто вычеркнет.
+ */
+[data-council-pult] .pult-link { flex-shrink: 0; align-items: center; gap: 5px; min-height: 34px; padding: 6px 8px; }
+[data-council-pult] .pult-link[aria-expanded='true'] { background: rgb(var(--raised)); border-color: rgb(var(--primary)); }
+/* 860 — та ширина, на которой в шапке уже не помещается подпись рядом со
+   значком: остаётся значок, и цель нажатия вырастает до пальца. */
+@media (max-width: 860px) {
+  [data-council-pult] .pult-link { font-size: 0; gap: 0; min-width: 34px; justify-content: center; }
+}
+@media (max-width: 650px) {
+  [data-council-pult] .pult-link { min-height: 40px; min-width: 40px; }
+}

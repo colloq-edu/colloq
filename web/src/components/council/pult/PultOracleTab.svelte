@@ -1,31 +1,37 @@
 <script lang="ts">
   /**
-   * Оракул о классе: сводка по решениям сверху, разговор под ней.
+   * Оракул о классе: мессенджер, в котором преподаватель спрашивает о задаче.
    *
    * Вкладка была экраном одной кнопки: «Подготовить сводку» — и три абзаца про
-   * сданный код. На живом семинаре 19.09 выяснилось, чего ей не хватает: пока
-   * никто не сдал, она говорила «ждём сданных работ», а именно в эти минуты
-   * преподавателю и нужно знать, кто застрял. Теперь это мессенджер: сверху
-   * числа, посередине лента «вопрос → ответ», снизу прибитая панель ввода — и
-   * спросить можно, как только у кого-то появился лист.
+   * сданный код, разложенные по шести безымянным группам. Ни группы, ни сводки
+   * здесь больше нет, и это просьба владельца: он думает о классе не стопками
+   * одинакового текста, а людьми — «у Ани работает, у Пети падает». Осталась
+   * одна лента «вопрос → ответ», и спросить можно ВСЕГДА: ещё до того, как
+   * кто-нибудь написал хоть строку, — «что это вообще за задание и как им
+   * лучше действовать» модель прочитает по тексту общей ячейки.
    *
-   * Две вещи держатся нарочно.
+   * Три вещи держатся нарочно.
    *
    * Панель ввода не уезжает. Она вне области прокрутки: на телефоне и в окне
    * 900×650 поле «спросить» должно быть под рукой, а не в конце ленты, которую
    * сперва надо промотать.
    *
-   * Метки в ответе — живые. Модель видит людей как `S7` и других имён не знает
-   * (server/src/ai/council.ts), а словарь «метка → человек» приезжает вместе с
-   * ответом; здесь метка превращается в чип с именем (или «Вариант N», если
-   * имена выключены), по которому открывается работа. Разбор текста — чистой
-   * функцией в lib/council-oracle-answer.ts: наивная замена подстроки съела бы
-   * `S7` внутри `S70`.
+   * Имена в ответе — живые. Модель называет людей по имени (или меткой `S7`,
+   * если имена на этом Colloq к ней не едут), а словарь «подпись → человек»
+   * приезжает вместе с ответом; здесь подпись превращается в чип, по которому
+   * открывается работа. Разбор текста — чистой функцией в
+   * lib/council-oracle-answer.ts: наивная замена подстроки съела бы «Анна»
+   * внутри «Анна Белова».
+   *
+   * Отказ остаётся В ЛЕНТЕ. Вопрос, на который не ответили, не исчезает:
+   * иначе повторить нечего, и даже понять, на чём повисло, невозможно.
    */
   import { tr } from '@shared/i18n'
   import { MAX_ORACLE_QUESTION, type CouncilAttempt, type CouncilOracle } from '@shared/protocol'
-  import { oracleState, staleBy } from '@/lib/council-board'
+  import { REASONING_EFFORTS, type ReasoningEffort } from '@shared/admin'
+  import { oracleState } from '@/lib/council-board'
   import { splitAnswer, type AnswerPiece } from '@/lib/council-oracle-answer'
+  import { rememberEffort, rememberedEffort } from '@/lib/oracle-effort'
   import { clock } from '@/lib/history'
 
   interface Props {
@@ -36,8 +42,8 @@
     /** Номера вариантов ячейки (council-pult.ts · variantNumbers) — подпись чипа при выключенных именах. */
     variants: ReadonlyMap<string, number>
     askWhy: string | null
-    /** Без вопроса — сводка по решениям; с вопросом — разговор о классе. */
-    onask: (question?: string) => void
+    /** Вопрос и уровень размышлений на него; без уровня — умолчание инстанса. */
+    onask: (question: string, effort?: ReasoningEffort) => void
     onstop: () => void
     /** Открыть работу этого человека — нажатие на чип в ответе. */
     onopen: (participantId: string) => void
@@ -49,6 +55,8 @@
   let draft = $state('')
   let bodyEl = $state<HTMLElement | null>(null)
   let field = $state<HTMLTextAreaElement | null>(null)
+  /** `null` — «как на инстансе»: в запрос не уходит ничего нового. */
+  let effort = $state<ReasoningEffort | null>(rememberedEffort())
 
   /**
    * Высота поля — по тексту, до четырёх строк (как у письма автору,
@@ -68,7 +76,6 @@
 
   const view = $derived(oracleState(oracle, submitted))
   const reading = $derived(view === 'reading')
-  const behind = $derived(oracle ? staleBy(oracle, submitted) : 0)
   /*
    * `?? []` и `?? null` на обязательных полях — не перестраховка: кадр мог
    * приехать от сервера, который ленты ещё не знает (`CouncilOracle.answers`),
@@ -80,11 +87,8 @@
     attempts.filter((one) => one.submittedAt !== null && one.correct !== null).length,
   )
   const writing = $derived(attempts.filter((one) => one.submittedAt === null).length)
-  const hasSummary = $derived(oracle?.summary.some((one) => one.trim().length > 0) ?? false)
   const byId = $derived(new Map(attempts.map((one) => [one.participantId, one] as const)))
-  const empty = $derived(answers.length === 0 && pending === null && !hasSummary)
-
-  const heads = ['room.pult.v2.oracle.success', 'room.pult.v2.oracle.discuss', 'room.pult.v2.oracle.show']
+  const empty = $derived(answers.length === 0 && pending === null)
 
   /** Быстрые вопросы: на кнопке — два слова, модели уезжает целое предложение. */
   const quick = $derived([
@@ -94,7 +98,20 @@
       label: tr('room.pult.v2.oracle.ask.mistakes'),
       question: tr('room.pult.v2.oracle.ask.qMistakes'),
     },
+    {
+      // Бывшая «Сводка по решениям» — теперь такой же вопрос, как остальные, и
+      // гаснуть без сдач ему незачем: разбирать «что писать дальше» полезно и
+      // по черновикам.
+      label: tr('room.pult.v2.oracle.ask.review'),
+      question: tr('room.pult.v2.oracle.ask.qReview'),
+    },
   ])
+
+  const effortLabel: Record<ReasoningEffort, string> = {
+    instant: tr('common.reasoningInstant'),
+    normal: tr('common.reasoningNormal'),
+    deep: tr('common.reasoningDeep'),
+  }
 
   const canSend = $derived(askWhy === null && !reading)
   const sendDisabled = $derived(!canSend || draft.trim().length === 0)
@@ -103,13 +120,7 @@
     if (!canSend) return
     const text = question.trim().slice(0, MAX_ORACLE_QUESTION)
     if (!text) return
-    onask(text)
-  }
-
-  /** Сводка по решениям — тот же маршрут без вопроса; без сдач ей нечего читать. */
-  function askSummary(): void {
-    if (!canSend || submitted === 0) return
-    onask()
+    onask(text, effort ?? undefined)
   }
 
   function sendDraft(): void {
@@ -119,7 +130,13 @@
     ask(text)
   }
 
-  /** Подпись чипа: имя, «Вариант N» или сама метка, если человека уже нет в стопке. */
+  /** Тот же уровень второй раз — «как на инстансе»: выбор снимается нажатием. */
+  function pickEffort(next: ReasoningEffort): void {
+    effort = effort === next ? null : next
+    rememberEffort(effort)
+  }
+
+  /** Подпись чипа: имя, «Вариант N» или сама подпись из кадра, если человека уже нет. */
   function chipText(piece: Extract<AnswerPiece, { kind: 'person' }>): string {
     const attempt = byId.get(piece.participantId)
     if (!attempt) return piece.label
@@ -171,35 +188,10 @@
       </div>
     {/if}
 
-    {#if hasSummary && oracle}
-      <section class="summary-card" aria-label={tr('room.pult.v2.oracle.ask.summaryTitle')}>
-        <h3 class="summary-title">{tr('room.pult.v2.oracle.ask.summaryTitle')}</h3>
-        {#each oracle.summary as paragraph, at (at)}
-          {#if paragraph.trim()}
-            <section class="summary-section" class:discussion={at === 1}>
-              <h4>
-                {#if at === 0}<span class="success-mark" aria-hidden="true">✓</span>{/if}
-                {tr(heads[at] ?? 'room.pult.v2.oracle.observation')}
-              </h4>
-              <p>{paragraph}</p>
-            </section>
-          {/if}
-        {/each}
-        <p class="summary-meta">
-          {tr('room.pult.v2.oracle.basedOn', { count: oracle.basedOn })}{oracle.askedAt === null
-            ? ''
-            : ` · ${tr('room.pult.v2.oracle.requestedAt', { time: clock(oracle.askedAt) })}`}
-        </p>
-        {#if behind > 0}
-          <p class="stale-message" role="status">{tr('room.pult.v2.oracle.stale', { count: behind })}</p>
-        {/if}
-      </section>
-    {/if}
-
     {#if empty}
       <section class="oracle-empty">
-        <h3>{tr(attempts.length === 0 ? 'room.pult.v2.oracle.ask.noSheets' : 'room.pult.v2.oracle.ask.empty')}</h3>
-        <p>{tr(attempts.length === 0 ? 'room.pult.v2.oracle.ask.noSheetsHint' : 'room.pult.v2.oracle.ask.emptyHint')}</p>
+        <h3>{tr('room.pult.v2.oracle.ask.empty')}</h3>
+        <p>{tr('room.pult.v2.oracle.ask.emptyHint')}</p>
       </section>
     {/if}
 
@@ -208,15 +200,26 @@
         {#each answers as answer (answer.id)}
           <article class="turn">
             <p class="turn-question" aria-label={tr('room.pult.v2.oracle.ask.question')}>{answer.question}</p>
-            <div class="turn-answer" aria-label={tr('room.pult.v2.oracle.ask.answer')}>
-              {@render answerText(answer.text, answer.people)}
-              <p class="turn-meta">
-                {tr('room.pult.v2.oracle.ask.answerMeta', {
-                  time: clock(answer.askedAt),
-                  submitted: answer.basedOn.submitted,
-                  drafts: answer.basedOn.drafts,
-                })}
-              </p>
+            <div class="turn-answer" class:turn-failed={!!answer.failed}
+              aria-label={tr('room.pult.v2.oracle.ask.answer')}>
+              {#if answer.failed}
+                <!-- Отказ стоит там же, где стоял бы ответ: вопрос остаётся на
+                     месте, и его видно, чем повторить. -->
+                <p class="turn-failed-text" role="status">{answer.failed}</p>
+                <button type="button" class="pult-button retry"
+                  disabled={!canSend} onclick={() => ask(answer.question)}>
+                  {tr('room.pult.v2.oracle.retry')}
+                </button>
+              {:else}
+                {@render answerText(answer.text, answer.people)}
+                <p class="turn-meta">
+                  {tr('room.pult.v2.oracle.ask.answerMeta', {
+                    time: clock(answer.askedAt),
+                    submitted: answer.basedOn.submitted,
+                    drafts: answer.basedOn.drafts,
+                  })}
+                </p>
+              {/if}
             </div>
           </article>
         {/each}
@@ -231,14 +234,6 @@
         {/if}
       </section>
     {/if}
-
-    {#if reading && !pending}
-      <section class="oracle-loading" aria-busy="true" aria-label={tr('room.pult.v2.oracle.reading')}>
-        <p class="loading-label" role="status">✦ {tr('room.pult.v2.oracle.reading')}</p>
-        <p class="state-copy">{tr('room.pult.v2.oracle.readingScope', { count: oracle?.basedOn ?? submitted })}</p>
-        <div class="skeleton" aria-hidden="true"><span></span><span></span><span></span></div>
-      </section>
-    {/if}
   </div>
 
   <footer class="oracle-ask">
@@ -247,11 +242,6 @@
         <button type="button" class="pult-button quick-chip" disabled={!canSend}
           onclick={() => ask(one.question)}>{one.label}</button>
       {/each}
-      <button type="button" class="pult-button quick-chip" disabled={!canSend || submitted === 0}
-        title={submitted === 0 ? tr('room.pult.v2.oracle.ask.summaryWhy') : undefined}
-        onclick={askSummary}>
-        <span aria-hidden="true">✦</span> {tr(hasSummary ? 'room.pult.v2.oracle.refresh' : 'room.pult.v2.oracle.ask.summary')}
-      </button>
     </div>
     <div class="ask-field">
       <textarea class="ask-text" rows="1" maxlength={MAX_ORACLE_QUESTION} bind:this={field}
@@ -277,8 +267,15 @@
         </button>
       {/if}
     </div>
+    <div class="effort-row" data-pult-oracle-effort>
+      <span class="effort-title">{tr('common.reasoning')}</span>
+      {#each REASONING_EFFORTS as one (one)}
+        <button type="button" class="effort-chip" class:effort-on={effort === one}
+          aria-pressed={effort === one} onclick={() => pickEffort(one)}>{effortLabel[one]}</button>
+      {/each}
+    </div>
     <p class="pult-meta ask-note">
-      {tr('room.pult.v2.oracle.ask.privacy')}{names ? '' : ` · ${tr('room.pult.v2.oracle.anonymous')}`}
+      {tr(names ? 'room.pult.v2.oracle.ask.privacy' : 'room.pult.v2.oracle.ask.privacyAnon')}
     </p>
     {#if askWhy}<p class="ask-reason" role="status">{askWhy}</p>{/if}
   </footer>
@@ -298,17 +295,6 @@
 
   .oracle-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px var(--pult-pad) 20px; display: flex; flex-direction: column; gap: 16px; }
 
-  .summary-card { padding: 14px 16px; border: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
-  .summary-title { font-size: 13px; line-height: 18px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: rgb(var(--muted)); }
-  .summary-section { margin-top: 12px; }
-  h4 { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 15px; line-height: 20px; font-weight: 700; }
-  .success-mark { color: rgb(var(--positive)); }
-  .summary-section p { font-size: 14px; line-height: 21px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .discussion { padding: 10px 12px; border-left: 3px solid rgb(var(--warning)); background: rgb(var(--warning) / 0.08); }
-  .discussion h4 { color: rgb(var(--warning)); }
-  .summary-meta { margin-top: 12px; color: rgb(var(--muted)); font-size: 13px; line-height: 18px; }
-  .stale-message { margin-top: 4px; color: rgb(var(--warning)); font-size: 13px; line-height: 18px; }
-
   .oracle-empty h3 { font-size: 15px; line-height: 20px; font-weight: 700; }
   .oracle-empty p { max-width: 560px; margin-top: 8px; color: rgb(var(--muted)); font-size: 14px; line-height: 21px; }
   .oracle-error { padding: 10px 14px; border-left: 3px solid rgb(var(--danger)); background: rgb(var(--danger) / 0.07); font-size: 14px; line-height: 21px; }
@@ -320,6 +306,10 @@
   .turn { display: flex; flex-direction: column; gap: 8px; }
   .turn-question { align-self: flex-end; max-width: min(100%, 560px); padding: 8px 12px; border: 1px solid rgb(var(--accent)); background: rgb(var(--accent) / 0.1); color: rgb(var(--ink)); font-size: 14px; line-height: 21px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .turn-answer { align-self: flex-start; max-width: min(100%, 640px); padding: 10px 14px; border: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
+  /* Неудачный ход — такой же ход, только рамка другая: вопрос над ним остаётся. */
+  .turn-failed { border-left: 3px solid rgb(var(--danger)); background: rgb(var(--danger) / 0.05); }
+  .turn-failed-text { font-size: 14px; line-height: 21px; overflow-wrap: anywhere; }
+  .turn-answer .retry { margin-top: 8px; min-height: 30px; padding: 5px 10px; font-size: 13px; line-height: 18px; }
   .answer-text { font-size: 14px; line-height: 22px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .turn-meta { margin-top: 8px; color: rgb(var(--muted)); font-size: 12px; line-height: 17px; }
 
@@ -328,7 +318,6 @@
   .answer-person:hover { background: rgb(var(--raised)); }
 
   .loading-label { color: rgb(var(--accent-text)); font-size: 14px; line-height: 20px; font-weight: 700; }
-  .state-copy { margin-top: 8px; color: rgb(var(--muted)); font-size: 14px; line-height: 21px; }
   .skeleton { display: flex; flex-direction: column; gap: 10px; max-width: 520px; padding: 14px 0 4px; }
   .skeleton span { height: 12px; background: rgb(var(--line)); }
   .skeleton span:nth-child(2) { width: 85%; }
@@ -343,6 +332,14 @@
   .ask-text { display: block; flex: 1; min-width: 0; height: 22px; max-height: 92px; overflow-y: auto; resize: none; border: 0; padding: 0; background: transparent; color: rgb(var(--ink)); font: inherit; font-size: 14px; line-height: 22px; outline: none; }
   .ask-text::placeholder { color: rgb(var(--muted)); }
   .oracle-ask :global(.ask-send) { min-height: 36px; padding: 7px 12px; font-size: 14px; line-height: 20px; }
+
+  /* Уровень размышлений — мелкая строка под полем: выбирают редко, видят всегда. */
+  .effort-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+  .effort-title { color: rgb(var(--muted)); font-size: 12px; line-height: 17px; }
+  .effort-chip { min-height: 24px; padding: 2px 8px; border: 1px solid rgb(var(--line)); background: transparent; color: rgb(var(--muted)); font: inherit; font-size: 12px; line-height: 17px; cursor: pointer; }
+  .effort-chip:hover { color: rgb(var(--ink)); }
+  .effort-on { border-color: rgb(var(--accent)); background: rgb(var(--accent) / 0.12); color: rgb(var(--ink)); font-weight: 700; }
+
   .ask-note { margin: 0; }
   .ask-reason { color: rgb(var(--warning)); font-size: 13px; line-height: 18px; }
 
@@ -360,5 +357,6 @@
     .quick-row::-webkit-scrollbar { display: none; }
     .oracle-ask :global(.quick-chip) { min-height: 44px; padding: 10px 12px; flex-shrink: 0; white-space: nowrap; }
     .oracle-ask :global(.ask-send) { min-height: 44px; }
+    .effort-chip { min-height: 32px; padding: 6px 10px; }
   }
 </style>

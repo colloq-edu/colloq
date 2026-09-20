@@ -1,51 +1,75 @@
 import { tr } from '@shared/i18n'
 /**
- * Оракул о решениях: один взгляд сверху на пятьсот попыток.
+ * Оракул о классе: один взгляд сверху на то, как идёт задача.
  *
- * Преподаватель на консилиуме не читает пятьсот листов — он читает шесть
- * групп одинаковых решений, и просит модель сказать про них три вещи: что в
- * них верно, где типичная ошибка и что показать классу. Тем же ответом модель
- * даёт группам имена одной строкой и черновики ответов группам с ошибкой.
+ * Один кадр, один ответ, одна лента. Раньше их было два: «сводка по решениям»
+ * читала только СДАННОЕ и складывала его в шесть групп одинаковых текстов, а
+ * «вопрос о классе» видел весь класс и отвечал прозой. Оба вида ушли в один, и
+ * это решение владельца, а не упрощение ради упрощения:
  *
- * Три вещи, которые здесь держатся нарочно.
+ *   — группы преподаватель попросил снести. Шесть безымянных стопок — это не
+ *     то, как он думает о классе; он думает «у Ани работает, у Пети падает», а
+ *     черновик письма группе в придачу оказывался письмом не тому;
+ *   — спрашивать можно ВСЕГДА, в том числе когда не сдал ещё никто: «что это
+ *     вообще за задание и как им лучше действовать» — законный вопрос на
+ *     десятой минуте, а кадр несёт текст общей ячейки и markdown над ней даже
+ *     на пустой ячейке.
  *
- * Модель не видит имён. Ей едут тексты по группам с числами, задание и эталон,
- * если он есть; группы названы G1…GN, и к людям их привязывает пульт — по ключу
- * группы. Иначе «примечательное решение Пети» лежало бы в промпте чужого
- * провайдера.
+ * Модель видит ИМЕНА. Это тоже выбор владельца, и он записан здесь честно,
+ * потому что раньше в этой шапке стояло обратное обещание. С метками S1…SN
+ * модель отвечала «S7 и S12 застряли», преподаватель читал шифр, а на просьбу
+ * «кому подойти» модель имена выдумывала. Теперь в кадре стоят настоящие имена
+ * из состава комнаты, и она ссылается на людей так же, как это сделал бы
+ * коллега. Выключается это одной настройкой инстанса («Имена учащихся в
+ * запросах к модели», OracleSettings.sendNames) — тогда возвращаются метки, и
+ * соответствие «метка → человек» остаётся на сервере (`ClassFrame.people`).
+ * Решает владелец ключа: это про то, что уходит ЧУЖОМУ провайдеру.
  *
- * Группы считает сервер, не модель: `normalizeAttempt` — та же функция, по
- * которой пульт рисует стопку и полосу, и два разных «одинаково» дали бы
- * сводку, в которой «так же ещё 311» не сходится с шириной сегмента.
+ * Обновляется только рукой. Вопрос стоит строки из лимита комнаты, а класс
+ * сдаёт по одному в секунду: авто-обновление тратило бы ключ на каждую сдачу и
+ * переписывало абзацы под глазами у того, кто их читает.
  *
- * Обновляется только рукой. Сводка стоит вопроса из лимита комнаты, а класс
- * сдаёт по одному в секунду: авто-обновление тратило бы ключ на каждую сдачу
- * и переписывало абзацы под глазами у того, кто их читает. Что сдали ещё N с
- * тех пор — считает клиент по `basedOn`.
- *
- * Разбор ответа устойчив к модели, которая не умеет в строгий JSON: тогда
- * остаётся сводка из текста, а имена и черновики — пустые. Плохая сводка лучше
- * красной ошибки посреди пары.
+ * И у похода к модели есть сторож. Общий, из ai/watch.ts: 20.09 на живом
+ * занятии «Обновить сводку» на тридцати работах повисло навсегда — ни ответа,
+ * ни ошибки, ни строки в журнале, — а запись в карте `reading` держала ячейку
+ * запертой до перезапуска сервера. Теперь у запроса три срока, у карты второй
+ * замок, а у приёма и исхода — по строке в журнале.
  */
 import type {
-  CouncilGroup,
   CouncilOracle,
   CouncilOracleAnswer,
   CouncilRun,
   CouncilRunRequest,
   CouncilStatus,
 } from '@shared/protocol'
-import { attemptStatus, groupAttempts } from '@shared/protocol'
-import { normalizeAttempt } from '@shared/notebook'
+import { attemptStatus } from '@shared/protocol'
+import type { ReasoningEffort } from '@shared/admin'
 import { randomUUID } from 'node:crypto'
 import { getOracleSettings } from '../admin/settings.js'
-import { noteTokens } from '../admin/usage.js'
+import { dropQuestion, noteTokens } from '../admin/usage.js'
 import { streamChat, type ChatTurn } from './provider.js'
-import { clip as clipTo, clipLine as cutLine, flatten, groupsWord, people, seconds } from './text.js'
+import { COUNCIL_WATCH, watchSilence, type WatchTimes } from './watch.js'
+import {
+  clip as clipTo,
+  clipLine as cutLine,
+  effortNote,
+  flatten,
+  people,
+  seconds,
+} from './text.js'
 
-/** То, что оракулу нужно от попытки: без имени, цвета и аватара — их он не видит. */
+/** То, что оракулу нужно от попытки. Имя — если инстанс разрешил его слать. */
 export interface OracleAttempt {
   participantId: string
+  /**
+   * Имя человека, как его видит комната.
+   *
+   * Необязательное: тесты и старые вызовы приходят без него, и кадр тогда
+   * зовёт человека меткой — ровно так же, как при выключенной настройке.
+   * Цвета и аватара здесь нет и не будет: модели они ни о чём не говорят, а в
+   * промпте чужого провайдера это лишние данные о человеке.
+   */
+  name?: string | null
   text: string
   submittedAt: number | null
   run: CouncilRun | null
@@ -54,28 +78,24 @@ export interface OracleAttempt {
    * Просьба о запуске, если запуск идёт «по просьбе»: `pending` — человек ждёт,
    * пока его пустят к ядру.
    *
-   * Оракулу о классе это нужно ровно как одна цифра в сводке («ждут разрешения:
-   * 3») и одна пометка в строке человека: ждущий запуска не застрял и не упал,
-   * он упёрся в очередь, и говорить о нём «не запускал» было бы неправдой.
-   * Необязательное: кадру сводки по решениям оно ни к чему, и попытка без него
-   * считается никого не ждущей.
+   * Оракулу это нужно ровно как одна цифра в сводке («ждут разрешения: 3») и
+   * одна пометка в строке человека: ждущий запуска не застрял и не упал, он
+   * упёрся в очередь, и говорить о нём «не запускал» было бы неправдой.
    */
   runRequest?: CouncilRunRequest | null
   /**
-   * Когда попытку правили в последний раз — разрыв при равном времени сдачи.
+   * Когда попытку правили в последний раз — по нему считается тишина.
    *
-   * Не украшение: по этому разрыву выбирается представитель группы, и без него
-   * оракул мог назвать представителем не того, кого назвал пульт, — то есть
-   * положить черновик ответа на чужую карточку. Необязательное, потому что
-   * оракулу оно нужно ровно для сортировки: у попытки, пришедшей без него,
-   * ничью решает id.
+   * Необязательное: попытка, пришедшая без него, считается никогда не
+   * молчавшей (см. `silent`), потому что «нет времени» и «давно не трогали» —
+   * разные вещи, и путать их значит объявить застрявшим весь класс.
    */
   updatedAt?: number
 }
 
 /** Задание, как его видит модель: текст общей ячейки и то, что вокруг. */
 export interface OracleTask {
-  /** Текст общей ячейки — то, что студенты решали. */
+  /** Текст общей ячейки — то, что студенты решают. */
   source: string
   /** Предыдущая ячейка: условие часто лежит в markdown над кодом. */
   before: string | null
@@ -89,19 +109,33 @@ export interface OracleStore {
   setOracle(sessionId: string, cellId: string, oracle: CouncilOracle): void
 }
 
-/*
- * Сколько кода одной группы едет модели.
- *
- * Полторы тысячи знаков — сорок строк, целая попытка почти всегда. Длиннее
- * бывает вставленный файл, и его хвост стоит места, которое лучше отдать ещё
- * одной группе.
- */
-const MAX_GROUP_SOURCE = 1_500
 const MAX_TASK_SOURCE = 4_000
-/** Имя группы — одна строка чипа; длиннее не поместится и не прочитается. */
-const MAX_LABEL = 60
 
-/* ----------------------------------------------------------------- группы */
+/** Сколько кода одного листа едет в кадре: экран, а не файл. */
+const MAX_SHEET_SOURCE = 900
+
+/** Пять минут без единой правки — «застрял»: лист открыт, в нём ничего не происходит. */
+const SILENCE_MS = 5 * 60_000
+
+/**
+ * Какую долю СВОБОДНОГО места забирают строки по людям.
+ *
+ * Половина: на классе в пятьсот человек список сам по себе съел бы весь кадр, и
+ * модель отвечала бы «кто застрял» по одним цифрам, не видя ни строчки кода.
+ * Вторая половина — листам: сначала тем, у кого что-то случилось, потом
+ * остальным сданным.
+ */
+const ROSTER_SHARE = 0.5
+
+/* ----------------------------------------------------------------- слова */
+
+const STATUS_WORDS: Record<CouncilStatus, string> = {
+  unrun: 'не запускали',
+  ran: 'запуск прошёл без исключения',
+  failed: 'запуск упал',
+  correct: 'преподаватель отметил «верно»',
+  wrong: 'преподаватель отметил «неверно»',
+}
 
 /**
  * Состояние попытки одним словом — как в `CouncilStatus`: отметка
@@ -115,245 +149,8 @@ export function statusOf(attempt: Pick<OracleAttempt, 'run' | 'correct'>): Counc
 }
 
 /**
- * Группы одинаковых решений среди СДАННЫХ — от большой к малой.
- *
- * Только сданные: то, что человек ещё печатает, — не решение, а полуслово, и
- * группа «x=» из сорока недописанных попыток ничего не сказала бы ни модели,
- * ни преподавателю.
- *
- * Складывает их общая `groupAttempts` (protocol.ts) — та же, что собирает
- * стопку на сервере и полосу на пульте. Своя копия жила здесь и отличалась
- * ничьей: `updatedAt` оракулу не возили вовсе, и в одну миллисекунду
- * представитель группы у оракула мог оказаться не тем, что на карточке, — то
- * есть черновик ответа лёг бы не на ту группу. Теперь `updatedAt` едет, и
- * разрыв один на всех.
- */
-export function groupsOf(attempts: readonly OracleAttempt[]): CouncilGroup[] {
-  return groupAttempts(
-    attempts.map((attempt) => ({
-      participantId: attempt.participantId,
-      text: attempt.text,
-      submittedAt: attempt.submittedAt,
-      updatedAt: attempt.updatedAt ?? 0,
-      status: statusOf(attempt),
-      // Оракулу «на экране» не нужно, но форма группы одна на всех.
-      shown: false,
-      groupKey: normalizeAttempt(attempt.text),
-    })),
-  )
-}
-
-/* ----------------------------------------------------------------- промпт */
-
-const STATUS_WORDS: Record<CouncilStatus, string> = {
-  unrun: 'не запускали',
-  ran: 'запуск прошёл без исключения',
-  failed: 'запуск упал',
-  correct: 'преподаватель отметил «верно»',
-  wrong: 'преподаватель отметил «неверно»',
-}
-
-/**
- * «запуск упал: TypeError» — имя исключения из вывода, если оно есть. Упасть
- * мог не представитель, а любой член группы — берётся первый упавший.
- */
-function statusLine(group: CouncilGroup, byId: Map<string, OracleAttempt>): string {
-  const word = STATUS_WORDS[group.status]
-  if (group.status !== 'failed') return word
-  const failed = group.members
-    .map((id) => byId.get(id))
-    .find((attempt) => attempt?.run?.state === 'error')
-  const error = failed?.run?.outputs.find((o) => o.kind === 'error')
-  return error
-    ? `${word}: ${error.ename}${error.evalue ? ` — ${clipLine(error.evalue, 120)}` : ''}`
-    : word
-}
-
-const SYSTEM = [
-  'Ты помогаешь преподавателю разобрать решения студентов прямо на занятии.',
-  'Тебе дано задание (текст ячейки тетради), контекст вокруг него и группы',
-  'одинаковых решений: у каждой — номер G1…GN, число людей, состояние запуска',
-  'и код одного представителя. Имён нет и не нужно — не выдумывай их.',
-  '',
-  'Ответь СТРОГО одним JSON-объектом без слов до и после него и без пояснений:',
-  '{',
-  '  "summary": [три абзаца строками: 1) что в решениях верно; 2) типичная ошибка',
-  '              и в каких группах она; 3) что показать классу и почему],',
-  '  "groupLabels": {"G1": "имя группы одной короткой строкой, до 40 знаков", …} — для КАЖДОЙ группы,',
-  '  "drafts": {"G2": "черновик ответа группе с ошибкой: 2–4 предложения, на «вы»,',
-  '             без имён, указать на ошибку, не решать за них"} — ТОЛЬКО для групп с ошибкой',
-  '}',
-  'Keep summary paragraphs short: the teacher reads them during class.',
-].join('\n')
-
-/**
- * Кадр для модели: задание, контекст, группы. Возвращает и `keys` — какой ключ
- * группы стоит за каждым G-номером: по ним разбор ответа вернёт имена и
- * черновики к настоящим группам.
- *
- * Бюджет — `contextChars` инстанса, как у обычного вопроса: преподаватель,
- * опустивший его под маленькую модель, ждёт, что и сводка в него уложится.
- * Большие группы едут первыми целиком; маленькие, которым не хватило места,
- * складываются в одну строку счётом — модель должна знать, что они есть.
- */
-export function oraclePrompt(
-  task: OracleTask,
-  groups: readonly CouncilGroup[],
-  attempts: readonly OracleAttempt[],
-  budget: number = getOracleSettings().contextChars,
-): { turns: ChatTurn[]; keys: string[] } {
-  const system = SYSTEM + '\n' + tr('server.ai.answerLanguage')
-  const byId = new Map(attempts.map((a) => [a.participantId, a] as const))
-  const head: string[] = []
-  if (task.before) {
-    head.push('КОНТЕКСТ (ячейка над заданием):', clip(task.before, MAX_TASK_SOURCE), '')
-  }
-  head.push('ЗАДАНИЕ (текст общей ячейки):', '```', clip(task.source, MAX_TASK_SOURCE), '```', '')
-  if (task.reference) {
-    head.push(
-      'ЭТАЛОННОЕ РЕШЕНИЕ преподавателя:',
-      '```python',
-      clip(task.reference, MAX_TASK_SOURCE),
-      '```',
-      '',
-    )
-  }
-  const total = groups.reduce((n, g) => n + g.count, 0)
-  head.push(
-    `РЕШЕНИЯ: ${people(total)} сдали, ${groups.length} ${groupsWord(groups.length)} одинаковых решений.`,
-    '',
-  )
-
-  const keys: string[] = []
-  const blocks: string[] = []
-  let used = system.length + head.join('\n').length
-  let hidden = 0
-  let hiddenPeople = 0
-  for (const group of groups) {
-    const no = `G${keys.length + 1}`
-    const block = [
-      `### ${no} — ${people(group.count)}, ${statusLine(group, byId)}`,
-      '```python',
-      clip(group.sample.trim() || tr("server.empty.9a3a4f"), MAX_GROUP_SOURCE),
-      '```',
-    ].join('\n')
-    // Хотя бы одна группа едет всегда: сводка без единого решения — это не
-    // сводка, а бюджет, который меньше одного листа, поставлен по ошибке.
-    if (keys.length > 0 && used + block.length > budget) {
-      hidden++
-      hiddenPeople += group.count
-      continue
-    }
-    keys.push(group.key)
-    blocks.push(block)
-    used += block.length + 2
-  }
-  if (hidden > 0) {
-    blocks.push(
-      `Ещё ${hidden} ${groupsWord(hidden)} (${people(hiddenPeople)}) — маленькие, в кадр не поместились.`,
-    )
-  }
-  const turns: ChatTurn[] = [
-    { role: 'system', content: system },
-    { role: 'user', content: [...head, ...blocks].join('\n') },
-  ]
-  return { turns, keys }
-}
-
-/**
- * Голова и хвост: в хвосте кода — возврат, в хвосте условия — вопрос.
- *
- * Общей обрезкой (text.ts · clip), только словами по-русски: кадр сводки
- * написан по-русски, и английский маркер посреди него читался бы как чужой.
- * Своя копия здесь резала 70/30 и клала маркер СВЕРХ потолка — то есть отдавала
- * модели больше, чем ей отвели бюджетом.
- */
-function clip(text: string, limit: number): string {
-  return clipTo(text, limit, (dropped) => `\n… пропущено ${dropped} знаков …\n`)
-}
-
-/** Однострочно: трейсбек в чипе группы читается только так. */
-function clipLine(text: string, limit: number): string {
-  return cutLine(flatten(text), limit)
-}
-
-/* ------------------------------------------------------ кадр о классе */
-
-/*
- * Оракул о КЛАССЕ — второй кадр, и он не про код, а про то, как идут дела.
- *
- * Сводка по решениям (`oraclePrompt`) читает только СДАННОЕ: пока никто не
- * сдал, читать ей нечего, и преподаватель на живом семинаре 19.09 упёрся ровно
- * в это — на десятой минуте, когда половина класса ещё пишет, а двое молча
- * застряли, спросить было не у кого. Здесь едет весь класс: черновики, запуски,
- * тишина, — и свободный вопрос преподавателя поверх.
- *
- * Обещание из шапки файла держится и тут, и это единственное, ради чего кадр
- * собирается руками, а не отдаётся модели списком попыток: людей зовут S1…SN,
- * и соответствие «метка → человек» остаётся на сервере (`ClassFrame.people`).
- * Ни имени, ни цвета, ни аватара, ни participantId в промпт не уезжает —
- * это закреплено тестом.
- */
-
-/** Пять минут без единой правки — «застрял»: лист открыт, в нём ничего не происходит. */
-const SILENCE_MS = 5 * 60_000
-
-/** Сколько кода одного листа едет в кадре статуса: экран, а не файл. */
-const MAX_SHEET_SOURCE = 900
-
-/**
- * Какую долю СВОБОДНОГО места забирают строки по людям.
- *
- * Половина: на классе в пятьсот человек список сам по себе съел бы весь кадр, и
- * модель отвечала бы «кто застрял» по одним цифрам, не видя ни строчки кода.
- * Вторая половина — группам и листам тех, у кого что-то случилось.
- */
-const ROSTER_SHARE = 0.5
-
-/** Кадр о классе: что уехало модели и кого она под какой меткой видела. */
-export interface ClassFrame {
-  turns: ChatTurn[]
-  /** Метка → participantId. Ключи — `S1`, `S2`, …; уходит только преподавателю. */
-  people: Record<string, string>
-  /** На каком классе отвечали — эта пара стоит под ответом в ленте. */
-  basedOn: { submitted: number; drafts: number }
-}
-
-const STATUS_SYSTEM = [
-  'Ты помогаешь преподавателю вести занятие: он спрашивает, как идут дела у класса.',
-  'Тебе дана сводка по листам одной задачи: числа, строки по людям и код.',
-  'Людей зовут метками S1…SN, группы одинаковых сданных решений — G1…GN.',
-  'Имён нет и не нужно — не выдумывай их и не придумывай новых меток.',
-  '',
-  'Отвечай КОРОТКО и по делу, обычной прозой: преподаватель читает ответ прямо',
-  'на паре, стоя у доски. Два-три предложения, если хватает; без JSON, без',
-  'заголовков и без длинных списков. На людей ссылайся ТОЛЬКО метками (S7),',
-  'на группы — G2. Если в данных ответа на вопрос нет — так и скажи одной',
-  'строкой, не догадываясь.',
-  '',
-  // Диапазон «S6–S10» пульт подменяет двумя именами с тире посередине, и
-  // фраза читается как чужая фамилия: «Александр Яковлев–Александр».
-  'Метки перечисляй через запятую (S6, S7, S8) и никогда не пиши их',
-  'диапазоном вида S6–S10: преподаватель видит на месте метки имя студента.',
-].join('\n')
-
-/** «17:25» — время сдачи в строке человека; часы сервера, как и везде в кадре. */
-function hhmm(at: number): string {
-  const when = new Date(at)
-  return `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
-}
-
-/** «только что», «3 мин назад», «1 ч 05 мин назад» — давность правки листа. */
-function ago(ms: number): string {
-  const minutes = Math.floor(Math.max(ms, 0) / 60_000)
-  if (minutes < 1) return 'только что'
-  if (minutes < 60) return `${minutes} мин назад`
-  return `${Math.floor(minutes / 60)} ч ${String(minutes % 60).padStart(2, '0')} мин назад`
-}
-
-/**
- * Состояние ОДНОГО листа словами — то же правило, что у группы, плюс две вещи,
- * которых у группы нет: остановка по пределу и ожидание разрешения.
+ * Состояние ОДНОГО листа словами — то же правило, что у `statusOf`, плюс две
+ * вещи, которых в нём нет: остановка по пределу и ожидание разрешения.
  *
  * Остановку по пределу отдельно от падения, потому что это разные разговоры:
  * упавший ошибся, а остановленный написал бесконечный цикл или ждёт `input()`, и
@@ -371,6 +168,40 @@ function sheetStatus(attempt: OracleAttempt): string {
     : STATUS_WORDS.failed
 }
 
+/**
+ * Голова и хвост: в хвосте кода — возврат, в хвосте условия — вопрос.
+ *
+ * Общей обрезкой (text.ts · clip), только словами по-русски: кадр написан
+ * по-русски, и английский маркер посреди него читался бы как чужой.
+ */
+function clip(text: string, limit: number): string {
+  return clipTo(text, limit, (dropped) => `\n… пропущено ${dropped} знаков …\n`)
+}
+
+/** Однострочно: трейсбек в строке человека читается только так. */
+function clipLine(text: string, limit: number): string {
+  return cutLine(flatten(text), limit)
+}
+
+/** «17:25» — время сдачи в строке человека; часы сервера, как и везде в кадре. */
+function hhmm(at: number): string {
+  const when = new Date(at)
+  return `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
+}
+
+/** «только что», «3 мин назад», «1 ч 05 мин назад» — давность правки листа. */
+function ago(ms: number): string {
+  const minutes = Math.floor(Math.max(ms, 0) / 60_000)
+  if (minutes < 1) return 'только что'
+  if (minutes < 60) return `${minutes} мин назад`
+  return `${Math.floor(minutes / 60)} ч ${String(minutes % 60).padStart(2, '0')} мин назад`
+}
+
+/** «1 строка», «3 строки», «12 строк» — счёт, который не режет глаз в кадре. */
+function linesWord(n: number): string {
+  return tr('server.ai.linesWord', { count: n })
+}
+
 /** Ждёт ли человек, пока его пустят к ядру. */
 function waiting(attempt: OracleAttempt): boolean {
   return attempt.runRequest?.status === 'pending'
@@ -379,13 +210,75 @@ function waiting(attempt: OracleAttempt): boolean {
 /**
  * Черновик, в который давно не дописали ни знака.
  *
- * Без `updatedAt` — не молчит: время правки необязательное (его не возит кадр
- * сводки), и считать «нет времени» за «давно не трогали» значило бы объявить
- * застрявшим весь класс на первом же кадре без этого поля.
+ * Без `updatedAt` — не молчит: время правки необязательное, и считать «нет
+ * времени» за «давно не трогали» значило бы объявить застрявшим весь класс на
+ * первом же кадре без этого поля.
  */
 function silent(attempt: OracleAttempt, now: number): boolean {
   if (attempt.submittedAt !== null || attempt.updatedAt === undefined) return false
   return now - attempt.updatedAt > SILENCE_MS
+}
+
+/* ----------------------------------------------------------------- кадр */
+
+/** Кадр для модели: что уехало и кого она под каким именем (или меткой) видела. */
+export interface ClassFrame {
+  turns: ChatTurn[]
+  /**
+   * ПОДПИСЬ В КАДРЕ → participantId. Ключ — либо метка `S7`, либо имя ровно
+   * так, как оно уехало модели («Анна Иванова», «Анна Иванова (2)»).
+   *
+   * Одно поле на оба случая, и это не мелочь: пульт подсвечивает в ответе
+   * ключи этого словаря и больше ничего, так что ему не нужно ни знать, какой
+   * сейчас режим, ни второй раз выводить те же подписи по составу комнаты —
+   * а два вывода одного правила однажды разошлись бы на тёзках.
+   */
+  people: Record<string, string>
+  /** На каком классе отвечали — эта пара стоит под ответом в ленте. */
+  basedOn: { submitted: number; drafts: number }
+  /** Сколько знаков уехало модели — одно число в журнале приёма. */
+  chars: number
+}
+
+/** Как в кадре зовут людей: настоящими именами или метками S1…SN. */
+export interface FrameNaming {
+  /** `true` — имена; `false` — метки. Умолчание берётся из настроек инстанса. */
+  names: boolean
+}
+
+function systemFrame(names: boolean, effort: ReasoningEffort | undefined): string {
+  const lines = [
+    'Ты помогаешь преподавателю вести занятие: он спрашивает, как идут дела у класса',
+    'и что делать с решениями.',
+    'Тебе дано задание, числа по классу, строки по людям и их код.',
+    '',
+  ]
+  if (names) {
+    lines.push(
+      'Людей зовут ИМЕНАМИ — ровно теми, что стоят в кадре. Ссылайся на них по имени',
+      'и пиши имя ТОЧНО так, как оно написано здесь, без склонений в самой ссылке',
+      '(«у Анны Белой падает запуск», а не «у Белой А.»): по этим именам преподаватель',
+      'открывает работу нажатием. Людей, которых в кадре нет, не выдумывай.',
+    )
+  } else {
+    lines.push(
+      'Людей зовут метками S1…SN, и других имён у них нет — не выдумывай их и не',
+      'придумывай новых меток. Метки перечисляй через запятую (S6, S7, S8) и никогда',
+      // Диапазон «S6–S10» пульт подменяет двумя именами с тире посередине, и
+      // фраза читается как чужая фамилия: «Александр Яковлев–Александр».
+      'не пиши их диапазоном вида S6–S10: преподаватель видит на месте метки имя.',
+    )
+  }
+  lines.push(
+    '',
+    'Отвечай КОРОТКО и по делу, обычной прозой: преподаватель читает ответ прямо',
+    'на паре, стоя у доски. Два-три предложения, если хватает; без JSON, без',
+    'заголовков и без длинных списков. Если в данных ответа на вопрос нет — так и',
+    'скажи одной строкой, не догадываясь.',
+  )
+  const note = effortNote(effort)
+  if (note) lines.push('', note)
+  return lines.join('\n') + '\n' + tr('server.ai.answerLanguage')
 }
 
 /** Строка одного человека и его место в очереди на внимание. */
@@ -397,15 +290,13 @@ interface Row {
   line: string
 }
 
-function rowOf(label: string, attempt: OracleAttempt, now: number, group: number | null): Row {
+function rowOf(label: string, attempt: OracleAttempt, now: number): Row {
   const status = statusOf(attempt)
   const stuck = status === 'failed'
   const quiet = silent(attempt, now)
   const bits = [
     label,
-    attempt.submittedAt === null
-      ? 'пишет'
-      : `сдал ${hhmm(attempt.submittedAt)}${group === null ? '' : `, G${group}`}`,
+    attempt.submittedAt === null ? 'пишет' : `сдал ${hhmm(attempt.submittedAt)}`,
     sheetStatus(attempt),
   ]
   if (waiting(attempt)) bits.push('ждёт разрешения на запуск')
@@ -413,11 +304,6 @@ function rowOf(label: string, attempt: OracleAttempt, now: number, group: number
   bits.push(lines === 0 ? 'лист пуст' : `${lines} ${linesWord(lines)}`)
   if (attempt.updatedAt !== undefined) bits.push(`правка ${ago(now - attempt.updatedAt)}`)
   return { label, attempt, rank: stuck ? 0 : quiet ? 1 : 2, line: bits.join(' · ') }
-}
-
-/** «1 строка», «3 строки», «12 строк» — счёт, который не режет глаз в кадре. */
-function linesWord(n: number): string {
-  return tr('server.ai.linesWord', { count: n })
 }
 
 /**
@@ -474,47 +360,94 @@ function tally(attempts: readonly OracleAttempt[], now: number) {
 }
 
 /**
- * Кадр о классе для свободного вопроса преподавателя.
+ * Имена, которыми в кадре зовут людей.
+ *
+ * С включённой настройкой — настоящее имя; человек без имени (участника уже
+ * нет в базе, строка битая) всё равно получает метку, иначе строка кадра
+ * начиналась бы с пустоты. С выключенной — только метки.
+ *
+ * Метки раздаются по participantId, а не по времени сдачи или правки. И то и
+ * другое живое: сосед сдал, передумал, дописал запятую — и S7 в следующем
+ * вопросе оказался бы другим человеком.
+ *
+ * Одинаковые имена — обычное дело в классе на сто человек, и две «Анны
+ * Ивановы» в кадре сделали бы ответ неразрешимым: обеим дописывается номер
+ * («Анна Иванова (2)»), и по нему же пульт находит нужную работу.
+ */
+function namesFor(
+  attempts: readonly OracleAttempt[],
+  names: boolean,
+): { label: Map<string, string>; people: Record<string, string> } {
+  const ordered = [...attempts].sort((a, b) => a.participantId.localeCompare(b.participantId))
+  const label = new Map<string, string>()
+  const people: Record<string, string> = {}
+  const seen = new Map<string, number>()
+  for (const [at, attempt] of ordered.entries()) {
+    const own = names ? (attempt.name ?? '').trim() : ''
+    let mark = `S${at + 1}`
+    if (own) {
+      const times = (seen.get(own) ?? 0) + 1
+      seen.set(own, times)
+      mark = times === 1 ? own : `${own} (${times})`
+    }
+    label.set(attempt.participantId, mark)
+    people[mark] = attempt.participantId
+  }
+  return { label, people }
+}
+
+/**
+ * Кадр для модели — один на все вопросы.
  *
  * `now` — параметром, а не `Date.now()` внутри: «тишина» и «правка 3 мин назад»
  * считаются от него, и тест, у которого время подставное, проверяет настоящие
  * числа, а не то, что успело пройти между двумя строками.
  *
- * Бюджет — `contextChars` инстанса, как у сводки. Тратится по порядку: сначала
- * задание и числа (они едут всегда — кадр без них не кадр), потом строки по
- * людям (не больше половины оставшегося), потом код: группы сданных, потом
- * листы тех, у кого что-то случилось. Хвост списка людей сворачивается в счёт:
- * модель должна знать, что за кадром есть ещё класс, иначе «у всех остальных
- * всё хорошо» она скажет, не имея на это права.
+ * Бюджет — `contextChars` инстанса. Тратится по порядку: сначала системный
+ * кадр, задание и числа (они едут всегда — кадр без них не кадр), потом строки
+ * по людям (не больше половины оставшегося), потом код листов: сперва у кого
+ * что-то случилось, потом остальные сданные. Хвост и там, и там сворачивается
+ * в счёт: модель должна знать, что за кадром есть ещё класс, иначе «у всех
+ * остальных всё хорошо» она скажет, не имея на это права.
+ *
+ * ГОЛОВА КАДРА СЧИТАЕТСЯ В БЮДЖЕТ. Раньше не считалась вовсе: задание на
+ * четыре тысячи знаков уезжало сверх потолка, и преподаватель, опустивший
+ * contextChars под маленькую модель, получал запрос вдвое больше названного.
  */
-export function statusPrompt(
+export function oraclePrompt(
   task: OracleTask,
   attempts: readonly OracleAttempt[],
   question: string,
-  now: number = Date.now(),
-  budget: number = getOracleSettings().contextChars,
+  options: {
+    now?: number
+    budget?: number
+    names?: boolean
+    effort?: ReasoningEffort
+  } = {},
 ): ClassFrame {
-  const system = STATUS_SYSTEM + '\n' + tr('server.ai.answerLanguage')
+  const settings = getOracleSettings()
+  const now = options.now ?? Date.now()
+  const budget = options.budget ?? settings.contextChars
+  const names = options.names ?? settings.sendNames
+  const system = systemFrame(names, options.effort)
 
-  /*
-   * Метки раздаются по participantId, а не по времени сдачи или правки.
-   *
-   * И то и другое живое: сосед сдал, передумал, дописал запятую — и S7 в
-   * следующем вопросе оказался бы другим человеком. Нумерация по id не плывёт,
-   * пока класс работает, а к людям её всё равно привязывает не модель, а
-   * словарь `people`, который едет рядом с ответом.
-   */
-  const ordered = [...attempts].sort((a, b) => a.participantId.localeCompare(b.participantId))
-  const labels = new Map(ordered.map((attempt, at) => [attempt.participantId, `S${at + 1}`]))
-  const who: Record<string, string> = {}
-  for (const [id, label] of labels) who[label] = id
-
+  const { label, people: who } = namesFor(attempts, names)
   const sum = tally(attempts, now)
+
   const head: string[] = []
   if (task.before) {
     head.push('КОНТЕКСТ (ячейка над заданием):', clip(task.before, MAX_TASK_SOURCE), '')
   }
   head.push('ЗАДАНИЕ (текст общей ячейки):', '```', clip(task.source, MAX_TASK_SOURCE), '```', '')
+  if (task.reference) {
+    head.push(
+      'ЭТАЛОННОЕ РЕШЕНИЕ преподавателя:',
+      '```python',
+      clip(task.reference, MAX_TASK_SOURCE),
+      '```',
+      '',
+    )
+  }
   head.push(
     `СЕЙЧАС: ${hhmm(now)}.`,
     `КЛАСС: ${people(sum.total)} с листом — сдали ${sum.submitted}, ещё пишут ${sum.drafts}.`,
@@ -528,69 +461,69 @@ export function statusPrompt(
     '',
   )
 
-  /*
-   * Группы считаются до списка людей, потому что номер группы стоит В СТРОКЕ
-   * человека: «S7 · сдал 17:25, G2 · …». Без этой связки модель, которую
-   * спросили «в каких группах типичная ошибка и кому о ней сказать», знает про
-   * G2 всё, кроме того, кто в ней сидит.
-   */
-  const groups = groupsOf(attempts)
-  const groupNo = new Map<string, number>()
-  for (const [at, group] of groups.entries()) for (const id of group.members) groupNo.set(id, at + 1)
-
-  const rows = [...labels]
-    .map(([id, label]) => {
-      const attempt = attempts.find((one) => one.participantId === id)
-      return attempt ? rowOf(label, attempt, now, groupNo.get(id) ?? null) : null
-    })
-    .filter((row): row is Row => row !== null)
+  const rows = attempts
+    .map((attempt) => rowOf(label.get(attempt.participantId) ?? attempt.participantId, attempt, now))
     // Сначала те, кому вероятнее нужна помощь: упал, молчит, всё остальное.
-    // Внутри разряда — по номеру метки, чтобы два одинаковых кадра совпали.
-    .sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label, 'en', { numeric: true }))
+    // Внутри разряда — по подписи, чтобы два одинаковых кадра совпали.
+    .sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label, 'ru', { numeric: true }))
 
   let used = system.length + head.join('\n').length + question.length
-  const roster: string[] = ['ПО ЛЮДЯМ (метки S — других имён у этих людей нет):']
-  const rosterCap = used + Math.max(0, budget - used) * ROSTER_SHARE
-  let folded = 0
-  let foldedQuiet = 0
-  for (const row of rows) {
-    if (used + row.line.length > rosterCap) {
-      folded += 1
-      if (row.rank === 2) foldedQuiet += 1
-      continue
+
+  const roster: string[] = []
+  if (rows.length > 0) {
+    const title = names
+      ? 'ПО ЛЮДЯМ:'
+      : 'ПО ЛЮДЯМ (метки S — других имён у этих людей нет):'
+    roster.push(title)
+    used += title.length + 1
+    const rosterCap = used + Math.max(0, budget - used) * ROSTER_SHARE
+    let folded = 0
+    let foldedQuiet = 0
+    for (const row of rows) {
+      if (used + row.line.length > rosterCap) {
+        folded += 1
+        if (row.rank === 2) foldedQuiet += 1
+        continue
+      }
+      roster.push(row.line)
+      used += row.line.length + 1
     }
-    roster.push(row.line)
-    used += row.line.length + 1
+    if (folded > 0) {
+      const tail =
+        folded === foldedQuiet
+          ? `Ещё ${folded} без происшествий.`
+          : `Ещё ${folded} в кадр не поместились (из них ${folded - foldedQuiet} с происшествиями).`
+      roster.push(tail)
+      used += tail.length + 1
+    }
+    roster.push('')
   }
-  if (folded > 0) {
-    const tail =
-      folded === foldedQuiet
-        ? `Ещё ${folded} без происшествий.`
-        : `Ещё ${folded} в кадр не поместились (из них ${folded - foldedQuiet} с происшествиями).`
-    roster.push(tail)
-    used += tail.length + 1
-  }
-  roster.push('')
 
   /*
-   * Код — вторым заходом: сначала группы сданных (они же G-номера ответа),
-   * потом листы тех, у кого что-то случилось. Порядок именно такой, потому что
-   * вопрос «типичные ошибки» отвечается по группам, а «кто застрял» — по
-   * первым строкам списка, которые в кадре уже есть.
+   * Код — вторым заходом, и поимённо. Групп больше нет: одинаковые решения
+   * едут как есть, каждое со своим именем, потому что преподаватель спрашивает
+   * не «что в группе G2», а «что у Пети».
+   *
+   * Порядок — тот же, что у строк: сперва упавшие и молчащие (о них и
+   * спрашивают), потом остальные сданные. Черновики без происшествий кодом не
+   * едут вовсе: полторы строки начатого листа стоят места, на котором иначе
+   * поместится чья-то настоящая ошибка, а сам факт «пишет, 3 строки» уже стоит
+   * в строке человека.
    */
   const code: string[] = []
-  /** Чей код в кадре уже есть группой — второй раз его везти незачем. */
-  const shown = new Set<string>()
-  if (groups.length > 0) {
-    code.push('СДАННЫЕ РЕШЕНИЯ ГРУППАМИ:')
-    used += code[0].length + 1
-    const byId = new Map(attempts.map((a) => [a.participantId, a] as const))
+  const worth = rows.filter(
+    (row) => row.attempt.text.trim().length > 0 && (row.rank < 2 || row.attempt.submittedAt !== null),
+  )
+  if (worth.length > 0) {
+    const title = 'РЕШЕНИЯ ПОИМЁННО:'
+    code.push(title)
+    used += title.length + 1
     let hidden = 0
-    for (const [at, group] of groups.entries()) {
+    for (const row of worth) {
       const block = [
-        `### G${at + 1} — ${people(group.count)}, ${statusLine(group, byId)}`,
+        `### ${row.label} — ${row.line.slice(row.label.length + 3)}`,
         '```python',
-        clip(group.sample.trim() || tr('server.empty.9a3a4f'), MAX_GROUP_SOURCE),
+        clip(row.attempt.text.trim(), MAX_SHEET_SOURCE),
         '```',
       ].join('\n')
       if (used + block.length > budget) {
@@ -598,174 +531,28 @@ export function statusPrompt(
         continue
       }
       code.push(block)
-      for (const id of group.members) shown.add(id)
       used += block.length + 2
     }
-    if (hidden > 0) code.push(`Ещё ${hidden} ${groupsWord(hidden)} в кадр не поместились.`)
+    if (hidden > 0) code.push(`Ещё ${hidden} ${listsWord(hidden)} в кадр не поместились.`)
     code.push('')
   }
 
-  /*
-   * Листы поимённо — только те, которых в кадре ещё нет.
-   *
-   * Сданная упавшая попытка уже уехала своим группам блоком, и второй раз тот
-   * же код стоил бы полутора тысяч знаков бюджета — то есть места ещё для двух
-   * черновиков, которых модель иначе не увидит вовсе. Кто в какой группе,
-   * сказано строкой человека («S7 · сдал 17:25, G2 · …»).
-   */
-  const trouble = rows.filter(
-    (row) =>
-      row.rank < 2 && row.attempt.text.trim().length > 0 && !shown.has(row.attempt.participantId),
-  )
-  if (trouble.length > 0) {
-    const title = 'ЛИСТЫ ТЕХ, У КОГО ЧТО-ТО СЛУЧИЛОСЬ:'
-    const blocks: string[] = []
-    used += title.length + 1
-    for (const row of trouble) {
-      const block = [
-        `### ${row.label} — ${row.line.slice(row.label.length + 3)}`,
-        '```python',
-        clip(row.attempt.text.trim(), MAX_SHEET_SOURCE),
-        '```',
-      ].join('\n')
-      if (used + block.length > budget) break
-      blocks.push(block)
-      used += block.length + 2
-    }
-    if (blocks.length > 0) code.push(title, ...blocks, '')
-  }
-
+  const body = [...head, ...roster, ...code, 'ВОПРОС ПРЕПОДАВАТЕЛЯ:', question].join('\n')
   const turns: ChatTurn[] = [
     { role: 'system', content: system },
-    { role: 'user', content: [...head, ...roster, ...code, 'ВОПРОС ПРЕПОДАВАТЕЛЯ:', question].join('\n') },
+    { role: 'user', content: body },
   ]
-  return { turns, people: who, basedOn: { submitted: sum.submitted, drafts: sum.drafts } }
-}
-
-/* ----------------------------------------------------------------- разбор */
-
-/**
- * Что удалось вычитать из ответа модели — уже по настоящим ключам групп.
- *
- * `notable` («до трёх примечательных решений») отсюда убран, и это не потеря.
- * Модель тратила на него токены в самом дорогом запросе комнаты, сервер
- * разбирал его и подставлял представителя группы — а нарисовать его было
- * негде: ни стопка, ни сводка, ни карточка его не читали, и `CouncilOracle`
- * возил его пустым грузом в каждом кадре. Обещание из шапки этого файла —
- * «к людям их привязывает пульт» — пульт не выполнял. Поля нет и в протоколе:
- * пустой груз в кадре — то же самое обещание, только молчаливое.
- */
-export interface ParsedOracle {
-  summary: string[]
-  groupLabels: Record<string, string>
-  drafts: Record<string, string>
-}
-
-/**
- * Разобрать ответ, чем бы он ни оказался.
- *
- * Хорошая модель отдаёт JSON; средняя — JSON в ```json-ограде с абзацем
- * «вот ваш ответ» перед ним; плохая — три абзаца прозы. Все три случая дают
- * сводку: из прозы — абзацами, до трёх. Имена и черновики — только из JSON:
- * угадывать их из текста значило бы приписать группе чужую строку.
- *
- * Ключи модели — G-номера, `keys[i]` говорит, чей это ключ. Номер, которого
- * в кадре не было, отбрасывается: модель их иногда досочиняет.
- */
-export function parseOracleAnswer(text: string, keys: readonly string[]): ParsedOracle {
-  const empty: ParsedOracle = { summary: [], groupLabels: {}, drafts: {} }
-  const raw = extractJson(text)
-  if (!raw || typeof raw !== 'object') {
-    return { ...empty, summary: paragraphsOf(text) }
-  }
-  const obj = raw as Record<string, unknown>
-  const summary = stringsOf(obj.summary)
-  const groupLabels: Record<string, string> = {}
-  for (const [no, label] of entriesOf(obj.groupLabels)) {
-    const key = keyFor(no, keys)
-    if (key !== null && label) groupLabels[key] = clipLine(label, MAX_LABEL)
-  }
-  const drafts: Record<string, string> = {}
-  for (const [no, draft] of entriesOf(obj.drafts)) {
-    const key = keyFor(no, keys)
-    if (key !== null && draft) drafts[key] = draft.trim()
-  }
   return {
-    // JSON без сводки — редкость, но лучше проза целиком, чем пустые абзацы.
-    summary: summary.length > 0 ? summary : paragraphsOf(text),
-    groupLabels,
-    drafts,
+    turns,
+    people: who,
+    basedOn: { submitted: sum.submitted, drafts: sum.drafts },
+    chars: system.length + body.length,
   }
 }
 
-/** «G3», «g3», « G3 », «3» и сам ключ группы — всё это третья группа. */
-function keyFor(no: string, keys: readonly string[]): string | null {
-  const flat = no.trim()
-  if (keys.includes(flat)) return flat
-  const m = /^g?\s*(\d+)$/i.exec(flat)
-  if (!m) return null
-  const index = Number(m[1]) - 1
-  return index >= 0 && index < keys.length ? keys[index] : null
-}
-
-function entriesOf(value: unknown): [string, string][] {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return []
-  const out: [string, string][] = []
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof v === 'string') out.push([k, v])
-  }
-  return out
-}
-
-/** Массив строк — до трёх; одна строка — тоже сводка; что угодно ещё — ничего. */
-function stringsOf(value: unknown): string[] {
-  if (typeof value === 'string') return paragraphsOf(value)
-  if (!Array.isArray(value)) return []
-  return value
-    .filter((v): v is string => typeof v === 'string')
-    .map((v) => v.trim())
-    .filter(Boolean)
-    .slice(0, 3)
-}
-
-/** Абзацы прозы — до трёх; без пустых строк делится по строкам. */
-function paragraphsOf(text: string): string[] {
-  const cleaned = text.replace(/```[a-z]*\n?|```/gi, '').trim()
-  if (!cleaned) return []
-  const byBlank = cleaned
-    .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-  const parts =
-    byBlank.length > 1
-      ? byBlank
-      : cleaned
-          .split('\n')
-          .map((p) => p.trim())
-          .filter(Boolean)
-  return parts.slice(0, 3)
-}
-
-/**
- * Найти JSON в ответе: сначала внутри ```-ограды, потом от первой `{` до
- * последней `}`. Оба разбора могут не сойтись — тогда `null`, и сводка идёт
- * из текста.
- */
-function extractJson(text: string): unknown {
-  const candidates: string[] = []
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)
-  if (fenced) candidates.push(fenced[1])
-  const from = text.indexOf('{')
-  const to = text.lastIndexOf('}')
-  if (from >= 0 && to > from) candidates.push(text.slice(from, to + 1))
-  for (const candidate of candidates) {
-    try {
-      return JSON.parse(candidate)
-    } catch {
-      /* следующий кандидат */
-    }
-  }
-  return null
+/** «1 лист», «3 листа», «5 листов» — счёт свёрнутого хвоста. */
+function listsWord(n: number): string {
+  return tr('server.council.sheetsWord', { count: n })
 }
 
 /* -------------------------------------------------------------- состояние */
@@ -784,9 +571,6 @@ export function idleOracle(): CouncilOracle {
     state: 'idle',
     askedAt: null,
     basedOn: 0,
-    summary: [],
-    groupLabels: {},
-    drafts: {},
     error: null,
     answers: [],
     pending: null,
@@ -797,16 +581,20 @@ export function idleOracle(): CouncilOracle {
  * Прочитанный из базы оракул, приведённый к сегодняшнему кадру.
  *
  * Строки `council_oracle` пишутся JSON-ом и переживают обновление сервера:
- * записанные до ленты вопросов не знают ни `answers`, ни `pending`, и читатель,
- * который положится на их наличие, уронит пульт на первом же занятии, начатом
- * вчера. Здесь же держится и потолок ленты — на случай, если строку записала
- * версия, считавшая иначе.
+ * записанные прошлой версией несут поля, которых больше нет (`summary`,
+ * `groupLabels`, `drafts`), и не несут тех, что появились. Здесь строка
+ * приводится к нынешней форме — иначе читатель, положившийся на наличие поля,
+ * уронил бы пульт на первом же занятии, начатом вчера. Здесь же держится и
+ * потолок ленты.
  */
 export function normalizeOracle(oracle: CouncilOracle): CouncilOracle {
+  const answers = Array.isArray(oracle.answers) ? oracle.answers.slice(-MAX_ORACLE_ANSWERS) : []
   return {
-    ...idleOracle(),
-    ...oracle,
-    answers: Array.isArray(oracle.answers) ? oracle.answers.slice(-MAX_ORACLE_ANSWERS) : [],
+    state: oracle.state ?? 'idle',
+    askedAt: oracle.askedAt ?? null,
+    basedOn: oracle.basedOn ?? 0,
+    error: oracle.error ?? null,
+    answers,
     pending: oracle.pending ?? null,
   }
 }
@@ -828,8 +616,35 @@ function announce(sessionId: string, cellId: string, oracle: CouncilOracle): voi
   listener?.(sessionId, cellId, oracle)
 }
 
-/** Ключ — `${sessionId}:${cellId}`; запись есть только пока модель читает. */
-const reading = new Map<string, AbortController>()
+/**
+ * Ключ — `${sessionId}:${cellId}`; запись есть только пока модель читает.
+ *
+ * У записи ДВА замка. Первый — `.finally()` того же обещания, который снимает
+ * её, чем бы чтение ни кончилось. Второй — срок: если обещание не разрешилось
+ * вовсе (а именно это и случилось 20.09), запись снимается по таймеру, и
+ * ячейка не остаётся запертой на 409 до перезапуска сервера. Один замок здесь
+ * уже был, и его не хватило.
+ */
+interface Reading {
+  controller: AbortController
+  /** Второй замок: снимает запись, даже если обещание не разрешилось. */
+  latch: NodeJS.Timeout
+}
+
+const reading = new Map<string, Reading>()
+
+/**
+ * Запас поверх потолка запроса: сторож обрывает на 180 с, разрешение обещания
+ * и запись состояния стоят ещё доли секунды. Полминуты — с избытком, и это
+ * аварийный путь, а не рабочий.
+ */
+const LATCH_GRACE_MS = 30_000
+
+function forget(key: string, entry: Reading): void {
+  if (reading.get(key) !== entry) return
+  clearTimeout(entry.latch)
+  reading.delete(key)
+}
 
 export function isOracleReading(sessionId: string, cellId: string): boolean {
   return reading.has(`${sessionId}:${cellId}`)
@@ -843,153 +658,269 @@ export interface AskCouncilOracle {
   store: OracleStore
   /** Строка расхода, заведённая маршрутом при приёме: токены лягут на неё. */
   usageId?: number
+  /** Вопрос преподавателя. Пусто — маршрут подставляет свою заготовку. */
+  question: string
+  /** Уровень размышлений на этот запрос; пусто — умолчание инстанса. */
+  effort?: ReasoningEffort
   /**
-   * Вопрос преподавателя о классе; `null` или пусто — прежняя сводка по
-   * решениям.
-   *
-   * Два вида запроса и одно чтение на оба: ключ, лимит, «Стоп» и 409 у них
-   * общие — к модели за обоими идёт один и тот же поход, и разводить их на два
-   * состояния значило бы разрешить два одновременных.
+   * Сроки сторожа. Маршрут их не передаёт — у него `COUNCIL_WATCH`; подставляет
+   * их тест, и другого способа нет: проверка «замолчавший провайдер кончается
+   * понятной ошибкой» по настоящим срокам стоила бы трёх минут ожидания на
+   * каждый прогон, то есть её бы не было вовсе.
    */
-  question?: string | null
+  times?: WatchTimes
 }
 
 /**
  * Спросить. Возвращает состояние «читает» сразу — 202 отдаётся им; ответ
- * приезжает потом через `onCouncilOracle`. Пока читает, прежние имена и
- * черновики остаются: чипы на пульте не должны моргать на время вопроса.
- *
- * Вопрос о классе НЕ трогает `basedOn` и `askedAt` — они про сводку по
- * решениям. Иначе «Кто застрял?» на пятой сдаче сбрасывал бы счёт «сводка
- * отстала на N», который считается разницей с `basedOn` (protocol.ts ·
- * CouncilOracle), и сводка молча выглядела бы свежей.
+ * приезжает потом через `onCouncilOracle`.
  */
 export function askCouncilOracle(input: AskCouncilOracle): CouncilOracle {
   const { sessionId, cellId, store } = input
   const key = `${sessionId}:${cellId}`
   const previous = normalizeOracle(store.oracleOf(sessionId, cellId) ?? idleOracle())
-  const question = input.question?.trim() ? input.question.trim() : null
-  const groups = groupsOf(input.attempts)
+  const question = input.question.trim()
   const now = Date.now()
-  const started: CouncilOracle = question
-    ? { ...previous, state: 'reading', error: null, pending: { question, askedAt: now } }
-    : {
-        ...previous,
-        state: 'reading',
-        askedAt: now,
-        basedOn: groups.reduce((n, g) => n + g.count, 0),
-        error: null,
-        pending: null,
-      }
+  const submitted = input.attempts.filter((one) => one.submittedAt !== null).length
+  const started: CouncilOracle = {
+    ...previous,
+    state: 'reading',
+    askedAt: now,
+    basedOn: submitted,
+    error: null,
+    pending: { question, askedAt: now },
+  }
   store.setOracle(sessionId, cellId, started)
   announce(sessionId, cellId, started)
 
   const controller = new AbortController()
-  reading.set(key, controller)
-  void read(input, groups, previous, question, controller).finally(() => {
-    if (reading.get(key) === controller) reading.delete(key)
-  })
+  const entry: Reading = {
+    controller,
+    latch: setTimeout(() => {
+      // Сюда попадают только застрявшие: обычное чтение снимает запись раньше.
+      if (reading.get(key) !== entry) return
+      reading.delete(key)
+      console.warn(`[session ${sessionId}] council oracle: stuck reading on ${cellId}, freed by latch`)
+      controller.abort()
+      settleStuck(input, previous)
+    }, ((input.times ?? COUNCIL_WATCH).capMs ?? 180_000) + LATCH_GRACE_MS),
+  }
+  entry.latch.unref?.()
+  reading.set(key, entry)
+  void read(input, previous, question, controller).finally(() => forget(key, entry))
   return started
+}
+
+/** Ячейка, застрявшая в «читает», — привести в порядок и сказать об этом пульту. */
+function settleStuck(input: AskCouncilOracle, previous: CouncilOracle): void {
+  const current = input.store.oracleOf(input.sessionId, input.cellId)
+  if (!current || current.state !== 'reading') return
+  const settled = failedOracle(
+    normalizeOracle(current),
+    previous,
+    tr('server.theOracleDidNotRespondCheckThe.e430c5'),
+  )
+  input.store.setOracle(input.sessionId, input.cellId, settled)
+  announce(input.sessionId, input.cellId, settled)
+}
+
+/**
+ * Отказ — в ЛЕНТУ, а не только красной плашкой.
+ *
+ * Вопрос преподавателя при отказе не исчезает: ход остаётся на месте с
+ * причиной вместо ответа. Пока его не было, «Обновить сводку», кончившееся
+ * ничем, стирало и сам вопрос — повторить было нечего, а понять, на что не
+ * ответили, невозможно.
+ */
+function failedOracle(current: CouncilOracle, previous: CouncilOracle, reason: string): CouncilOracle {
+  const asked = current.pending ?? previous.pending
+  const answers = asked
+    ? [
+        ...current.answers,
+        {
+          id: randomUUID(),
+          question: asked.question,
+          text: '',
+          failed: reason,
+          askedAt: asked.askedAt,
+          basedOn: { submitted: current.basedOn, drafts: 0 },
+          people: {},
+        } satisfies CouncilOracleAnswer,
+      ].slice(-MAX_ORACLE_ANSWERS)
+    : current.answers
+  return {
+    ...current,
+    state: answers.length > 0 ? 'ready' : 'idle',
+    error: reason,
+    pending: null,
+    answers,
+  }
 }
 
 async function read(
   input: AskCouncilOracle,
-  groups: CouncilGroup[],
   previous: CouncilOracle,
-  question: string | null,
+  question: string,
   controller: AbortController,
 ): Promise<void> {
   const { sessionId, cellId, store } = input
+  const began = Date.now()
   const settle = (oracle: CouncilOracle) => {
     store.setOracle(sessionId, cellId, oracle)
     announce(sessionId, cellId, oracle)
   }
+  /** Текущее состояние, а не то, что было на входе: ленту мог дополнить сосед. */
+  const nowState = () => normalizeOracle(store.oracleOf(sessionId, cellId) ?? previous)
+
   /*
-   * Не вышло — вернуть то, что было: прежняя сводка (если была) с причиной
-   * рядом, а не пустота. Преподаватель, нажавший «Обновить» и получивший
-   * ошибку сети, не должен потерять три абзаца, которые читал минуту назад.
+   * Потраченный впустую вопрос не должен съедать часовой лимит комнаты.
    *
-   * Лента вопросов переживает отказ в обоих случаях: она — разговор, а не
-   * состояние запроса, и терять её из-за оборванного соединения незачем.
+   * Строка расхода заводится при ПРИЁМЕ (маршрут), потому что запрос к
+   * провайдеру уйдёт, чем бы он ни кончился. Но «Обновить», повисшее на три
+   * минуты и кончившееся отказом, — это не вопрос, а потерянное время, и
+   * платить за него местом в часовом потолке несправедливо вдвойне: именно
+   * тогда преподаватель и жмёт кнопку ещё раз. Снимается строка, только если
+   * провайдер ни одного токена не назвал; назвал — значит деньги ушли, и
+   * счёт остаётся (admin/usage.ts · dropQuestion).
    */
-  const giveBack = (error: string | null) =>
-    settle(
-      previous.state === 'ready'
-        ? { ...previous, state: 'ready', pending: null, error }
-        : { ...idleOracle(), answers: previous.answers, error },
-    )
+  const wasted = () => {
+    if (input.usageId !== undefined) dropQuestion(input.usageId)
+  }
 
   const spend = (tokens: number) => {
     if (input.usageId !== undefined) noteTokens(input.usageId, tokens)
   }
 
+  const guard = watchSilence(controller, input.times ?? COUNCIL_WATCH)
   try {
-    const frame = question
-      ? statusPrompt(input.task, input.attempts, question)
-      : oraclePrompt(input.task, groups, input.attempts)
-    const text = await streamChat(frame.turns, () => {}, controller.signal, spend)
+    const settings = getOracleSettings()
+    const frame = oraclePrompt(input.task, input.attempts, question, { effort: input.effort })
+    console.log(
+      `[session ${sessionId}] council oracle: cell ${cellId}, ` +
+        `${input.attempts.length} sheets, ${frame.chars} chars, ` +
+        `effort ${input.effort ?? settings.reasoningEffort}, ` +
+        `names ${settings.sendNames ? 'on' : 'off'}`,
+    )
+    const text = await streamChat(
+      frame.turns,
+      () => guard.heard(),
+      controller.signal,
+      spend,
+      input.effort,
+    )
     if (controller.signal.aborted) {
-      giveBack(null)
+      /*
+       * Три исхода одной отмены, и разводятся они словами.
+       *
+       * «Не открыл поток» — правда только до первого кадра: лечится это
+       * меньшим contextChars, и говорит об этом фраза про отведённое время.
+       * «Замолчал на середине» — уже разговор с эндпоинтом, и там совет
+       * «повторите» уместен. «Нажали Стоп» — вообще не отказ.
+       */
+      const why =
+        guard.why === null
+          ? null
+          : guard.spoke
+            ? tr('server.theModelStoppedSendingItsResponseTry.3aa75a')
+            : tr('server.theModelDidNotRespondWithinThe.be1746')
+      console.warn(
+        `[session ${sessionId}] council oracle: ${guard.why ?? 'stopped by teacher'} ` +
+          `after ${Date.now() - began} ms`,
+      )
+      wasted()
+      settle(why === null ? stoppedOracle(nowState()) : failedOracle(nowState(), previous, why))
       return
     }
     if (!text.trim()) {
-      giveBack(tr("server.theModelReturnedAnEmptyResponseTry.c365b1"))
+      wasted()
+      settle(
+        failedOracle(nowState(), previous, tr('server.theModelReturnedAnEmptyResponseTry.c365b1')),
+      )
       return
     }
-    if (question && 'people' in frame) {
-      const answer: CouncilOracleAnswer = {
-        id: randomUUID(),
-        question,
-        text: text.trim(),
-        askedAt: Date.now(),
-        basedOn: frame.basedOn,
-        people: frame.people,
-      }
-      settle({
-        // Всё, что было, остаётся: вопрос о классе ничего не пересчитывает —
-        // он дописывает строку в ленту.
-        ...previous,
-        state: 'ready',
-        error: null,
-        pending: null,
-        answers: [...previous.answers, answer].slice(-MAX_ORACLE_ANSWERS),
-      })
-      return
-    }
-    const parsed = parseOracleAnswer(text, 'keys' in frame ? frame.keys : [])
-    settle({
-      ...previous,
-      state: 'ready',
+    const answer: CouncilOracleAnswer = {
+      id: randomUUID(),
+      question,
+      text: text.trim(),
+      failed: null,
       askedAt: Date.now(),
-      basedOn: groups.reduce((n, g) => n + g.count, 0),
-      summary: parsed.summary,
-      groupLabels: parsed.groupLabels,
-      // Черновик группе, которую преподаватель уже отметил верной, — лишний.
-      drafts: Object.fromEntries(
-        Object.entries(parsed.drafts).filter(
-          ([key]) => groups.find((g) => g.key === key)?.status !== 'correct',
-        ),
-      ),
+      basedOn: frame.basedOn,
+      people: frame.people,
+    }
+    const current = nowState()
+    settle({
+      ...current,
+      state: 'ready',
       error: null,
       pending: null,
+      answers: [...current.answers, answer].slice(-MAX_ORACLE_ANSWERS),
     })
+    console.log(
+      `[session ${sessionId}] council oracle: ready in ${Date.now() - began} ms, ` +
+        `${answer.text.length} chars`,
+    )
   } catch (err) {
-    if (controller.signal.aborted) {
-      giveBack(null)
+    if (controller.signal.aborted && guard.why === null) {
+      settle(stoppedOracle(nowState()))
+      wasted()
       return
     }
     const reason = err instanceof Error ? err.message.trim() : String(err)
-    console.error(`[session ${sessionId}] council oracle failed:`, reason)
-    giveBack(reason || tr("server.theOracleDidNotRespondCheckThe.e430c5"))
+    console.error(
+      `[session ${sessionId}] council oracle: failed after ${Date.now() - began} ms — ${reason}`,
+    )
+    wasted()
+    settle(
+      failedOracle(
+        nowState(),
+        previous,
+        reason || tr('server.theOracleDidNotRespondCheckThe.e430c5'),
+      ),
+    )
+  } finally {
+    guard.stop()
   }
 }
 
-/** «Стоп»: оборвать чтение. `false` — читать было нечего. */
-export function stopCouncilOracle(sessionId: string, cellId: string): boolean {
-  const controller = reading.get(`${sessionId}:${cellId}`)
-  if (!controller) return false
-  controller.abort()
-  return true
+/**
+ * «Стоп» — не отказ: ход просто уходит из ленты вместе с ожиданием.
+ *
+ * Ошибку не ставим и прежнюю снимаем: красная плашка после собственного
+ * нажатия читается как поломка.
+ */
+function stoppedOracle(current: CouncilOracle): CouncilOracle {
+  return {
+    ...current,
+    state: current.answers.length > 0 ? 'ready' : 'idle',
+    error: null,
+    pending: null,
+  }
+}
+
+/**
+ * «Стоп»: оборвать чтение. Возвращает `true`, если было что обрывать.
+ *
+ * И приводит состояние в порядок, даже когда обрывать нечего. Это второй замок
+ * на ту же дверь, что и срок у записи: ячейка, застрявшая в `reading` без
+ * живого чтения, отвечала 409 на каждый следующий вопрос — то есть «Стоп»
+ * переставал работать ровно тогда, когда он и нужен.
+ */
+export function stopCouncilOracle(sessionId: string, cellId: string, store?: OracleStore): boolean {
+  const key = `${sessionId}:${cellId}`
+  const entry = reading.get(key)
+  if (entry) {
+    entry.controller.abort()
+    // Запись снимет `.finally()` чтения; латч — на случай, если не снимет.
+  }
+  if (store) {
+    const current = store.oracleOf(sessionId, cellId)
+    if (current && current.state === 'reading' && !entry) {
+      const settled = stoppedOracle(normalizeOracle(current))
+      store.setOracle(sessionId, cellId, settled)
+      announce(sessionId, cellId, settled)
+    }
+  }
+  return entry !== undefined
 }
 
 /**
@@ -1003,9 +934,11 @@ export function stopCouncilOracle(sessionId: string, cellId: string): boolean {
 export function stopRoomOracles(sessionId: string): number {
   const prefix = `${sessionId}:`
   let stopped = 0
-  for (const [key, controller] of reading) {
+  for (const [key, entry] of reading) {
     if (!key.startsWith(prefix)) continue
-    controller.abort()
+    entry.controller.abort()
+    clearTimeout(entry.latch)
+    reading.delete(key)
     stopped += 1
   }
   return stopped

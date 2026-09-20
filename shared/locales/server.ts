@@ -2657,9 +2657,21 @@ export const serverMessages: MessageCatalog = {
     "ru": "Оракул",
     "en": "Oracle"
   },
-  "server.council.noSheetsYet": {
-    "ru": "В этой ячейке ещё никто ничего не написал — оракулу нечего читать.",
-    "en": "Nobody has written anything in this cell yet — the oracle has nothing to read."
+  "server.council.sheetsWord": {
+    "ru": {
+      "one": "лист",
+      "few": "листа",
+      "many": "листов",
+      "other": "листа"
+    },
+    "en": {
+      "one": "sheet",
+      "other": "sheets"
+    }
+  },
+  "server.ai.instantNote": {
+    "ru": "Отвечай СРАЗУ: без рассуждений вслух, без плана и без вступлений — сразу вывод, одним-двумя предложениями.",
+    "en": "Answer IMMEDIATELY: no thinking out loud, no plan, no preamble — the conclusion first, in one or two sentences."
   },
   "server.council.statusQuestion": {
     "ru": "Как идут дела у класса: кто пишет, у кого падает запуск, кто застрял?",

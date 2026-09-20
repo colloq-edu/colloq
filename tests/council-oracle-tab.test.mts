@@ -1,17 +1,19 @@
 /**
  * Вкладка оракула о классе — обещания разметки, которых не видно из типов.
  *
- * Четыре из них ломаются молча, и каждое стоило бы паре отдельной жалобы.
+ * Пять из них ломаются молча, и каждое стоило бы паре отдельной жалобы.
  *
  * Панель ввода вне прокрутки: спросить можно, только если поле под рукой, а не
  * в конце ленты, которую сперва надо промотать. Стоит ей уехать внутрь области
  * прокрутки — и в окне 900×650 её не будет видно ровно после второго ответа.
  *
- * Пустое состояние больше НЕ говорит «ждём сданных работ». В этом и была
- * жалоба с живого семинара 19.09: на десятой минуте половина класса ещё пишет,
- * двое застряли, а вкладка предлагает подождать.
+ * Пустое состояние НЕ говорит «ждём сданных работ» и НЕ ставит условий: с
+ * 20.09 спросить можно всегда, в том числе на ячейке, где не написано ещё ни
+ * строки. Ждать сдач, чтобы спросить «что это за задание», — и была жалоба.
  *
- * Метка человека — кнопка, а не жирный текст: на неё нажимают, чтобы открыть
+ * Отказ остаётся в ленте вместе со своим вопросом: иначе повторить нечего.
+ *
+ * Подпись человека — кнопка, а не жирный текст: на неё нажимают, чтобы открыть
  * работу. И подпись у неё двойная: имя, когда имена включены, «Вариант N»,
  * когда выключены. Одна забытая ветка здесь — это имя студента в окне, где
  * преподаватель нарочно выключил имена.
@@ -49,21 +51,44 @@ test('пустое состояние зовёт спрашивать, а не �
   const empty = TAB.slice(TAB.indexOf('{#if empty}'), TAB.indexOf('{#if answers.length > 0'))
   assert.ok(empty.length > 0, 'пустого состояния нет вовсе')
   assert.ok(!empty.includes('noSubmissions'), 'вкладка снова просит дождаться сдач')
-  assert.match(empty, /ask\.noSheets/, 'нет случая «в ячейке вообще нет листов»')
-  assert.match(empty, /attempts\.length === 0/, 'пустота считается по сдачам, а не по листам')
-  // Пусто — это «нет ни ответов, ни сводки, и никто сейчас не читает».
-  assert.match(TAB, /const empty = \$derived\(\s*answers\.length === 0 && pending === null && !hasSummary/)
+  assert.ok(!empty.includes('noSheets'), 'вкладка снова ставит условие «нужен хотя бы лист»')
+  assert.match(empty, /ask\.emptyHint/)
+  // Пусто — это «ни одного хода в ленте, и никто сейчас не читает». Сводки по
+  // группам здесь больше нет, и условия «дождитесь сдач» — тоже.
+  assert.match(TAB, /const empty = \$derived\(answers\.length === 0 && pending === null\)/)
 })
 
-test('быстрый чип «Сводка по решениям» гаснет без сдач и говорит почему', () => {
-  const chip = TAB.slice(TAB.indexOf('onclick={askSummary}') - 400, TAB.indexOf('onclick={askSummary}'))
-  assert.match(chip, /disabled=\{!canSend \|\| submitted === 0\}/)
-  assert.match(chip, /title=\{submitted === 0 \? tr\('room\.pult\.v2\.oracle\.ask\.summaryWhy'\)/)
-  // И сам он шлёт запрос БЕЗ вопроса — это и отличает сводку от разговора.
-  assert.match(TAB, /function askSummary\(\)[\s\S]{0,200}onask\(\)/)
+test('ни одного быстрого вопроса не ждёт сдач: спрашивать можно всегда', () => {
+  const quick = TAB.slice(TAB.indexOf('<div class="quick-row">'), TAB.indexOf('<div class="ask-field">'))
+  assert.match(quick, /disabled=\{!canSend\}/)
+  assert.ok(!quick.includes('submitted === 0'), 'чип снова гаснет без сдач')
+  assert.ok(!TAB.includes('summaryWhy'), 'в разметке осталось объяснение «дождитесь сдачи»')
+  // `room.pult.v2.oracle.drafts` в шапке — это «сколько ещё пишут», а не
+  // черновик письма группе: групповых остались только эти два имени.
+  assert.ok(!TAB.includes('groupLabels') && !TAB.includes('oracle.drafts['), 'группы вернулись')
+  assert.ok(!TAB.includes('summary'), 'сводка по группам вернулась во вкладку')
 })
 
-test('метка в ответе — кнопка, открывающая работу; без имён подписана вариантом', () => {
+test('неудача видна в ленте вместе со своим вопросом', () => {
+  const thread = TAB.slice(TAB.indexOf('{#each answers as answer'), TAB.indexOf('{#if pending}'))
+  assert.match(thread, /class="turn-question"/, 'вопрос исчезает при отказе')
+  assert.match(thread, /\{#if answer\.failed\}/)
+  assert.match(thread, /\{answer\.failed\}/)
+  // И повторить его можно тем же нажатием, ничего не перепечатывая.
+  assert.match(thread, /onclick=\{\(\) => ask\(answer\.question\)\}/)
+})
+
+test('уровень размышлений стоит у поля и помнится в браузере', () => {
+  assert.match(TAB, /data-pult-oracle-effort/)
+  assert.match(TAB, /rememberedEffort\(\)/, 'выбор не восстанавливается при открытии пульта')
+  assert.match(TAB, /rememberEffort\(effort\)/, 'выбор не запоминается')
+  // «Как на инстансе» возвращается повторным нажатием: иначе снять его нечем.
+  assert.match(TAB, /effort = effort === next \? null : next/)
+  // И уезжает он вместе с вопросом, а не отдельной настройкой.
+  assert.match(TAB, /onask\(text, effort \?\? undefined\)/)
+})
+
+test('подпись в ответе — кнопка, открывающая работу; без имён подписана вариантом', () => {
   const snippet = TAB.slice(TAB.indexOf('{#snippet answerText'), TAB.indexOf('{/snippet}'))
   assert.match(snippet, /class="answer-person"/)
   assert.match(snippet, /onclick=\{\(\) => onopen\(piece\.participantId\)\}/)

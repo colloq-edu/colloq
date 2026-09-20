@@ -165,7 +165,7 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.rules.workTimedOut": {"ru": "Запуск остановлен сам: считался дольше {duration}", "en": "The run stopped itself: it ran longer than {duration}"},
   "room.pult.v2.rules.limitLink": {"ru": "предел {duration}", "en": "limit {duration}"},
   "room.pult.v2.oracle.title": {"ru": "Оракул о классе", "en": "Oracle on the class"},
-  "room.pult.v2.oracle.purpose": {"ru": "Обобщает сданные решения и помогает выбрать тему разбора.", "en": "Summarizes submitted solutions and helps choose what to discuss."},
+  "room.pult.v2.oracle.purpose": {"ru": "Читает задание и весь класс поимённо и помогает выбрать тему разбора.", "en": "Reads the task and the whole class by name, and helps choose what to discuss."},
   "room.pult.v2.oracle.submitted": {"ru": "сдано", "en": "submitted"},
   "room.pult.v2.oracle.evaluated": {"ru": "оценено вами", "en": "evaluated by you"},
   "room.pult.v2.oracle.drafts": {"ru": {"one":"черновик","few":"черновика","many":"черновиков","other":"черновика"}, "en": {"one":"draft","other":"drafts"}},
@@ -186,7 +186,7 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.oracle.fewSubmissions": {"ru": "Решений пока мало. Оракул может подготовить сводку, но общая картина станет яснее после новых сдач.", "en": "There are only a few solutions so far. The Oracle can summarize them, but more submissions will give a clearer picture."},
   "room.pult.v2.oracle.emptyHint": {"ru": "Попросите Оракула найти общие подходы, типичные ошибки и примеры для разбора.", "en": "Ask the Oracle to identify common approaches, typical mistakes, and examples to discuss."},
   "room.pult.v2.oracle.private": {"ru": "Сводка видна только преподавателю", "en": "Only the teacher can see this summary"},
-  "room.pult.v2.oracle.anonymous": {"ru": "Имена скрыты", "en": "Names are hidden"},
+  "room.pult.v2.oracle.anonymous": {"ru": "Имена на проекторе скрыты", "en": "Names are hidden on the projector"},
   "room.pult.v2.oracle.stop": {"ru": "Остановить Оракула", "en": "Stop the Oracle"},
   "room.pult.v2.oracle.refresh": {"ru": "Обновить сводку", "en": "Refresh summary"},
   "room.pult.v2.oracle.ask": {"ru": "Подготовить сводку", "en": "Prepare summary"},
@@ -209,8 +209,8 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.oracle.ask.status": {"ru": "Статус класса", "en": "Class status"},
   "room.pult.v2.oracle.ask.stuck": {"ru": "Кто застрял", "en": "Who is stuck"},
   "room.pult.v2.oracle.ask.mistakes": {"ru": "Типичные ошибки", "en": "Common mistakes"},
-  "room.pult.v2.oracle.ask.summary": {"ru": "Сводка по решениям", "en": "Summary of solutions"},
-  "room.pult.v2.oracle.ask.summaryWhy": {"ru": "Сводка по решениям появится, когда кто-нибудь сдаст работу", "en": "The summary of solutions appears once somebody submits"},
+  "room.pult.v2.oracle.ask.review": {"ru": "Разбор решений", "en": "Review the solutions"},
+  "room.pult.v2.oracle.ask.qReview": {"ru": "Разбери решения поимённо: что получилось, у кого типичная ошибка и чьё решение стоит показать классу.", "en": "Go through the solutions by name: what worked, whose mistake is the typical one, and whose solution is worth showing the class."},
   "room.pult.v2.oracle.ask.qStatus": {"ru": "Как идут дела у класса: кто уже сдал, кто ещё пишет, у кого падает запуск?", "en": "How is the class doing: who has submitted, who is still writing, whose run is failing?"},
   "room.pult.v2.oracle.ask.qStuck": {"ru": "Кто застрял и к кому стоит подойти в первую очередь?", "en": "Who is stuck, and who should I go to first?"},
   "room.pult.v2.oracle.ask.qMistakes": {"ru": "Какие ошибки повторяются чаще всего и что сказать о них классу?", "en": "Which mistakes repeat most often, and what should I tell the class about them?"},
@@ -222,7 +222,8 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.oracle.ask.empty": {"ru": "Спросите оракула о классе", "en": "Ask the Oracle about the class"},
   "room.pult.v2.oracle.ask.emptyHint": {"ru": "Он видит задание и все листы: сданные работы, черновики и запуски. Спрашивать можно всегда — хоть до того, как кто-нибудь написал первую строку.", "en": "It sees the task and every sheet: submitted work, drafts and runs. You can ask at any time — even before anybody has written a line."},
   "room.pult.v2.oracle.ask.history": {"ru": "Вопросы о классе", "en": "Questions about the class"},
-  "room.pult.v2.oracle.ask.privacy": {"ru": "Видите только вы · модель не видит имён", "en": "Only you see this · the model never sees names"},
+  "room.pult.v2.oracle.ask.privacy": {"ru": "Видите только вы · модель видит имена учащихся", "en": "Only you see this · the model sees student names"},
+  "room.pult.v2.oracle.ask.privacyAnon": {"ru": "Видите только вы · модель видит метки, а не имена", "en": "Only you see this · the model sees labels, not names"},
 
   "room.pult.v2.projection.title": {"ru": "На экране класса", "en": "On the class screen"},
   "room.pult.v2.projection.since": {"ru": "с {time} · {duration}", "en": "since {time} · {duration}"},
@@ -418,12 +419,12 @@ export const roomMessages: MessageCatalog = {
     "en": "No solutions submitted yet."
   },
   "room.ui.21": {
-    "ru": "Оракул предложит разбор решений и примеры для показа. Провайдеру ИИ передаются задание, контекст и примеры решений. Имена участников к ним не добавляются.",
-    "en": "The oracle will suggest a review of solutions and examples to show. The AI provider receives the task, context and example solutions. Participant names are not included."
+    "ru": "Оракул предложит разбор решений и примеры для показа. Провайдеру ИИ передаются задание, контекст, решения и — если это разрешено на Colloq — имена учащихся.",
+    "en": "The oracle will suggest a review of solutions and examples to show. The AI provider receives the task, the context, the solutions and — if this Colloq allows it — student names."
   },
   "room.ui.22": {
-    "ru": "Имена участников не добавляются к запросу. Проверьте выводы оракула.",
-    "en": "Participant names are not included in the request. Check the oracle’s conclusions."
+    "ru": "Имена учащихся уезжают провайдеру, если это разрешено на Colloq. Проверьте выводы оракула.",
+    "en": "Student names go to the provider when this Colloq allows it. Check the oracle’s conclusions."
   },
   "room.ui.23": {
     "ru": "Что верно",

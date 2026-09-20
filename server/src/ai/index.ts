@@ -36,10 +36,12 @@ import { getSessionDoc, peekSessionDoc } from '../collab/index.js'
 import { buildContext } from './context.js'
 import { providerModel, providerReady, streamChat, type ChatTurn } from './provider.js'
 import type { AiAction } from '@shared/protocol'
+import type { ReasoningEffort } from '@shared/admin'
 // Re-exported because tests reach for it here, where the patch is actually
 // lifted out of an answer; the parser itself is shared with the panel.
 import { lastCodeBlock, type CellKind } from '@shared/answer'
-import { describe } from './text.js'
+import { describe, effortNote } from './text.js'
+import { NOTEBOOK_WATCH, watchSilence } from './watch.js'
 export { lastCodeBlock }
 
 /** Marks our writes so persistence and peers can tell them from typing. */
@@ -117,6 +119,14 @@ export interface AskOptions {
    * кадр потока лёг именно на свою строку, а не на «примерно ту».
    */
   usageId?: number
+  /**
+   * Сколько модели думать перед ответом.
+   *
+   * Пусто — умолчание инстанса, и тогда провайдеру не уезжает ни одного нового
+   * поля. Право понижать есть у всех, поднимать — у преподавателя; решает это
+   * маршрут (routes/ai.ts), сюда доезжает уже разрешённый уровень.
+   */
+  effort?: ReasoningEffort
 }
 
 /**
@@ -235,56 +245,13 @@ async function generate(
   const stop = () => controller.abort()
 
   /*
-   * Сторож на замолчавший поток.
-   *
-   * Таймаут в SDK снимается по первым заголовкам ответа, а не по последнему
-   * кадру: провайдер, который открыл поток и замолчал на середине предложения,
-   * не считается ни упавшим, ни медленным — соединение просто стоит. В комнате
-   * это выглядит как «думает» без конца, и отменить может только тот, кто
-   * спрашивал, если догадается.
-   *
-   * Две минуты между кадрами — заведомо больше любой настоящей паузы: даже
-   * рассуждающая модель отдаёт след порциями, а не одним куском в конце.
-   *
-   * Считает он с ПЕРВОГО кадра, а не с отправки запроса, и это не мелочь.
-   * Заведённый заранее, он с тем же сроком опережал таймаут SDK и на всякую
-   * долгую первую букву — Ollama на ноутбуке преподавателя, промпт на двадцать
-   * тысяч знаков, разбор которого на процессоре идёт дольше двух минут, — писал
-   * комнате «эндпоинт открыл ответ и замолчал» и советовал спросить ещё раз.
-   * Эндпоинт при этом ничего не открывал, спрашивать ещё раз бесполезно, а
-   * лечение — уменьшить contextChars, и говорит об этом как раз фраза SDK про
-   * «слишком долго» (provider.ts · friendly), до которой дело не доходило.
+   * Сторож на замолчавший поток — общий для тетради, консилиума и подсказки
+   * (ai/watch.ts). Здесь он и жил; сроки те же, что были: пять минут до
+   * первого кадра, две между кадрами, без потолка на весь ответ — его читают
+   * по мере того, как он пишется.
    */
-  const SILENCE_MS = 120_000
-  /*
-   * До первого кадра срок другой — заведомо больше срока SDK.
-   *
-   * Совсем без сторожа до открытия нельзя: поток, у которого приехали
-   * заголовки и не приехало ни байта тела, для SDK уже состоялся, и висел бы он
-   * до конца пары. Но и равнять сроки нельзя — тогда сторож опережает SDK и
-   * подменяет его диагноз своим, неверным. Пять минут: SDK со своими двумя
-   * минутами успевает первым всегда, а это — последняя сетка.
-   */
-  const OPENING_MS = 300_000
-  let silence: NodeJS.Timeout | null = null
-  /** Отличает «замолчал провайдер» от «нажали Stop»: отмена одна, причины разные. */
-  let wentQuiet = false
-  /** Был ли хоть один кадр: до него «замолчал» значит совсем другое. */
-  let spokeOnce = false
-  const watch = (ms: number) => {
-    if (silence) clearTimeout(silence)
-    silence = setTimeout(() => {
-      silence = null
-      wentQuiet = true
-      controller.abort()
-    }, ms)
-    silence.unref?.()
-  }
-  const heard = () => {
-    spokeOnce = true
-    watch(SILENCE_MS)
-  }
-  watch(OPENING_MS)
+  const guard = watchSilence(controller, NOTEBOOK_WATCH)
+  const heard = () => guard.heard()
 
   const answer = new StreamBuffer(sessionId, entryId, chatAnswer, stop)
   const thinking = new StreamBuffer(sessionId, entryId, chatReasoning, stop)
@@ -304,6 +271,7 @@ async function generate(
           options.participantName,
           options.action,
           readContext(sessionId, focusOf(options), options.participantId),
+          options.effort,
         ),
       },
       ...history,
@@ -346,12 +314,13 @@ async function generate(
       (tokens) => {
         if (options.usageId !== undefined) noteTokens(options.usageId, tokens)
       },
+      options.effort,
     )
     thinking.flush()
     answer.flush()
 
     if (controller.signal.aborted) {
-      if (wentQuiet) {
+      if (guard.why !== null) {
         /*
          * Два разных отказа под одним таймером. «Открыл и замолчал» — правда
          * только после первого кадра; до него эндпоинт не открывал ничего, и
@@ -364,7 +333,7 @@ async function generate(
           text.trim() ? 'done' : 'error',
           text.trim()
             ? null
-            : spokeOnce
+            : guard.spoke
               ? tr("server.theModelStoppedSendingItsResponseTry.3aa75a")
               : tr("server.theModelDidNotRespondWithinThe.be1746"),
         )
@@ -395,7 +364,7 @@ async function generate(
     thinking.flush()
     answer.flush()
     if (controller.signal.aborted) {
-      outcome = wentQuiet ? 'error' : 'cancelled'
+      outcome = guard.why !== null ? 'error' : 'cancelled'
       settle(sessionId, entryId, 'done', null)
       return
     }
@@ -408,7 +377,7 @@ async function generate(
     appendActivity(sessionId, options.participantId, 'oracle.finished', {
       entryId, action: options.action ?? 'ask', outcome, source: 'oracle', durationMs: Date.now() - activityBeganAt,
     })
-    if (silence) clearTimeout(silence)
+    guard.stop()
     inflight.delete(key)
     enteredRoom(sessionId, -1)
   }
@@ -696,6 +665,7 @@ function systemPrompt(
   participantName: string,
   action: AiAction | undefined,
   context: string,
+  effort?: ReasoningEffort,
 ): string {
   /*
    * Имя спросившего — в конце, а не во второй строке.
@@ -726,6 +696,14 @@ function systemPrompt(
       'This turn is a hint: the student has to reach the solution themselves, so do not write it for them.',
     )
   }
+  /*
+   * «Сразу» — просьбой, а не только параметром: у половины моделей ручки
+   * рассуждений нет вовсе, а у части (DeepSeek R1 и родня) она есть, но
+   * выключить её нельзя. Строка идёт ДО домашних правил: правила преподавателя
+   * по-прежнему главнее всего.
+   */
+  const note = effortNote(effort)
+  if (note) rules.push(note)
   // Last, and said to outrank the rest: this is the teacher for this course
   // fencing off a library or a technique, and a rule that loses to our generic
   // guidance is a rule the panel promised and did not keep.

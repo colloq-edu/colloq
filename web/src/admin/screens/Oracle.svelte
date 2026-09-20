@@ -28,6 +28,7 @@
     type OracleMode,
     type OracleSettings,
     type OracleTestResult,
+    type ReasoningEffort,
     type OracleUsage,
     type UpdateOracleRequest,
   } from '@shared/admin'
@@ -50,6 +51,12 @@
     value: id,
     label: id === 'custom' ? tr("admin.custom.provider") : PROVIDER_PRESETS[id].label,
   })))
+
+  const EFFORTS: Option[] = $derived([
+    { value: 'instant', label: tr('common.reasoningInstant'), hint: tr('admin.effort.instant') },
+    { value: 'normal', label: tr('common.reasoningNormal'), hint: tr('admin.effort.normal') },
+    { value: 'deep', label: tr('common.reasoningDeep'), hint: tr('admin.effort.deep') },
+  ])
 
   const MODES: Option[] = $derived([
     { value: 'off', label: tr("admin.off"), hint: tr("admin.oracle.disabled") },
@@ -109,6 +116,8 @@
   let slowText = $state('')
   let contextText = $state('')
   let stepsText = $state('')
+  let sendNames = $state(true)
+  let reasoningEffort = $state<ReasoningEffort>('normal')
 
   let replacingKey = $state(false)
   let newKey = $state('')
@@ -176,6 +185,8 @@
       slow !== saved.slowModeSeconds ||
       context !== saved.contextChars ||
       steps !== (saved.agentSteps ?? LIMITS.agentSteps.default) ||
+      sendNames !== (saved.sendNames ?? true) ||
+      reasoningEffort !== (saved.reasoningEffort ?? 'normal') ||
       newKey.length > 0 ||
       clearKey
     )
@@ -323,6 +334,8 @@
     slowText = String(settings.slowModeSeconds)
     contextText = grouped(settings.contextChars)
     stepsText = String(settings.agentSteps ?? LIMITS.agentSteps.default)
+    sendNames = settings.sendNames ?? true
+    reasoningEffort = settings.reasoningEffort ?? 'normal'
     replacingKey = false
     newKey = ''
     clearKey = false
@@ -415,6 +428,8 @@
     if (slow !== saved.slowModeSeconds) patch.slowModeSeconds = slow
     if (context !== saved.contextChars) patch.contextChars = context
     if (steps !== (saved.agentSteps ?? LIMITS.agentSteps.default)) patch.agentSteps = steps
+    if (sendNames !== (saved.sendNames ?? true)) patch.sendNames = sendNames
+    if (reasoningEffort !== (saved.reasoningEffort ?? 'normal')) patch.reasoningEffort = reasoningEffort
     if (clearKey) patch.apiKey = ''
     else if (newKey.length > 0) patch.apiKey = newKey
 
@@ -767,6 +782,46 @@
           size="lg"
           onchange={(value) => (defaultMode = value as OracleMode)}
         />
+      </div>
+    </Section>
+
+    <!--
+      Что уезжает провайдеру и сколько ему думать — рядом с моделью и ключом, а
+      не среди потолков: это две настройки про ОДИН запрос, и обе меняют то,
+      что уходит за пределы этого Colloq.
+    -->
+    <Section
+      title={tr('admin.request.shape')}
+      description={tr('admin.request.shape.note')}
+    >
+      <label class="flex cursor-pointer items-start gap-3">
+        <input
+          type="checkbox"
+          class="mt-0.5 size-4 shrink-0 accent-accent"
+          bind:checked={sendNames}
+        />
+        <span class="min-w-0">
+          <span class="block text-ui font-semibold text-ink">{tr('common.sendNames')}</span>
+          <span class="mt-1 block text-2xs text-muted">
+            {sendNames ? tr('common.sendNamesOn') : tr('common.sendNamesOff')}
+          </span>
+          <span class="mt-1 block text-2xs text-muted">{tr('common.sendNamesNote')}</span>
+        </span>
+      </label>
+
+      <div class="mt-5">
+        <p class="mb-1.5 block text-2xs font-semibold uppercase tracking-label text-muted">
+          {tr('common.reasoning')}
+        </p>
+        <div class="oracle-mode-choice">
+          <Choice
+            options={EFFORTS}
+            value={reasoningEffort}
+            size="lg"
+            onchange={(value) => (reasoningEffort = value as ReasoningEffort)}
+          />
+        </div>
+        <p class="mt-2 text-2xs text-muted">{tr('common.reasoningNote')}</p>
       </div>
     </Section>
 

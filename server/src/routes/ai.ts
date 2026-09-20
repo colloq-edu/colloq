@@ -54,6 +54,7 @@ import {
   type AiAskRequest,
   type AiAskResponse,
 } from '@shared/protocol'
+import { effortRank, isReasoningEffort } from '@shared/admin'
 
 /*
  * Written out rather than derived from the type, so adding an action is a
@@ -317,6 +318,15 @@ export function aiRoutes(): Router {
       questionsPerHour: settings.questionsPerHour,
       slowModeSeconds: settings.slowModeSeconds,
       agentSteps: settings.agentSteps,
+      /*
+       * Умолчание уровня размышлений — по той же причине, что и потолки:
+       * переключатель у поля вопроса должен знать, что тут считается обычным.
+       * Без него панель не может сказать студенту, какие положения ему
+       * доступны (понижать может любой, повышать — только преподаватель), и
+       * либо врала бы кнопкой, которая ничего не делает, либо прятала бы
+       * «сразу» там, где оно и так разрешено.
+       */
+      reasoningEffort: settings.reasoningEffort,
     })
   })
 
@@ -475,6 +485,23 @@ export function aiRoutes(): Router {
      * правило. Режим подсказок сюда не пускает никого: оракул, который не
      * пишет ответ за студента, тем более не пишет его в файл.
      */
+    /*
+     * Уровень размышлений — на этот вопрос.
+     *
+     * Понизить может любой участник: ответ придёт быстрее и обойдётся дешевле,
+     * и разрешения на это спрашивать не у кого. Поднять ВЫШЕ умолчания
+     * инстанса может только преподаватель — ждать и платить за «подробно» на
+     * весь класс решает тот, кто ведёт пару. Чужое значение не отказ, а молчок:
+     * просьба «подумай подольше» от студента просто не действует, и вопрос его
+     * уходит с обычным уровнем, а не отскакивает 403 посреди семинара.
+     */
+    const wanted = isReasoningEffort(body?.effort) ? body.effort : undefined
+    const effort =
+      wanted === undefined ||
+      (effortRank(wanted) > effortRank(settings.reasoningEffort) && auth.role !== 'host')
+        ? undefined
+        : wanted
+
     const doing = body?.mode === 'agent'
     if (doing) {
       if (mode === 'hints') {
@@ -717,6 +744,7 @@ export function aiRoutes(): Router {
           role: auth.role,
           message,
           usageId,
+          effort,
         })
       : ask({
           sessionId,
@@ -728,6 +756,7 @@ export function aiRoutes(): Router {
           cellId,
           cellIds,
           usageId,
+          effort,
         })
 
     // 202: the question is in the document, the answer is still being written.

@@ -1,12 +1,22 @@
 /**
- * Оракул о решениях — что он отдаёт преподавателю и кого не пускает.
+ * Оракул о классе — что он отдаёт преподавателю, кого не пускает и чем
+ * кончается, когда провайдер молчит.
  *
- * Две вещи ломаются молча. Модель, не умеющая в строгий JSON, отвечает
- * прозой — и сводка, которая на этом падала бы, оставляла преподавателя с
- * красной ошибкой посреди пары; здесь проверяется, что три абзаца остаются, а
- * имена групп просто пустые. И имена: модели уезжают G-номера, а к пульту
- * возвращаются настоящие ключи групп — перепутанный индекс подписал бы группу
- * чужим именем, и ни один тип этого не заметил бы.
+ * Три вещи ломаются молча, и все три проверяются здесь.
+ *
+ * ИМЕНА. В кадр уезжают настоящие имена — это выбор владельца, и обещание
+ * обратного стояло в шапке ai/council.ts, в подписи пульта и в документации.
+ * Выключенная настройка инстанса возвращает метки S1…SN, и тогда в промпт не
+ * должно попасть ни имени, ни participantId. Обе стороны проверяются, потому
+ * что «включили и не заметили» и «выключили, а оно уехало» — одинаково плохо.
+ *
+ * МОЛЧАНИЕ. Провайдер, который открыл поток и замолчал (или не открыл вовсе),
+ * повесил живое занятие 20.09: ни ответа, ни ошибки, ни строки в журнале, а
+ * ячейка осталась запертой на 409 до перезапуска сервера. Сроки сторожа тест
+ * подставляет короткие — иначе проверка стоила бы трёх минут ожидания.
+ *
+ * ГРУПП НЕТ. Ни G-номеров в кадре, ни подписей группам, ни черновика письма
+ * группе: преподаватель читает класс поимённо.
  *
  * Шлюз поддельный, комната настоящая; попытки — списком в памяти, потому что
  * таблица попыток живёт у council.ts и меняется отдельно от маршрута.
@@ -16,22 +26,24 @@ import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import express from 'express'
-import { createCell, getCells, normalizeAttempt } from '../shared/notebook.js'
+import { createCell, getCells } from '../shared/notebook.js'
 import type { CouncilOracle } from '../shared/protocol.js'
-import { updateOracleSettings } from '../server/src/admin/settings.js'
-import { recordQuestion } from '../server/src/admin/usage.js'
+import { getOracleSettings, updateOracleSettings } from '../server/src/admin/settings.js'
+import { countRoomQuestions, recordQuestion } from '../server/src/admin/usage.js'
 import { signToken } from '../server/src/auth.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { createSession, upsertParticipant } from '../server/src/db.js'
 import type { CouncilRun } from '../shared/protocol.js'
 import {
-  groupsOf,
+  askCouncilOracle,
+  isOracleReading,
   MAX_ORACLE_ANSWERS,
   normalizeOracle,
   onCouncilOracle,
-  parseOracleAnswer,
-  statusPrompt,
+  oraclePrompt,
+  stopCouncilOracle,
   type OracleAttempt,
+  type OracleStore,
 } from '../server/src/ai/council.js'
 import { councilRoutes, type CouncilOracleDeps } from '../server/src/routes/council.js'
 
@@ -69,6 +81,39 @@ async function withEndpoint(answer: string, run: () => Promise<void>): Promise<v
   }
 }
 
+/**
+ * Шлюз, который ведёт себя плохо: либо не отвечает вовсе, либо начинает ответ
+ * и замолкает на середине. Ровно те два случая, ради которых заведён сторож.
+ */
+async function withStuckEndpoint(
+  mode: 'silent' | 'half',
+  run: () => Promise<void>,
+): Promise<void> {
+  const app = express()
+  const hung: http.ServerResponse[] = []
+  app.post('/v1/chat/completions', (_req, res) => {
+    hung.push(res)
+    if (mode === 'silent') return
+    res.setHeader('content-type', 'text/event-stream')
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'нача' } }] })}\n\n`)
+  })
+  const server = http.createServer(app)
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+  const port = (server.address() as { port: number }).port
+  updateOracleSettings({
+    provider: 'custom',
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    model: 'test-model',
+    apiKey: 'test-key',
+  })
+  try {
+    await run()
+  } finally {
+    for (const res of hung) res.destroy()
+    await new Promise<void>((done) => server.close(() => done()))
+  }
+}
+
 /** Хранилище в памяти вместо council.ts: попытки по ячейке и оракул по ячейке. */
 function memoryDeps(attempts: Record<string, OracleAttempt[]>): CouncilOracleDeps & {
   oracles: Map<string, CouncilOracle>
@@ -90,7 +135,7 @@ onCouncilOracle((sessionId, cellId, oracle) => announced.push({ sessionId, cellI
 
 /** Дождаться, пока оракул выйдет из «читает». */
 async function settled(sessionId: string, cellId: string): Promise<CouncilOracle> {
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 400; i++) {
     const last = announced.filter((a) => a.sessionId === sessionId && a.cellId === cellId).at(-1)
     if (last && last.oracle.state !== 'reading') return last.oracle
     await new Promise((r) => setTimeout(r, 10))
@@ -114,9 +159,10 @@ const attempt = (
   participantId: string,
   text: string,
   submittedAt: number | null = 1_000,
-): OracleAttempt => ({ participantId, text, submittedAt, run: null, correct: null })
+  name?: string,
+): OracleAttempt => ({ participantId, text, submittedAt, run: null, correct: null, name })
 
-/** Комната с заданием в ячейке, преподавателем и тремя группами решений. */
+/** Комната с заданием в ячейке, преподавателем и пятью листами. */
 async function room(attempts?: OracleAttempt[]): Promise<Room> {
   const id = `oracle-${++seq}`
   createSession(id, 'Консилиум', null)
@@ -148,11 +194,11 @@ async function room(attempts?: OracleAttempt[]): Promise<Room> {
   })
   const deps = memoryDeps({
     [cellId]: attempts ?? [
-      attempt('p_a', 'def total(xs):\n    return sum(xs)', 100),
-      attempt('p_b', 'def total(xs):\n  return sum(xs)  # готово', 200),
-      attempt('p_c', 'def total(xs):\n    s = 0\n    for x in xs: s += x\n    return s', 300),
-      attempt('p_d', 'def total(xs):\n    return len(xs)', 400),
-      attempt('p_e', 'def total(xs):\n    return', null),
+      attempt('p_a', 'def total(xs):\n    return sum(xs)', 100, 'Анна Белова'),
+      attempt('p_b', 'def total(xs):\n  return sum(xs)  # готово', 200, 'Борис Гай'),
+      attempt('p_c', 'def total(xs):\n    s = 0\n    for x in xs: s += x\n    return s', 300, 'Вера Ким'),
+      attempt('p_d', 'def total(xs):\n    return len(xs)', 400, 'Глеб Орлов'),
+      attempt('p_e', 'def total(xs):\n    return', null, 'Дина Рей'),
     ],
   })
   const app = express()
@@ -183,7 +229,7 @@ function ask(r: Room, who: string, method = 'POST', question?: string): Promise<
   })
 }
 
-/* ------------------------------------------------------- кадр о классе */
+/* ---------------------------------------------------------------- кадр */
 
 /** Упавший запуск с заданным именем исключения — им же меряются «топ ошибок». */
 const crash = (ename: string, evalue = ''): CouncilRun => ({
@@ -195,7 +241,7 @@ const crash = (ename: string, evalue = ''): CouncilRun => ({
   by: 'host',
 })
 
-/** Лист с временем правки: кадру о классе нужно и оно — по нему считается тишина. */
+/** Лист с временем правки: кадру нужно и оно — по нему считается тишина. */
 const sheet = (
   participantId: string,
   text: string,
@@ -210,166 +256,172 @@ const sheet = (
   ...extra,
 })
 
-/* --------------------------------------------------------- чистый разбор */
+const NOW = 1_000_000_000_000
+const MIN = 60_000
 
-test('группы — только сданные, одинаковый текст сходится по normalizeAttempt', () => {
-  const groups = groupsOf([
-    attempt('p_a', 'x = 1', 100),
-    attempt('p_b', 'x=1  # ответ', 200),
-    attempt('p_c', 'x = 2', 300),
-    attempt('p_d', 'x = 1', null),
-  ])
-  assert.equal(groups.length, 2)
-  assert.equal(groups[0].count, 2, 'большая группа первой')
-  assert.equal(groups[0].representative, 'p_a', 'представитель — самый ранний сдавший')
-  assert.deepEqual(groups[0].members, ['p_a', 'p_b'])
-  assert.equal(groups[0].key, normalizeAttempt('x = 1'))
-  assert.equal(groups[1].members.length, 1)
+const CLASS: OracleAttempt[] = [
+  sheet('p_a', 'def total(xs):\n    return sum(xs)', {
+    name: 'Анна Белова',
+    submittedAt: NOW - 6 * MIN,
+    updatedAt: NOW - 3 * MIN,
+    run: crash('KeyError', "'x'"),
+  }),
+  sheet('p_b', 'def total(xs):\n    s = 0', { name: 'Борис Гай', updatedAt: NOW - 9 * MIN }),
+  sheet('p_c', 'def total(xs):\n    return', { name: 'Вера Ким', updatedAt: NOW - 20_000 }),
+  sheet('p_d', 'def total(xs):\n    return sum(xs)', {
+    name: 'Глеб Орлов',
+    submittedAt: NOW - 4 * MIN,
+    updatedAt: NOW - 4 * MIN,
+    run: { ...crash('KeyError'), state: 'ok', outputs: [] },
+    correct: true,
+  }),
+]
 
-  // Состояние группы — по всем членам, как у пульта: отметка или падение у
-  // не-представителя иначе делали бы сводку и полосу разными.
-  const failed = {
-    state: 'error' as const,
-    outputs: [{ kind: 'error' as const, ename: 'TypeError', evalue: 'bad', traceback: [] }],
-    execCount: 1,
-    ranMs: 1,
-    startedAt: 0,
-    by: 'host' as const,
-  }
-  const [mixed] = groupsOf([
-    attempt('p_a', 'x = 1', 100),
-    { ...attempt('p_b', 'x = 1', 200), run: failed },
-  ])
-  assert.equal(mixed.representative, 'p_a')
-  assert.equal(mixed.status, 'failed')
-  const [marked] = groupsOf([
-    attempt('p_a', 'x = 1', 100),
-    { ...attempt('p_b', 'x = 1', 200), run: failed, correct: true },
-  ])
-  assert.equal(marked.status, 'correct')
-})
+const TASK = {
+  source: 'def total(xs):\n    ...',
+  before: 'Напишите сумму списка.',
+  reference: null,
+}
 
-test('разбор: G-номера возвращаются ключами групп, лишние номера отбрасываются', () => {
-  const keys = ['k1', 'k2']
-  const parsed = parseOracleAnswer(
-    'Вот ответ:\n```json\n' +
-      JSON.stringify({
-        summary: ['верно', 'ошибка', 'показать'],
-        groupLabels: { G1: 'через sum', g2: 'цикл', G7: 'выдумано' },
-        drafts: { G2: 'Посмотрите на накопитель.' },
-        // Модель может прислать что угодно сверх спрошенного — лишнее просто
-        // не разбирается (см. ParsedOracle: «примечательное» больше не просят).
-        notable: [{ key: 'G2', why: 'вручную' }],
-      }) +
-      '\n```',
-    keys,
-  )
-  assert.deepEqual(parsed.summary, ['верно', 'ошибка', 'показать'])
-  assert.deepEqual(parsed.groupLabels, { k1: 'через sum', k2: 'цикл' })
-  assert.deepEqual(parsed.drafts, { k2: 'Посмотрите на накопитель.' })
-})
-
-test('разбор: проза вместо JSON — сводка абзацами, имена и черновики пусты', () => {
-  const parsed = parseOracleAnswer(
-    'Большинство решило через sum.\n\nТипичная ошибка — len вместо суммы.\n\nПоказать стоит цикл.\n\nЧетвёртый абзац лишний.',
-    ['k1'],
-  )
-  assert.equal(parsed.summary.length, 3)
-  assert.match(parsed.summary[1], /len/)
-  assert.deepEqual(parsed.groupLabels, {})
-  assert.deepEqual(parsed.drafts, {})
-})
-
-test('кадр статуса: числа по классу, порядок «сначала проблемные», ни одного id', () => {
-  const now = 1_000_000_000_000
-  const min = 60_000
-  const frame = statusPrompt(
-    { source: 'def total(xs):\n    ...', before: 'Напишите сумму списка.', reference: null },
-    [
-      sheet('p_a', 'def total(xs):\n    return sum(xs)', {
-        submittedAt: now - 6 * min,
-        updatedAt: now - 3 * min,
-        run: crash('KeyError', "'x'"),
-      }),
-      sheet('p_b', 'def total(xs):\n    s = 0', { updatedAt: now - 9 * min }),
-      sheet('p_c', 'def total(xs):\n    return', { updatedAt: now - 20_000 }),
-      sheet('p_d', 'def total(xs):\n    return sum(xs)', {
-        submittedAt: now - 4 * min,
-        updatedAt: now - 4 * min,
-        run: { ...crash('KeyError'), state: 'ok', outputs: [] },
-        correct: true,
-      }),
-    ],
-    'Кто застрял?',
-    now,
-    20_000,
-  )
+test('кадр с именами: числа по классу, люди поимённо, решения под их именами', () => {
+  const frame = oraclePrompt(TASK, CLASS, 'Кто застрял?', {
+    now: NOW,
+    budget: 20_000,
+    names: true,
+  })
   const user = frame.turns[1].content
 
   assert.deepEqual(frame.basedOn, { submitted: 2, drafts: 2 })
-  assert.deepEqual(frame.people, { S1: 'p_a', S2: 'p_b', S3: 'p_c', S4: 'p_d' })
   assert.match(user, /КЛАСС: 4 человека с листом — сдали 2, ещё пишут 2/)
   assert.match(user, /с ошибкой 1 \(KeyError — 1\)/)
   assert.match(user, /ОТМЕТКИ преподавателя: верно 1, неверно 0, без отметки 3/)
   assert.match(user, /ТИШИНА: черновиков без правки дольше 5 минут — 1\./)
-  // Номер группы стоит в строке человека: без него «в какой группе ошибка»
-  // и «кому о ней сказать» — два ответа, которые модель не может связать.
   assert.match(
     user,
-    /S1 · сдал \d\d:\d\d, G1 · запуск упал: KeyError — 'x' · 2 строки · правка 3 мин назад/,
+    /Анна Белова · сдал \d\d:\d\d · запуск упал: KeyError — 'x' · 2 строки · правка 3 мин назад/,
   )
   // Сначала те, кому вероятнее нужна помощь: упавший, потом молчащий, потом
   // те, у кого всё идёт. Порядок — это и есть половина ответа на «кто застрял».
-  assert.ok(user.indexOf('\nS1 · ') < user.indexOf('\nS2 · '), 'упавший выше молчащего')
-  assert.ok(user.indexOf('\nS2 · ') < user.indexOf('\nS3 · '), 'молчащий выше остальных')
-  // Код едет обоими способами: группы сданных и листы тех, у кого что-то было.
-  // Дважды — никогда: сданная попытка уже уехала своей группой, и второй её
-  // блок стоил бы места, на котором иначе поместился бы чей-то черновик.
-  assert.match(user, /### G1 — 2 человека/)
-  assert.ok(!user.includes('### S1 —'), 'код S1 уехал дважды: группой и листом')
-  assert.match(user, /### S2 — пишет/, 'черновик молчащего в кадр не поехал')
+  assert.ok(user.indexOf('\nАнна Белова · ') < user.indexOf('\nБорис Гай · '), 'упавший выше молчащего')
+  assert.ok(user.indexOf('\nБорис Гай · ') < user.indexOf('\nГлеб Орлов · '), 'молчащий выше спокойных')
+  // Решения — поимённо, а не группами: ни одного G-номера в кадре.
+  assert.match(user, /РЕШЕНИЯ ПОИМЁННО:/)
+  assert.match(user, /### Анна Белова — сдал /)
+  assert.ok(!/### G\d/.test(user), 'в кадре остались группы')
+  assert.ok(!/ГРУППАМИ/.test(user), 'в кадре остались группы')
   assert.match(user, /ВОПРОС ПРЕПОДАВАТЕЛЯ:\nКто застрял\?$/)
 
-  // Обещание шапки ai/council.ts: в промпт чужого провайдера не уезжает ничего,
-  // по чему человека можно назвать. Имени у попытки нет вовсе, id — есть.
+  // Словарь — по подписи, которая стояла в кадре: по нему пульт делает чип.
+  assert.equal(frame.people['Анна Белова'], 'p_a')
+  assert.equal(Object.keys(frame.people).length, 4)
+
+  // Системный кадр велит звать людей по имени и запрещает выдумывать.
+  assert.match(frame.turns[0].content, /ИМЕНАМИ/)
+  // participantId по-прежнему не уезжает: он не имя, а разметка чужих работ.
   const whole = JSON.stringify(frame.turns)
   for (const id of ['p_a', 'p_b', 'p_c', 'p_d']) assert.ok(!whole.includes(id), id)
 })
 
-test('кадр статуса: хвост списка сворачивается в счёт, когда бюджет кончился', () => {
-  const now = 1_000_000_000_000
+test('кадр без имён: метки S1…SN, и ни одного имени в промпте', () => {
+  const frame = oraclePrompt(TASK, CLASS, 'Кто застрял?', {
+    now: NOW,
+    budget: 20_000,
+    names: false,
+  })
+  const whole = JSON.stringify(frame.turns)
+  assert.deepEqual(frame.people, { S1: 'p_a', S2: 'p_b', S3: 'p_c', S4: 'p_d' })
+  assert.match(frame.turns[1].content, /S1 · сдал /)
+  for (const name of ['Анна', 'Белова', 'Борис', 'Вера', 'Глеб']) {
+    assert.ok(!whole.includes(name), `имя ${name} уехало при выключенной настройке`)
+  }
+  for (const id of ['p_a', 'p_b', 'p_c', 'p_d']) assert.ok(!whole.includes(id), id)
+})
+
+test('тёзки различимы: второй Анне дописан номер, и он же стоит в словаре', () => {
+  const twins = [
+    sheet('p_1', 'x = 1', { name: 'Анна Иванова', submittedAt: 1 }),
+    sheet('p_2', 'x = 2', { name: 'Анна Иванова', submittedAt: 2 }),
+  ]
+  const frame = oraclePrompt(TASK, twins, 'Кто?', { now: NOW, budget: 20_000, names: true })
+  assert.deepEqual(frame.people, { 'Анна Иванова': 'p_1', 'Анна Иванова (2)': 'p_2' })
+  assert.match(frame.turns[1].content, /Анна Иванова \(2\) · сдал /)
+})
+
+test('человек без имени в кадре с именами всё равно зовётся меткой', () => {
+  const frame = oraclePrompt(
+    TASK,
+    [sheet('p_1', 'x = 1', { name: 'Анна Белова' }), sheet('p_2', 'x = 2', { name: null })],
+    'Кто?',
+    { now: NOW, budget: 20_000, names: true },
+  )
+  assert.equal(frame.people['Анна Белова'], 'p_1')
+  assert.equal(frame.people.S2, 'p_2', 'безымянный получает метку, а не пустую строку')
+})
+
+test('бюджет считает и голову кадра, а хвост списка сворачивается в счёт', () => {
   const many = Array.from({ length: 20 }, (_, i) =>
-    sheet(`p_${String(i).padStart(2, '0')}`, 'x = 1', { updatedAt: now - 1_000 }),
+    sheet(`p_${String(i).padStart(2, '0')}`, 'x = 1', { updatedAt: NOW - 1_000 }),
   )
   const task = { source: 'x = ?', before: null, reference: null }
 
-  const roomy = statusPrompt(task, many, 'Как класс?', now, 20_000).turns[1].content
-  assert.match(roomy, /\nS20 · пишет/, 'при большом бюджете едут все двадцать')
-  assert.ok(!/Ещё \d+ без происшествий/.test(roomy))
+  const roomy = oraclePrompt(task, many, 'Как класс?', { now: NOW, budget: 20_000, names: false })
+  assert.match(roomy.turns[1].content, /\nS20 · пишет/, 'при большом бюджете едут все двадцать')
+  assert.ok(!/Ещё \d+ без происшествий/.test(roomy.turns[1].content))
 
   // Бюджет меньше одной только шапки: строк по людям не остаётся ни одной, но
   // модель обязана знать, что класс за кадром есть, — иначе «у всех остальных
   // всё хорошо» она скажет, не имея на это права.
-  const tight = statusPrompt(task, many, 'Как класс?', now, 400).turns[1].content
-  assert.match(tight, /Ещё 20 без происшествий\./)
-  assert.ok(!tight.includes('\nS1 · '))
-  assert.match(tight, /КЛАСС: 20 человек с листом/, 'числа едут всегда — на них кадр и держится')
+  const tight = oraclePrompt(task, many, 'Как класс?', { now: NOW, budget: 400, names: false })
+  assert.match(tight.turns[1].content, /Ещё 20 без происшествий\./)
+  assert.ok(!tight.turns[1].content.includes('\nS1 · '))
+  assert.match(tight.turns[1].content, /КЛАСС: 20 человек с листом/, 'числа едут всегда')
+
+  /*
+   * Голова кадра — в бюджете. Раньше она не считалась вовсе: задание на четыре
+   * тысячи знаков уезжало СВЕРХ потолка, и преподаватель, опустивший
+   * contextChars под маленькую модель, получал запрос вдвое больше названного.
+   */
+  const big = { source: 'y = 2\n'.repeat(1_000), before: null, reference: null }
+  const framed = oraclePrompt(big, many, 'Как класс?', { now: NOW, budget: 6_000, names: false })
+  assert.ok(framed.chars <= 6_000 + 200, `кадр вылез за бюджет: ${framed.chars}`)
+  assert.equal(framed.chars, framed.turns[0].content.length + framed.turns[1].content.length)
 })
 
-test('оракул, записанный до ленты вопросов, читается пустой лентой', () => {
+test('уровень «сразу» кладёт просьбу в системный кадр, «обычно» — ничего', () => {
+  const plain = oraclePrompt(TASK, CLASS, 'Как класс?', { now: NOW, names: true })
+  const fast = oraclePrompt(TASK, CLASS, 'Как класс?', {
+    now: NOW,
+    names: true,
+    effort: 'instant',
+  })
+  const deep = oraclePrompt(TASK, CLASS, 'Как класс?', { now: NOW, names: true, effort: 'deep' })
+  assert.match(fast.turns[0].content, /Отвечай СРАЗУ/)
+  assert.ok(!/Отвечай СРАЗУ/.test(plain.turns[0].content))
+  assert.equal(
+    deep.turns[0].content,
+    plain.turns[0].content,
+    '«подробно» — это параметр провайдера, а не строка в кадре',
+  )
+})
+
+test('строка вчерашнего семинара читается без полей, которых больше нет', () => {
   const stored = {
     state: 'ready',
     askedAt: 5,
     basedOn: 3,
+    // Поля прежней сводки: их больше нет ни в протоколе, ни на экране.
     summary: ['а'],
-    groupLabels: {},
-    drafts: {},
+    groupLabels: { k: 'через sum' },
+    drafts: { k: 'письмо' },
     error: null,
   } as unknown as CouncilOracle
   const fresh = normalizeOracle(stored)
   assert.deepEqual(fresh.answers, [], 'строка вчерашнего семинара не должна ронять пульт')
   assert.equal(fresh.pending, null)
-  assert.deepEqual(fresh.summary, ['а'], 'всё остальное на месте')
+  assert.equal(fresh.basedOn, 3, 'всё, что осталось в кадре, на месте')
+  assert.ok(!('summary' in fresh), 'сводка не должна протаскиваться через нормализацию')
+  assert.ok(!('groupLabels' in fresh))
+  assert.ok(!('drafts' in fresh))
 
   // Потолок держится и у строки, записанной версией, считавшей иначе.
   const long = normalizeOracle({
@@ -389,42 +441,29 @@ test('оракул, записанный до ленты вопросов, чи�
 
 /* ------------------------------------------------------------- маршрут */
 
-test('JSON от модели → оракул готов: три абзаца и имена по ключам групп', async () => {
+test('ответ ложится в ленту, с именами и словарём подписей к людям', async () => {
   const r = await room()
   try {
-    const answer = JSON.stringify({
-      summary: ['Все три группы поняли, что нужна сумма.', 'G3 вернула длину.', 'Показать G2.'],
-      groupLabels: { G1: 'через sum()', G2: 'цикл с накопителем', G3: 'len вместо суммы' },
-      drafts: { G3: 'Вы вернули длину списка, а не сумму его элементов.' },
-    })
-    await withEndpoint(answer, async () => {
-      const res = await ask(r, r.teacher)
+    await withEndpoint('Застряла Вера Ким: цикл без возврата. У Анны Беловой всё считается.', async () => {
+      const res = await ask(r, r.teacher, 'POST', '  Кто застрял?  ')
       const started = (await res.json()) as CouncilOracle & { error?: string }
       assert.equal(res.status, 202, started.error ?? '')
       assert.equal(started.state, 'reading')
-      // Читала четырёх сдавших; пятый ещё пишет и в счёт не идёт.
-      assert.equal(started.basedOn, 4)
+      assert.equal(started.pending?.question, 'Кто застрял?', 'пробелы по краям срезаны')
+      assert.equal(started.basedOn, 4, 'читала четверых сдавших')
 
       const ready = await settled(r.id, r.cellId)
       assert.equal(ready.state, 'ready', ready.error ?? '')
       assert.equal(ready.error, null)
-      assert.equal(ready.summary.length, 3)
-      assert.equal(ready.basedOn, 4)
-
-      const sumKey = normalizeAttempt('def total(xs):\n    return sum(xs)')
-      const loopKey = normalizeAttempt(
-        'def total(xs):\n    s = 0\n    for x in xs: s += x\n    return s',
-      )
-      const lenKey = normalizeAttempt('def total(xs):\n    return len(xs)')
-      assert.deepEqual(ready.groupLabels, {
-        [sumKey]: 'через sum()',
-        [loopKey]: 'цикл с накопителем',
-        [lenKey]: 'len вместо суммы',
-      })
-      assert.deepEqual(Object.keys(ready.drafts), [lenKey])
-      // «Примечательное» с кадра снято целиком — ни промпта, ни разбора, ни
-      // поля: нарисовать его было негде, а токены в самом дорогом запросе
-      // комнаты оно стоило. Поэтому здесь его больше и не проверяют.
+      assert.equal(ready.pending, null)
+      assert.equal(ready.answers.length, 1)
+      const answer = ready.answers[0]
+      assert.ok(answer.id.length > 0)
+      assert.equal(answer.question, 'Кто застрял?')
+      assert.equal(answer.failed, null)
+      assert.match(answer.text, /Вера Ким/)
+      assert.deepEqual(answer.basedOn, { submitted: 4, drafts: 1 })
+      assert.equal(answer.people['Вера Ким'], 'p_c', 'по словарю пульт делает чип и кнопку')
       // Хранилище и рассылка говорят одно и то же.
       assert.deepEqual(r.deps.oracleOf(r.id, r.cellId), ready)
     })
@@ -433,23 +472,50 @@ test('JSON от модели → оракул готов: три абзаца и
   }
 })
 
-test('битый JSON → сводка есть, имена групп пусты, ошибки нет', async () => {
+test('выключенные имена: в ленту приезжают метки, а не имена', async () => {
   const r = await room()
   try {
-    const answer =
-      'Почти все решили через sum.\n\nОдна группа вернула длину — это и есть типичная ошибка.\n\nПокажите цикл: он объясняет, что делает sum.\n{"summary": [оборвано'
-    await withEndpoint(answer, async () => {
-      assert.equal((await ask(r, r.teacher)).status, 202)
+    updateOracleSettings({ sendNames: false })
+    await withEndpoint('Застрял S3.', async () => {
+      assert.equal((await ask(r, r.teacher, 'POST', 'Кто застрял?')).status, 202)
       const ready = await settled(r.id, r.cellId)
-      assert.equal(ready.state, 'ready')
-      assert.equal(ready.error, null, 'проза вместо JSON — не ошибка')
-      assert.ok(
-        ready.summary.length >= 1 && ready.summary.length <= 3,
-        JSON.stringify(ready.summary),
-      )
-      assert.match(ready.summary[0], /sum/)
-      assert.deepEqual(ready.groupLabels, {})
-      assert.deepEqual(ready.drafts, {})
+      assert.equal(ready.answers[0].people.S3, 'p_c')
+      assert.ok(!('Вера Ким' in ready.answers[0].people))
+    })
+  } finally {
+    updateOracleSettings({ sendNames: true })
+    r.close()
+  }
+})
+
+test('ни одного листа — 202, а не отказ: спросить о задании можно всегда', async () => {
+  const r = await room([])
+  try {
+    await withEndpoint('Задание про сумму списка; начните с цикла.', async () => {
+      const res = await ask(r, r.teacher, 'POST', 'Что это за задание?')
+      assert.equal(res.status, 202, 'отказ «никто ничего не написал» снят')
+      const ready = await settled(r.id, r.cellId)
+      assert.equal(ready.state, 'ready', ready.error ?? '')
+      assert.equal(ready.answers.length, 1)
+      assert.match(ready.answers[0].text, /сумму списка/)
+      assert.deepEqual(ready.answers[0].basedOn, { submitted: 0, drafts: 0 })
+    })
+  } finally {
+    r.close()
+  }
+})
+
+test('без вопроса — заготовка сервера, одна для любого клиента', async () => {
+  const r = await room([attempt('p_e', 'x =', null, 'Дина Рей')])
+  try {
+    await withEndpoint('Дина Рей только начала.', async () => {
+      const res = await ask(r, r.teacher)
+      assert.equal(res.status, 202)
+      const started = (await res.json()) as CouncilOracle
+      assert.match(started.pending?.question ?? '', /Как идут дела у класса/)
+      const ready = await settled(r.id, r.cellId)
+      assert.equal(ready.answers.length, 1)
+      assert.equal(ready.answers[0].text, 'Дина Рей только начала.')
     })
   } finally {
     r.close()
@@ -505,76 +571,6 @@ test('оракул выключен на инстансе — отказ сло�
   }
 })
 
-test('сдавших нет — не отказ, а вопрос о статусе заготовкой сервера', async () => {
-  const r = await room([attempt('p_e', 'x =', null)])
-  try {
-    await withEndpoint('S1 только начал.', async () => {
-      const res = await ask(r, r.teacher)
-      assert.equal(res.status, 202, 'ждать сдач, чтобы спросить «кто застрял», — и была жалоба')
-      const started = (await res.json()) as CouncilOracle
-      assert.equal(started.state, 'reading')
-      // Заготовку ставит сервер: она уезжает модели в промпте и обязана быть
-      // одной для любого клиента.
-      assert.match(started.pending?.question ?? '', /Как идут дела у класса/)
-      const ready = await settled(r.id, r.cellId)
-      assert.equal(ready.state, 'ready')
-      assert.equal(ready.answers.length, 1)
-      assert.equal(ready.answers[0].text, 'S1 только начал.')
-      assert.deepEqual(ready.answers[0].basedOn, { submitted: 0, drafts: 1 })
-    })
-  } finally {
-    r.close()
-  }
-})
-
-test('ни одного листа — вот теперь 400, и вопрос из лимита не тратится', async () => {
-  const r = await room([])
-  try {
-    await withEndpoint('{}', async () => {
-      const res = await ask(r, r.teacher)
-      assert.equal(res.status, 400)
-      assert.match(((await res.json()) as { error: string }).error, /никто ничего не написал/)
-    })
-  } finally {
-    r.close()
-  }
-})
-
-test('свободный вопрос о классе: 202, ответ в ленте и словарь меток к людям', async () => {
-  const r = await room()
-  try {
-    await withEndpoint('Застрял S3: цикл без возврата. Группа G1 в порядке.', async () => {
-      const res = await ask(r, r.teacher, 'POST', '  Кто застрял?  ')
-      assert.equal(res.status, 202)
-      const started = (await res.json()) as CouncilOracle
-      assert.equal(started.state, 'reading')
-      assert.equal(started.pending?.question, 'Кто застрял?', 'пробелы по краям срезаны')
-      /*
-       * Вопрос о классе не трогает сводку: «отстала на N» считается разницей с
-       * `basedOn`, и сбрасывать этот счёт вопросом про тишину нельзя.
-       */
-      assert.equal(started.basedOn, 0)
-
-      const ready = await settled(r.id, r.cellId)
-      assert.equal(ready.state, 'ready', ready.error ?? '')
-      assert.equal(ready.pending, null)
-      assert.deepEqual(ready.summary, [], 'сводка по решениям осталась нетронутой')
-      assert.equal(ready.answers.length, 1)
-      const answer = ready.answers[0]
-      assert.ok(answer.id.length > 0)
-      assert.equal(answer.question, 'Кто застрял?')
-      assert.match(answer.text, /S3/)
-      assert.deepEqual(answer.basedOn, { submitted: 4, drafts: 1 })
-      // Метки к людям привязывает сервер: по этому словарю пульт делает из
-      // «S3» чип с именем и кнопку «открыть работу».
-      assert.equal(Object.keys(answer.people).length, 5)
-      assert.equal(answer.people.S3, 'p_c')
-    })
-  } finally {
-    r.close()
-  }
-})
-
 test('вопрос длиннее 500 знаков режется на приёме, а не в браузере', async () => {
   const r = await room()
   try {
@@ -590,7 +586,7 @@ test('вопрос длиннее 500 знаков режется на приё�
   }
 })
 
-test('лента копит не больше шести ходов и переживает обновление сводки', async () => {
+test('лента копит не больше шести ходов', async () => {
   const r = await room()
   try {
     await withEndpoint('ответ', async () => {
@@ -603,62 +599,137 @@ test('лента копит не больше шести ходов и пере�
       assert.equal(full?.answers[0].question, 'вопрос 2', 'самый старый ход вытеснен')
       assert.equal(full?.answers.at(-1)?.question, `вопрос ${MAX_ORACLE_ANSWERS + 1}`)
     })
-    const summary = JSON.stringify({ summary: ['а', 'б', 'в'], groupLabels: {}, drafts: {} })
-    await withEndpoint(summary, async () => {
-      assert.equal((await ask(r, r.teacher)).status, 202)
-      const ready = await settled(r.id, r.cellId)
-      assert.deepEqual(ready.summary, ['а', 'б', 'в'])
-      assert.equal(ready.basedOn, 4)
-      assert.equal(ready.answers.length, MAX_ORACLE_ANSWERS, 'сводка не стирает разговор')
+  } finally {
+    r.close()
+  }
+})
+
+/* ---------------------------------------------------------- «Стоп» и сроки */
+
+test('«Стоп» сохраняет ленту, не красит ошибкой и отпускает ячейку', async () => {
+  const r = await room()
+  try {
+    await withEndpoint('первый ответ', async () => {
+      assert.equal((await ask(r, r.teacher, 'POST', 'первый вопрос')).status, 202)
+      assert.equal((await settled(r.id, r.cellId)).state, 'ready')
+    })
+    await withStuckEndpoint('silent', async () => {
+      const before = announced.length
+      assert.equal((await ask(r, r.teacher, 'POST', 'второй вопрос')).status, 202)
+      // Пока читает — второй вопрос не принимается: один ключ, одно чтение.
+      assert.equal((await ask(r, r.teacher, 'POST', 'третий')).status, 409)
+      assert.equal((await ask(r, r.teacher, 'DELETE')).status, 200)
+      const after = await settled(r.id, r.cellId)
+      assert.equal(after.state, 'ready')
+      assert.equal(after.answers.length, 1, 'прежний разговор потерян')
+      assert.equal(after.answers[0].question, 'первый вопрос')
+      assert.equal(after.error, null, 'остановка рукой — не ошибка')
+      assert.ok(announced.length > before)
+      // И сразу после «Стоп» спросить можно: 409 больше не запирает ячейку.
+      assert.equal(isOracleReading(r.id, r.cellId), false)
+    })
+    await withEndpoint('третий ответ', async () => {
+      assert.equal((await ask(r, r.teacher, 'POST', 'снова')).status, 202)
+      const again = await settled(r.id, r.cellId)
+      assert.equal(again.answers.at(-1)?.text, 'третий ответ')
     })
   } finally {
     r.close()
   }
 })
 
-test('«Стоп» возвращает прежнее состояние, а не пустоту', async () => {
-  const r = await room()
-  try {
-    // Первый ответ — настоящий, чтобы было что возвращать.
-    const answer = JSON.stringify({
-      summary: ['а', 'б', 'в'],
-      groupLabels: { G1: 'sum' },
-      drafts: {},
-    })
-    await withEndpoint(answer, async () => {
-      assert.equal((await ask(r, r.teacher)).status, 202)
-      const first = await settled(r.id, r.cellId)
-      assert.equal(first.state, 'ready')
-    })
-    // Второй — к шлюзу, который молчит, пока его не оборвут.
-    const app = express()
-    const hung: http.ServerResponse[] = []
-    app.post('/v1/chat/completions', (_req, res) => {
-      res.setHeader('content-type', 'text/event-stream')
-      res.write(': keep\n\n')
-      hung.push(res)
-    })
-    const server = http.createServer(app)
-    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
-    updateOracleSettings({
-      baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
-    })
-    try {
-      const before = announced.length
-      assert.equal((await ask(r, r.teacher)).status, 202)
-      // Пока читает — второй вопрос не принимается: один ключ, одна сводка.
-      assert.equal((await ask(r, r.teacher)).status, 409)
-      assert.equal((await ask(r, r.teacher, 'DELETE')).status, 200)
-      const after = await settled(r.id, r.cellId)
-      assert.equal(after.state, 'ready')
-      assert.deepEqual(after.summary, ['а', 'б', 'в'], 'прежняя сводка потеряна')
-      assert.equal(after.error, null, 'остановка рукой — не ошибка')
-      assert.ok(announced.length > before)
-    } finally {
-      for (const res of hung) res.end()
-      server.close()
-    }
-  } finally {
-    r.close()
+test('«Стоп» приводит в порядок ячейку, застрявшую в «читает» без чтения', () => {
+  const store: OracleStore & { oracle: CouncilOracle | null } = {
+    oracle: {
+      state: 'reading',
+      askedAt: 1,
+      basedOn: 2,
+      error: null,
+      answers: [],
+      pending: { question: 'повисший вопрос', askedAt: 1 },
+    },
+    oracleOf: () => store.oracle,
+    setOracle: (_s, _c, oracle) => {
+      store.oracle = oracle
+    },
   }
+  // Обрывать нечего — и это как раз тот случай, ради которого «Стоп» и жмут:
+  // до правки он не делал ничего, а следующий вопрос получал 409 навсегда.
+  assert.equal(stopCouncilOracle('ghost', 'c1', store), false)
+  assert.equal(store.oracle?.state, 'idle')
+  assert.equal(store.oracle?.pending, null)
+})
+
+test('провайдер молчит — понятная ошибка в ленте, в пределах срока', async () => {
+  const store: OracleStore & { oracle: CouncilOracle | null } = {
+    oracle: null,
+    oracleOf: () => store.oracle,
+    setOracle: (_s, _c, oracle) => {
+      store.oracle = oracle
+    },
+  }
+  await withStuckEndpoint('silent', async () => {
+    const usageId = recordQuestion({ sessionId: 'quiet', participantId: 'p_t', action: 'council' })
+    const before = countRoomQuestions('quiet', 3_600_000)
+    const began = Date.now()
+    askCouncilOracle({
+      sessionId: 'quiet',
+      cellId: 'c1',
+      task: TASK,
+      attempts: CLASS,
+      store,
+      usageId,
+      question: 'Как класс?',
+      times: { openingMs: 200, silenceMs: 100, capMs: 500 },
+    })
+    for (let i = 0; i < 200 && store.oracle?.state === 'reading'; i++) {
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    assert.notEqual(store.oracle?.state, 'reading', 'повисло вместо отказа')
+    assert.ok(Date.now() - began < 2_000, 'сторож не сработал в срок')
+    // Вопрос остаётся в ленте вместе с причиной: повторить есть что.
+    const last = store.oracle?.answers.at(-1)
+    assert.equal(last?.question, 'Как класс?')
+    assert.match(last?.failed ?? '', /не ответила за отведённое время/)
+    assert.match(store.oracle?.error ?? '', /не ответила за отведённое время/)
+    assert.equal(isOracleReading('quiet', 'c1'), false, 'запись в карте `reading` осталась')
+    // Потраченный впустую вопрос не съедает часовой лимит комнаты.
+    assert.equal(countRoomQuestions('quiet', 3_600_000), before - 1)
+  })
+})
+
+test('провайдер замолк на середине — другая фраза, и тоже в срок', async () => {
+  const store: OracleStore & { oracle: CouncilOracle | null } = {
+    oracle: null,
+    oracleOf: () => store.oracle,
+    setOracle: (_s, _c, oracle) => {
+      store.oracle = oracle
+    },
+  }
+  await withStuckEndpoint('half', async () => {
+    askCouncilOracle({
+      sessionId: 'half',
+      cellId: 'c1',
+      task: TASK,
+      attempts: CLASS,
+      store,
+      question: 'Как класс?',
+      times: { openingMs: 2_000, silenceMs: 150, capMs: 3_000 },
+    })
+    for (let i = 0; i < 200 && store.oracle?.state === 'reading'; i++) {
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    assert.notEqual(store.oracle?.state, 'reading', 'повисло вместо отказа')
+    const last = store.oracle?.answers.at(-1)
+    assert.match(
+      last?.failed ?? '',
+      /перестала отправлять ответ/,
+      'открытый и замолчавший поток — не то же самое, что неоткрытый',
+    )
+    assert.equal(isOracleReading('half', 'c1'), false)
+  })
+})
+
+test('настройка имён по умолчанию включена — так просил владелец', () => {
+  assert.equal(getOracleSettings().sendNames, true)
 })

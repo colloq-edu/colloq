@@ -1517,6 +1517,26 @@ export const adminMessages: MessageCatalog = {
     "ru": "Применяется ко всем занятиям. Каждое занятие может дополнительно ограничить оракула подсказками или отключить его.",
     "en": "Applies to all classes. Each class can further restrict the oracle to hints or turn it off."
   },
+  "admin.request.shape": {
+    "ru": "Что уезжает модели",
+    "en": "What goes to the model"
+  },
+  "admin.request.shape.note": {
+    "ru": "Касается каждого запроса к провайдеру: и вопросов из комнаты, и оракула консилиума.",
+    "en": "Applies to every request to the provider: questions from the room and the council oracle alike."
+  },
+  "admin.effort.instant": {
+    "ru": "Без рассуждений вслух, короткий ответ",
+    "en": "No thinking out loud, short answer"
+  },
+  "admin.effort.normal": {
+    "ru": "Как решит сама модель — в запрос ничего не добавляется",
+    "en": "Whatever the model does by default — nothing is added to the request"
+  },
+  "admin.effort.deep": {
+    "ru": "Думать дольше; ответ дороже и медленнее",
+    "en": "Think longer; slower and more expensive"
+  },
   "admin.house.rules": {
     "ru": "Правила курса",
     "en": "House rules"

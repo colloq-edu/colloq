@@ -15,7 +15,13 @@ import OpenAI from 'openai'
 import { config } from '../config.js'
 import { tally } from '../log.js'
 import { resolveAiConfig } from '../admin/settings.js'
-import { isKeylessProvider, providerConfigured, type OracleTestResult } from '@shared/admin'
+import {
+  isKeylessProvider,
+  providerConfigured,
+  type AiProviderId,
+  type OracleTestResult,
+  type ReasoningEffort,
+} from '@shared/admin'
 
 export interface ChatTurn {
   role: 'system' | 'user' | 'assistant'
@@ -134,6 +140,12 @@ export async function streamChat(
    * Приходит одним последним кадром, уже без выбора.
    */
   onUsage?: (totalTokens: number) => void,
+  /**
+   * Сколько думать вслух. `undefined`/`normal` — не слать провайдеру ничего
+   * нового: инстанс, у которого эту ручку никто не трогал, должен уйти к
+   * модели тем же запросом, что и до неё.
+   */
+  effort?: ReasoningEffort,
 ): Promise<string> {
   // Reaches a student verbatim, so it names what is missing rather than an
   // environment variable they have no way to set.
@@ -143,7 +155,7 @@ export async function streamChat(
   const payload = toPayload(messages)
   let stream: Awaited<ReturnType<typeof openStream>>
   try {
-    stream = await openStream(payload, 0.3, signal, askForReasoning())
+    stream = await openStream(payload, 0.3, signal, askForReasoning(), false, effort)
   } catch (err) {
     if (isAbort(err, signal)) return ''
     /*
@@ -253,6 +265,42 @@ function askForReasoning(): boolean {
   return resolveAiConfig().provider === 'openrouter' && config.ai.reasoning
 }
 
+/**
+ * Уровень размышлений — на язык конкретного провайдера.
+ *
+ * У каждого он свой и ни у кого не общий: OpenRouter понимает поле `reasoning`
+ * (`enabled`, `effort`, `exclude`), OpenAI — `reasoning_effort`, остальные — не
+ * понимают ничего, и им НЕ ШЛЁТСЯ НИЧЕГО. Это не лень: незнакомое поле на
+ * строгом шлюзе — это 400 посреди пары, а «сразу» и без поля работает, потому
+ * что рядом с ним в системном кадре стоит та же просьба словами
+ * (ai/text.ts · effortNote).
+ *
+ * `normal` не шлёт ничего ТОЖЕ — и это главное свойство ручки: инстанс, где её
+ * не трогали, уходит к модели тем же самым запросом, что и до неё.
+ *
+ * Важная оговорка про модели, у которых рассуждение неотключаемо (DeepSeek R1
+ * и родня): `reasoning: { enabled: false }` они принимают, а думать всё равно
+ * будут — у них это не режим, а устройство. «Сразу» на такой модели даёт
+ * короткий ответ (просьбой в кадре), но не быстрый; быстрый — это другая
+ * модель, и выбирается она в панели, а не здесь.
+ */
+function thinkingFields(reasoning: boolean, effort?: ReasoningEffort): Record<string, unknown> {
+  const provider: AiProviderId = resolveAiConfig().provider
+  if (provider === 'openrouter') {
+    if (effort === 'instant') return { reasoning: { enabled: false } }
+    if (effort === 'deep') return { reasoning: { effort: 'high' } }
+    return reasoning ? { reasoning: { enabled: true } } : {}
+  }
+  if (provider === 'openai') {
+    // 'minimal' — самая низкая ступень у моделей, которые её знают; те, что не
+    // знают, ответят 400, и сработает голая повторная попытка (см. streamChat).
+    if (effort === 'instant') return { reasoning_effort: 'minimal' }
+    if (effort === 'deep') return { reasoning_effort: 'high' }
+    return {}
+  }
+  return {}
+}
+
 function openStream(
   messages: PayloadTurn[],
   temperature: number | undefined,
@@ -260,11 +308,12 @@ function openStream(
   reasoning: boolean,
   /** Голая повторная попытка: ничего сверх списка сообщений — см. streamChat. */
   bare = false,
+  effort?: ReasoningEffort,
 ) {
   const model = resolveAiConfig().model
   // `reasoning` is OpenRouter's own field, so it is not in the SDK's params
   // type; the cast is at this one call site rather than on the config object.
-  const extra = reasoning ? ({ reasoning: { enabled: true } } as Record<string, unknown>) : {}
+  const extra = bare ? {} : thinkingFields(reasoning, effort)
   // Two call sites rather than one params object: `stream: true` has to be a
   // literal for the SDK to pick its streaming overload.
   /*
@@ -315,6 +364,7 @@ export async function completeWithTools(
   tools: ToolSpec[],
   signal?: AbortSignal,
   onUsage?: (totalTokens: number) => void,
+  effort?: ReasoningEffort,
 ): Promise<{ text: string; reasoning: string; calls: ToolCall[] }> {
   const nothing = { text: '', reasoning: '', calls: [] }
   if (!providerReady()) throw new Error(tr("server.noModelIsSetUpOnThis.1152ef"))
@@ -326,6 +376,9 @@ export async function completeWithTools(
     // Та же температура, что и у ответа на вопрос: ход — это та же модель и
     // та же работа, и расходиться этим двум путям незачем.
     temperature: 0.3,
+    // Уровень размышлений — тот же, что у вопроса: «сделать» отличается от
+    // «спросить» инструментами, а не тем, сколько модели думать.
+    ...thinkingFields(false, effort),
     ...(tools.length > 0
       ? {
           tools: tools.map((tool) => ({
@@ -359,7 +412,15 @@ export async function completeWithTools(
      * ровно так же, а лишний запрос — это лишние деньги и лишние полминуты.
      */
     if (!isBadRequest(err) || aboutSize(err)) throw friendly(err)
-    const { max_tokens: _tokens, temperature: _heat, ...bare } = payload
+    // Голая попытка голая и в этом: поле уровня размышлений уходит вместе с
+    // температурой и потолком — незнакомое поле и есть самая частая причина 400.
+    const {
+      max_tokens: _tokens,
+      temperature: _heat,
+      reasoning: _reasoning,
+      reasoning_effort: _effort,
+      ...bare
+    } = payload as typeof payload & { reasoning?: unknown; reasoning_effort?: unknown }
     try {
       answer = await getClient().chat.completions.create(bare as never, { signal })
     } catch (retryErr) {

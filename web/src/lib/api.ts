@@ -13,6 +13,7 @@ import type {
   SessionInfo,
   SessionMe,
 } from '@shared/protocol'
+import type { ReasoningEffort } from '@shared/admin'
 import type { RoomRules } from '@shared/rules'
 import type { PublicCourseView, PublicSeminar, PublicStep } from '@shared/publish'
 import type { PersonMark } from './bans'
@@ -328,6 +329,8 @@ export const api = {
       questionsPerHour: number
       slowModeSeconds: number
       agentSteps?: number
+      /** Умолчание уровня размышлений; необязательное — сервер мог быть старее панели. */
+      reasoningEffort?: ReasoningEffort
     }>('/api/ai/status'),
 
   /**
@@ -374,16 +377,24 @@ export const api = {
    * сообщением сокета, потому что у отказа есть цена и срок: 429 со словами и
    * `retryAfter`, которые сокет не умеет сказать так же (см. `ApiError`).
    */
-  councilAsk: (id: string, token: string, cellId: string, question?: string) =>
+  councilAsk: (
+    id: string,
+    token: string,
+    cellId: string,
+    question?: string,
+    effort?: ReasoningEffort,
+  ) =>
     request<CouncilOracle>(`/api/sessions/${id}/council/${encodeURIComponent(cellId)}/oracle`, {
       method: 'POST',
       /*
-       * Вопрос о классе — им же и отличается вид запроса: без него сервер
-       * готовит сводку по решениям, с ним отвечает прозой о том, как идут дела
-       * (routes/council.ts). Пустой строки здесь не бывает: пульт не шлёт
-       * вопроса, которого нет.
+       * Вопрос о классе своими словами; без него сервер подставляет свою
+       * заготовку (routes/council.ts). Пустой строки здесь не бывает: пульт не
+       * шлёт вопроса, которого нет.
+       *
+       * `effort` не шлётся вовсе, когда выбрано «как на инстансе»: провайдеру
+       * тогда не уедет ни одного нового поля.
        */
-      body: JSON.stringify(question ? { question } : {}),
+      body: JSON.stringify({ ...(question ? { question } : {}), ...(effort ? { effort } : {}) }),
       headers: { authorization: `Bearer ${token}` },
     }),
 

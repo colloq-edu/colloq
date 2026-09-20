@@ -596,7 +596,7 @@ test('состояние группы — по всем членам: отмет
   closeControlRoom(at.id)
 })
 
-test('ответ доходит автору и группе с подписью преподавателя', () => {
+test('ответ доходит автору; рассылки группе больше нет', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
@@ -617,6 +617,15 @@ test('ответ доходит автору и группе с подписью
   assert.equal(lastMine(at.petya, at.cell)?.reply?.by, 'Ада')
   assert.equal(lastMine(at.masha, at.cell)?.reply, null, 'ответ одному уехал соседу')
 
+  /*
+   * Письмо «всей группе» снято вместе с самой группировкой.
+   *
+   * Адресовалось оно ключу группы — тексту после нормализации, — и «посмотрите
+   * на накопитель» приходило пятерым, из которых четверо накопителя не писали:
+   * совпал только код без пробелов и комментариев. Старый клиент, приславший
+   * `{groupKey}`, теперь получает молчание: лучше не отправить, чем отправить
+   * не тем.
+   */
   assert.equal(
     say(at, at.teacher, {
       t: 'council:reply',
@@ -626,57 +635,13 @@ test('ответ доходит автору и группе с подписью
     }),
     null,
   )
-  assert.equal(lastMine(at.masha, at.cell)?.reply?.text, 'Всем: так и надо')
-  assert.equal(lastMine(at.masha, at.cell)?.reply?.to, 'group')
-  /*
-   * У Пети письмо было личным — и групповое его не стирает: письма лежат рядом,
-   * каждое в своём месте.
-   *
-   * Здесь стояло «у Пети теперь только групповой ответ», то есть тест закреплял
-   * потерю: преподаватель ответил человеку лично, через минуту отправил группе
-   * черновик оракула — и личная строка исчезала, прочитал он её или нет.
-   * Вернуть её нечем: у попыток истории версий нет.
-   */
+  assert.equal(lastMine(at.masha, at.cell)?.reply, null, 'рассылка группе всё ещё доходит')
   assert.deepEqual(
     lastMine(at.petya, at.cell)?.replies?.map((one) => [one.to, one.text]),
-    [
-      ['person', 'Проверьте знак'],
-      ['group', 'Всем: так и надо'],
-    ],
+    [['person', 'Проверьте знак']],
   )
-  // И старому клиенту, который читает одно поле, едут оба письма склейкой.
-  assert.equal(lastMine(at.petya, at.cell)?.reply?.text, 'Проверьте знак\n\nВсем: так и надо')
 
-  /*
-   * Второе групповое письмо переписывает рассылку — и только её.
-   *
-   * Поправка вслед рассылке — дело обычное, и раньше она уносила с собой
-   * личный ответ: письмо было одно на попытку, а склейка ложилась в то же поле
-   * и стиралась следующим же групповым. Теперь у Пети остаётся «Проверьте
-   * знак», у Маши — только рассылка.
-   */
-  assert.equal(
-    say(at, at.teacher, {
-      t: 'council:reply',
-      cellId: at.cell,
-      to: { groupKey: 'x=1' },
-      text: 'Всем: поправка',
-    }),
-    null,
-  )
-  assert.deepEqual(
-    lastMine(at.petya, at.cell)?.replies?.map((one) => one.text),
-    ['Проверьте знак', 'Всем: поправка'],
-  )
-  assert.equal(lastMine(at.petya, at.cell)?.reply?.text, 'Проверьте знак\n\nВсем: поправка')
-  assert.deepEqual(
-    lastMine(at.masha, at.cell)?.replies?.map((one) => one.text),
-    ['Всем: поправка'],
-  )
-  assert.equal(lastMine(at.masha, at.cell)?.reply?.text, 'Всем: поправка')
-
-  // Личное письмо переписывает личное — рассылка остаётся на месте: две
-  // ячейки, и в каждой не больше одного письма.
+  // Личное письмо переписывает личное — второго личного у попытки не бывает.
   assert.equal(
     say(at, at.teacher, {
       t: 'council:reply',
@@ -688,7 +653,7 @@ test('ответ доходит автору и группе с подписью
   )
   assert.deepEqual(
     lastMine(at.petya, at.cell)?.replies?.map((one) => one.text),
-    ['Всем: поправка', 'И ещё: назовите переменную'],
+    ['И ещё: назовите переменную'],
   )
 
   assert.equal(
@@ -842,12 +807,25 @@ test('оракул, «читавший» в момент перезапуска,
   assert.deepEqual(fresh?.answers, [])
   assert.equal(fresh?.pending, null)
 
-  // Была сводка — она возвращается готовой, с причиной рядом.
-  setOracle(at.id, at.cell, { ...reading, summary: ['а', 'б', 'в'] })
+  // Был разговор — он возвращается готовым, с причиной рядом: лента переживает
+  // перезапуск, потому что она про разговор, а не про идущий запрос.
+  setOracle(at.id, at.cell, {
+    ...reading,
+    answers: [
+      {
+        id: 'a1',
+        question: 'Кто застрял?',
+        text: 'Никто.',
+        askedAt: 1,
+        basedOn: { submitted: 1, drafts: 0 },
+        people: {},
+      },
+    ],
+  })
   resetCouncilCache(at.id)
   const kept = oracleOf(at.id, at.cell)
   assert.equal(kept?.state, 'ready')
-  assert.deepEqual(kept?.summary, ['а', 'б', 'в'])
+  assert.equal(kept?.answers.length, 1)
   assert.match(kept?.error ?? '', /перезапустился/)
   closeControlRoom(at.id)
 })
@@ -871,7 +849,7 @@ test('попытки переживают перезапуск: кэш пере�
   closeControlRoom(at.id)
 })
 
-test('оба письма переживают перезапуск и едут в стопке', () => {
+test('письмо переживает перезапуск и едет в стопке', () => {
   const at = room()
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
@@ -882,29 +860,21 @@ test('оба письма переживают перезапуск и едут 
     to: { participantId: at.petya.payload.participantId },
     text: 'Проверьте знак',
   })
-  say(at, at.teacher, {
-    t: 'council:reply',
-    cellId: at.cell,
-    to: { groupKey: 'x=1' },
-    text: 'Всем: так и надо',
-  })
 
-  // Перезапуск без процесса: кэш забыт, правда — в базе. Письмо там одно поле,
-  // и список должен уехать в него целиком, а не последним письмом.
+  // Перезапуск без процесса: кэш забыт, правда — в базе. Письма там одно поле,
+  // и список должен уехать в него целиком, а не последним письмом: рассылки
+  // группе больше не бывает, но подсказка оракула ложится рядом с личным.
   resetCouncilCache(at.id)
   assert.deepEqual(
     attemptsOf(at.id, at.cell)[0]?.replies.map((one) => [one.to, one.text]),
-    [
-      ['person', 'Проверьте знак'],
-      ['group', 'Всем: так и надо'],
-    ],
+    [['person', 'Проверьте знак']],
   )
 
-  // И на пульте у карточки — те же два письма (и склейка старому клиенту).
+  // И на пульте у карточки — то же письмо (и склейка старому клиенту).
   const late = join(at.id, at.teacher.payload.participantId, 'Ада', 'host')
   const card = lastBoard(late, at.cell)?.attempts[0]
-  assert.deepEqual(card?.replies?.map((one) => one.text), ['Проверьте знак', 'Всем: так и надо'])
-  assert.equal(card?.reply?.text, 'Проверьте знак\n\nВсем: так и надо')
+  assert.deepEqual(card?.replies?.map((one) => one.text), ['Проверьте знак'])
+  assert.equal(card?.reply?.text, 'Проверьте знак')
   closeControlRoom(at.id)
 })
 
@@ -1139,9 +1109,6 @@ test('лента оракула с метками людей едет тольк
     state: 'ready',
     askedAt: 1,
     basedOn: 1,
-    summary: ['а', 'б', 'в'],
-    groupLabels: {},
-    drafts: {},
     error: null,
     pending: null,
     answers: [
@@ -1181,7 +1148,17 @@ test('лента оракула с метками людей едет тольк
   const toHost = at.teacher.sock.heard.filter((m) => m.t === 'council:oracle')
   assert.ok(toHost.length >= 1, 'пульт не узнал, что оракул читает')
   assert.ok(JSON.stringify(toHost).includes(secret), 'лента до пульта не доехала')
-  assert.deepEqual(oracleOf(at.id, at.cell)?.answers.length, 1, 'отказ стёр разговор')
+  /*
+   * Отказ не стирает разговор и не съедает вопрос: прежний ход остаётся, а
+   * неудачный встаёт рядом с ним — со своим вопросом и причиной вместо
+   * ответа. Пока его не было, «Обновить», кончившееся ничем, уносило и
+   * вопрос: повторить было нечего.
+   */
+  const feed = oracleOf(at.id, at.cell)?.answers ?? []
+  assert.equal(feed.length, 2, 'отказ стёр разговор')
+  assert.equal(feed[0].text, secret)
+  assert.equal(feed[1].question, 'Кто застрял?')
+  assert.ok((feed[1].failed ?? '').length > 0, 'у неудачного хода нет причины')
 
   // Опоздавший пульт получает ленту приветственной пачкой, класс — никогда.
   const late = join(at.id, at.teacher.payload.participantId, 'Ада', 'host')

@@ -32,11 +32,13 @@ import { db } from '../db.js'
 import { isLocale, setLocaleResolver, tr, type Locale } from '@shared/i18n'
 import { announceInstanceLanguage } from '../instance-language.js'
 import {
+  isReasoningEffort,
   LIMITS,
   PROVIDER_PRESETS,
   type AiProviderId,
   type OracleMode,
   type OracleSettings,
+  type ReasoningEffort,
   type UpdateOracleRequest,
 } from '@shared/admin'
 
@@ -59,6 +61,8 @@ const KEY = {
   slowModeSeconds: 'ai.slowModeSeconds',
   contextChars: 'ai.contextChars',
   agentSteps: 'ai.agentSteps',
+  sendNames: 'ai.sendNames',
+  reasoningEffort: 'ai.reasoningEffort',
 } as const
 
 const selectAll = db.prepare('SELECT key, value FROM instance_settings')
@@ -119,6 +123,21 @@ function asProvider(value: string | undefined, fallback: AiProviderId): AiProvid
 
 function asMode(value: string | undefined): OracleMode {
   return MODES.includes(value as OracleMode) ? (value as OracleMode) : 'full'
+}
+
+/**
+ * Булево из строки. Умолчание — ВКЛЮЧЕНО: имена уезжают модели, пока их не
+ * выключили руками, и это выбор владельца, а не недосмотр. Строки здесь нет у
+ * всех, кто обновился с прежней версии, и читать её отсутствие как «выключено»
+ * значило бы включить ручку молча наоборот.
+ */
+function asFlag(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback
+  return value === '1' || value === 'true'
+}
+
+function asEffort(value: string | undefined): ReasoningEffort {
+  return isReasoningEffort(value) ? value : 'normal'
 }
 
 function asInt(value: string | undefined, fallback: number, min: number, max: number): number {
@@ -189,6 +208,8 @@ export function getOracleSettings(): OracleSettings {
       LIMITS.contextChars.max,
     ),
     agentSteps: asInt(rows.get(KEY.agentSteps), LIMITS.agentSteps.default, LIMITS.agentSteps.min, LIMITS.agentSteps.max),
+    sendNames: asFlag(rows.get(KEY.sendNames), true),
+    reasoningEffort: asEffort(rows.get(KEY.reasoningEffort)),
     keyFromEnvironment: key.fromEnvironment,
   }
 }
@@ -251,6 +272,12 @@ export function updateOracleSettings(patch: UpdateOracleRequest): OracleSettings
       }
       upsertSetting.run(KEY.agentSteps, String(changes.agentSteps))
     }
+    if (changes.sendNames !== undefined) {
+      upsertSetting.run(KEY.sendNames, changes.sendNames ? '1' : '0')
+    }
+    if (changes.reasoningEffort !== undefined) {
+      upsertSetting.run(KEY.reasoningEffort, changes.reasoningEffort)
+    }
   })
   write(patch)
   return getOracleSettings()
@@ -303,6 +330,14 @@ export function parseOraclePatch(body: unknown): PatchResult {
       return { error: tr('common.invalidAgentSteps', { max: LIMITS.agentSteps.max }) }
     }
     patch.agentSteps = input.agentSteps
+  }
+  if (input.sendNames !== undefined) {
+    if (typeof input.sendNames !== 'boolean') return { error: tr('common.mustBeFlag', { field: 'sendNames' }) }
+    patch.sendNames = input.sendNames
+  }
+  if (input.reasoningEffort !== undefined) {
+    if (!isReasoningEffort(input.reasoningEffort)) return { error: tr('common.unknownEffort') }
+    patch.reasoningEffort = input.reasoningEffort
   }
   const baseUrl = patch.baseUrl?.trim()
   if (baseUrl !== undefined && baseUrl.length > 0 && !/^https?:\/\//i.test(baseUrl)) {

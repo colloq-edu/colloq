@@ -115,7 +115,8 @@ import { cancelRun, requestRun } from '../kernel/index.js'
 import { getOracleSettings } from '../admin/settings.js'
 import { noteTokens } from '../admin/usage.js'
 import { completeWithTools, type ChatTurn, type ToolSpec } from './provider.js'
-import { cellsWord, describe as reason, pad } from './text.js'
+import { cellsWord, describe as reason, effortNote, pad } from './text.js'
+import type { ReasoningEffort } from '@shared/admin'
 import { buildContext, renderOutputs } from './context.js'
 import { recentTurns } from './index.js'
 
@@ -2649,6 +2650,8 @@ export interface WorkOptions {
   role: 'host' | 'participant'
   message: string
   usageId?: number
+  /** Уровень размышлений — тот же, что у вопроса: режим отличается инструментами. */
+  effort?: ReasoningEffort
 }
 
 /**
@@ -2781,7 +2784,7 @@ async function steps(
   const stepLimit = agentStepsIn(getRules(options.sessionId).agentSteps, getOracleSettings().agentSteps)
 
   const messages: ChatTurn[] = [
-    { role: 'system', content: systemPrompt(hands, tools) },
+    { role: 'system', content: systemPrompt(hands, tools, options.effort) },
     ...threadForWork(history),
     { role: 'user', content: options.message.trim() },
   ]
@@ -2833,14 +2836,14 @@ async function steps(
        * `stopAll`, а прерывание проверено строкой выше), но правило над
        * `peekSessionDoc` не про вероятность.
        */
-      messages[0] = { role: 'system', content: systemPrompt(hands, tools) }
+      messages[0] = { role: 'system', content: systemPrompt(hands, tools, options.effort) }
       framedAt = taken
       stale = false
     }
     // Перед каждым запросом, а не после каждого шага: резать надо ровно то, что
     // сейчас поедет провайдеру, и по бюджету, который мог смениться на ходу.
     budgetTools(messages, toolChars(), keep)
-    const answer = await completeWithTools(messages, tools, signal, bill)
+    const answer = await completeWithTools(messages, tools, signal, bill, options.effort)
     // Прерванный запрос возвращается пустым ответом без вызовов, и без этой
     // проверки ход заканчивался бы пустотой: ни текста, ни «Остановлено».
     if (signal.aborted) {
@@ -3096,7 +3099,7 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
   }, ORIGIN)
 }
 
-function systemPrompt(hands: Hands, tools: ToolSpec[]): string {
+function systemPrompt(hands: Hands, tools: ToolSpec[], effort?: ReasoningEffort): string {
   /*
    * Правила преподавателя — и здесь тоже.
    *
@@ -3185,6 +3188,9 @@ function systemPrompt(hands: Hands, tools: ToolSpec[]): string {
           tr('server.agent.prompt.houseRules', { p0: houseRules }),
         ]
       : []),
+    // «Сразу» — просьбой, а не только параметром: у половины моделей ручки
+    // рассуждений нет, а у части её нельзя выключить (см. ai/text.ts).
+    ...(effortNote(effort) ? ['', effortNote(effort)] : []),
     '',
     tr('server.ai.answerLanguage'),
     tr('server.agent.prompt.ending'),
