@@ -1615,9 +1615,19 @@
           style={`min-width:${entry.dir ? 0 : SIZE_LANE}px`}
         >
             {#if here.length > 0}
-              <!-- Кто держит файл открытым. Стоит поверх размера и не прячется
-                   под указателем: это то, ради чего на строку и смотрят. -->
-              <span class="flex items-center gap-1 pr-0.5">
+              <!--
+                Кто держит файл открытым. Стоит поверх размера и не прячется
+                под указателем: это то, ради чего на строку и смотрят.
+
+                Место под «⋯» отводится ЗАРАНЕЕ, а не по наведению. Кнопка
+                лежит абсолютом у правого края и закрашена, и на строке с
+                кружками она наезжала на них: было видно половину первого, а
+                остальных не было вовсе — то есть пропадало ровно то, ради чего
+                строку и разглядывают. Сдвигать кружки по наведению нельзя:
+                указатель идёт к «⋯», а под ним в этот момент всё дёргается.
+                Поэтому отступ постоянный, и ничто никуда не прыгает.
+              -->
+              <span class="flex items-center gap-1 pr-[26px]">
                 {#each here as peer (peer.id)}
                   <span
                     class="h-1.5 w-1.5 rounded-full"
@@ -1678,20 +1688,24 @@
         class="flex h-[26px] items-center gap-2 bg-raised pr-2"
         style={`padding-left:${4 + depth * 14 + 32}px`}
       >
-        <!-- Тетрадь спрашивает своё: с файлом уходят и её ячейки у всей
-             комнаты, а вернуть их из истории нельзя — лента версий ведётся по
-             тетради комнаты, а не по каждой открытой. -->
-        <span class="min-w-0 flex-1 truncate text-2xs text-muted">
-          {entry.dir
-            ? tr('room.ui.599')
-            : isBook(entry.path)
-              ? tr('room.ui.600')
-              : tr('room.ui.601')}
-        </span>
+        <!--
+          Объяснения в строке больше нет, и это просьба с пары 20.09.2026.
+
+          Панель файлов узкая: «Удалить папку со всем, что в ней?» доезжало до
+          двух букв с многоточием, то есть занимало место и не сообщало ничего.
+          Предупреждение никуда не делось — оно ушло в подсказку самой кнопки,
+          где его читают наведением и где его не режет ширина.
+        -->
+        <span class="min-w-0 flex-1"></span>
         <button
           type="button"
           class="shrink-0 text-2xs font-bold uppercase tracking-caps text-danger transition-opacity duration-100 hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40 disabled:opacity-50"
           disabled={deleting === entry.path}
+          title={entry.dir
+            ? tr('room.ui.599')
+            : isBook(entry.path)
+              ? tr('room.ui.600')
+              : tr('room.ui.601')}
           onclick={() => remove(entry)}
         >
           {deleting === entry.path ? tr('room.ui.542') : tr('room.ui.598')}

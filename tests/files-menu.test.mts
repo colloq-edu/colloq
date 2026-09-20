@@ -256,3 +256,19 @@ test('подсказка про правую кнопку показываетс
   assert.equal([...body(files, 'function tipWasSeen(', '{@render').matchAll(/catch \{/g)].length, 2)
   assert.match(files, /\{#if !tipSeen && listed\}/)
 })
+
+test('кружки присутствия не уходят под «⋯»: место под кнопку отведено заранее', () => {
+  const files = code(read(FILES))
+  /*
+   * 20.09.2026 с пары: «три точки перекрывают кружочки, видно половину
+   * первого». Кнопка лежит абсолютом у правого края и закрашена, поэтому
+   * полоса кружков обязана кончаться левее неё — и всегда, а не по наведению:
+   * указатель идёт как раз к «⋯», и сдвиг под ним читался бы как поломка.
+   */
+  const lane = body(files, '{#if here.length > 0}', '{:else if !entry.dir}')
+  assert.match(lane, /class="flex items-center gap-1 pr-\[26px\]"/)
+  assert.doesNotMatch(lane, /group-hover:/, 'кружки не должны двигаться под указателем')
+  // И сама кнопка по-прежнему стоит абсолютом у правого края — иначе отступ
+  // выше отводит место не тому.
+  assert.match(files, /class="absolute inset-y-0 right-0 flex items-center bg-raised/)
+})
