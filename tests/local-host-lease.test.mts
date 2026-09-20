@@ -29,6 +29,50 @@ test('standalone host discovers the owning server and refuses a different run at
  } finally {await new Promise<void>(r=>server.close(()=>r()));fs.rmSync(dir,{recursive:true,force:true})}
 })
 
+/*
+ * Чужая расписка — не упавшая сессия.
+ *
+ * 20.09.2026 `make vast-up` привёз на арендованную машину `.colloq/` с ноутбука:
+ * расписку `make dev` с номером процесса, которого на той машине никогда не
+ * было. Сервер там работал службой systemd (о локальной сессии он не знает —
+ * `localRunId: null`), а публикация отказывала словами «сначала запустите
+ * colloq». Расписка с мёртвым процессом рядом с живым сервером, который ей не
+ * принадлежит, — это «расписки нет» (код 2); с мёртвым процессом и пустым
+ * портом — по-прежнему отказ.
+ */
+test('a stale receipt next to a server that is not a local session counts as no receipt', async () => {
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colloq-stale-'))
+ const server=http.createServer((_req,res)=>res.end(JSON.stringify({ok:true,version:'0.2.0',localRunId:null})))
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r))
+ const port=(server.address() as import('node:net').AddressInfo).port
+ const receipt=path.join(dir,'session.json')
+ // pid 999999 — заведомо мёртвый: процесс с ноутбука на этой машине не живёт.
+ const write=(at:number)=>fs.writeFileSync(receipt,JSON.stringify({pid:999999,runId:'laptop-run',port:at,url:'http://localhost:5173',leaseFile:path.join(dir,'lease.json'),dataDir:dir}))
+ const env={...process.env,COLLOQ_LOCAL_SESSION:'',COLLOQ_LOCAL_RUN_ID:''}
+ try {
+  write(port)
+  const foreign=await helper(['discover',receipt],env)
+  assert.equal(foreign.code,2,foreign.err)
+  assert.equal(foreign.out,'')
+ } finally {await new Promise<void>(r=>server.close(()=>r()))}
+ try {
+  // Тот же порт, но сервера уже нет: это упавшая сессия, и говорить надо о ней.
+  write(port)
+  const crashed=await helper(['discover',receipt],env)
+  assert.equal(crashed.code,1)
+  assert.match(crashed.err,/no longer running/)
+ } finally {fs.rmSync(dir,{recursive:true,force:true})}
+})
+
+test('the vast deploy never ships the laptop\'s session state and removes a receipt that already travelled', () => {
+ const script=fs.readFileSync('scripts/vast-legacy.sh','utf8')
+ const excludes=/<<'EXCL'\n([\s\S]*?)\nEXCL/.exec(script)?.[1].split('\n') ?? []
+ for (const path of ['.colloq/','.claude/','scratchpad/']) assert.ok(excludes.includes(path),`${path} едет на арендованную машину`)
+ // Исключённое rsync --delete не удаляет, а данные и .env там трогать нельзя — поэтому точечно.
+ assert.match(script,/rssh "rm -f '\$REMOTE_DIR\/\.colloq\/local-session\.json'/)
+ assert.doesNotMatch(script,/--delete-excluded/)
+})
+
 test('native host never restarts a server and local publication uses the lease helper',()=>{
  const script=fs.readFileSync('scripts/host.sh','utf8').split('\n').filter(l=>!/^\s*#/.test(l)).join('\n')
  assert.doesNotMatch(script,/kill "\$\(cat "\$PIDFILE"\)"/)

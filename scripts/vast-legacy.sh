@@ -1064,12 +1064,27 @@ dist/
 *.png
 .colloq.pid
 .colloq.log
+.colloq/
+.claude/
+scratchpad/
+dist-pkg/
+python/dist/
+python/build/
 .DS_Store
 kernel/environments/.*.built
 kernel/environments/*.txt
 EXCL
   rsync -az --delete --exclude-from="$excl" -e "$(ssh_cmd)" \
     ./ "root@$INST_SSH_HOST:$REMOTE_DIR/"
+
+  # `.colloq/` — состояние ЗДЕШНЕЙ машины: расписка `make dev` с номером
+  # процесса на ноутбуке, замок, сборочные отметки. До 20.09.2026 каталог ехал
+  # вместе с деревом, и `make host` на арендованной машине, найдя расписку с
+  # мёртвым (для неё) процессом, отказывался публиковать адрес. Исключение выше
+  # останавливает новые копии; уже привезённую rsync не тронет (--delete
+  # исключённое не удаляет — и правильно, иначе он снёс бы там data/ и .env),
+  # поэтому убираем её руками. Только расписку сессии: остальное там безвредно.
+  rssh "rm -f '$REMOTE_DIR/.colloq/local-session.json' '$REMOTE_DIR/.colloq/local-session.lock' '$REMOTE_DIR/.colloq/local-session-result.json'" || true
 
   # Списки пакетов — отдельным заходом, без --delete и с --update.
   #

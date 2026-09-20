@@ -12,6 +12,18 @@ async function verify(url: string, runId: string): Promise<void> {
   const health = await response.json() as { localRunId?: string }
   if (!runId || health.localRunId !== runId) throw new Error('Local session identity does not match the running server')
 }
+/** Отвечает ли на порту сервер, который этой расписке не принадлежит. */
+async function servedByAnother(port: number, runId: string): Promise<boolean> {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return false
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(3000) })
+    const health = await response.json() as { localRunId?: string | null; version?: string }
+    // Ответил Colloq (у чужого сервиса на этом порту поля version нет) — и не этой сессией.
+    return typeof health.version === 'string' && (health.localRunId ?? null) !== runId
+  } catch {
+    return false
+  }
+}
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2)
   if (command === 'discover') {
@@ -21,7 +33,23 @@ async function main(): Promise<void> {
     } else {
       if (!fs.existsSync(args[0])) { process.exitCode = 2; return }
       receipt = JSON.parse(fs.readFileSync(args[0], 'utf8'))
-      if (!alive(Number(receipt.pid))) throw new Error('Local session is no longer running; start colloq first')
+      if (!alive(Number(receipt.pid))) {
+        /*
+         * Расписка есть, а её процесса нет. Два разных случая, и путать их нельзя.
+         *
+         * Локальная сессия упала — тогда и сервера на её порту нет, и сказать
+         * надо «сначала запустите colloq». Но расписка бывает просто ЧУЖОЙ:
+         * 20.09.2026 `make vast-up` привёз её на арендованную машину вместе с
+         * рабочим деревом (каталог `.colloq/` от `make dev` на ноутбуке), сервер
+         * там работал службой systemd — и публикация отказывала из-за процесса,
+         * которого на этой машине никогда не было. Сервер, который отвечает на
+         * этом порту и сам локальной сессией себя не называет (`localRunId`
+         * пуст или другой), расписке не принадлежит: её здесь всё равно что нет
+         * (код 2 — тот же, что у отсутствующего файла).
+         */
+        if (await servedByAnother(Number(receipt.port), receipt.runId)) { process.exitCode = 2; return }
+        throw new Error('Local session is no longer running; start colloq first')
+      }
     }
     if (!Number.isInteger(receipt.port) || receipt.port < 1 || receipt.port > 65535) throw new Error('Invalid local session port')
     const values = [receipt.runId,receipt.leaseFile,receipt.url,String(receipt.port),receipt.dataDir]
