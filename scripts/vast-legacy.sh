@@ -827,7 +827,7 @@ print("%.2f" % float(b) if b is not None else "")
     fi
   else
     say "${DIM}    не арендована — ищу предложение: ${GPU_NAME:-любая карта}${GPU_RAM:+, от $GPU_RAM ГБ}, виртуалка, on-demand, до \$$MAX_PRICE/час${OFF}"
-    local query offers pick
+    local query offers pick suitable
     query="$(GPU_RAM="$GPU_RAM" MAX_PRICE="$MAX_PRICE" DISK="$DISK" GPU_NAME="$GPU_NAME" py '
 import json, os
 q = {
@@ -862,7 +862,7 @@ print(json.dumps(q))
     offers="$(api POST "bundles/" "$query")"
     # Первая пятёрка печатается в stderr — чтобы человек видел рынок, а не одну
     # цифру, — а выбор уходит в stdout и разбирается ниже.
-    pick="$(printf '%s' "$offers" | py '
+    suitable="$(printf '%s' "$offers" | py '
 import json, sys
 offers = json.load(sys.stdin).get("offers") or []
 # Драйвер проверяется здесь, а не фильтром vast, — и это не вкус. Колёса torch
@@ -873,18 +873,22 @@ offers = json.load(sys.stdin).get("offers") or []
 # фильтр выбрасывал ровно те карты, ради которых машину и арендуют. Поле в
 # ответе при этом верное — условие то же, применяется к ответу.
 offers = [o for o in offers if float(o.get("cuda_max_good") or 0) >= 12.1]
-for o in offers[:5]:
+for o in offers[:8]:
     print("    %-10s %s x %-10s %4.0f ГБ  $%.3f/час  %s" % (
         o.get("id"), o.get("num_gpus"), o.get("gpu_name"),
         # Показываем как на коробке: 24564 МБ это «24 ГБ», а не «25».
         (o.get("gpu_ram") or 0) / 1024, o.get("dph_total") or 0,
         o.get("geolocation") or ""), file=sys.stderr)
-if offers:
-    o = offers[0]
+# В stdout — ВСЕ подходящие, по строке на предложение, самое дешёвое первым:
+# человек может назвать не то, что мы выбрали за него, а любое другое — по
+# номеру из списка выше (ближе, карта новее, хозяин знакомый). Номер сверяется
+# с этим списком, а не уходит в vast как есть: так нельзя арендовать то, что
+# не прошло ни предел цены, ни отсев по драйверу.
+for o in offers:
     print("%s\t%.3f\t%s x %s" % (o["id"], o.get("dph_total") or 0,
                                  o.get("num_gpus"), o.get("gpu_name")))
 ')"
-    [ -n "$pick" ] || die "под эти условия ничего не нашлось.
+    [ -n "$suitable" ] || die "под эти условия ничего не нашлось.
   Искалось: карта «${GPU_NAME:-любая}», память $GPU_RAM_TEXT, до \$$MAX_PRICE/час,
   диск от $DISK ГБ.
   Ослабить разово: make vast-up GPU=\"RTX 4090\" — или насовсем, в .env:
@@ -892,18 +896,43 @@ if offers:
   обычных инстансов, — это цена решения арендовать именно их."
 
     local offer_id price what
-    IFS=$'\t' read -r offer_id price what <<<"$pick"
-    say ""
-    say "${BOLD}беру $offer_id${OFF} — $what, \$$price/час"
-    say "${DIM}пара из двух часов обойдётся примерно в \$$(PRICE="$price" py '
+    # Строка предложения по его номеру — из того же списка подходящих.
+    offer_line() { printf '%s\n' "$suitable" | awk -F '\t' -v id="$1" '$1 == id { print; exit }'; }
+    announce() {
+      say ""
+      say "${BOLD}беру $offer_id${OFF} — $what, \$$price/час"
+      say "${DIM}пара из двух часов обойдётся примерно в \$$(PRICE="$price" py '
 import os; print("%.2f" % (float(os.environ["PRICE"]) * 2))')${OFF}"
+    }
+    # OFFER=<номер> — назвать предложение заранее (и в сценарии с FORCE=1 тоже).
+    if [ -n "${OFFER:-}" ]; then
+      pick="$(offer_line "$OFFER")"
+      [ -n "$pick" ] || die "предложения $OFFER нет среди подходящих под условия.
+  Уберите OFFER — и выберите номер из списка выше."
+    else
+      pick="$(printf '%s\n' "$suitable" | head -n 1)"
+    fi
+    IFS=$'\t' read -r offer_id price what <<<"$pick"
+    announce
     # Деньги настоящие, поэтому спрашиваем. FORCE=1 — для сценариев, где предел
     # цены задан заранее, в VAST_MAX_PRICE.
     if [ "${FORCE:-}" != 1 ]; then
       [ -t 0 ] || die "не вижу терминала, чтобы спросить. FORCE=1 — арендовать без вопроса."
-      printf '%sарендовать? [y/N] %s' "$BOLD" "$OFF"
+      printf '%sарендовать? [y/N или номер из списка] %s' "$BOLD" "$OFF"
       local answer; read -r answer
-      case "$answer" in y|Y|д|да) : ;; *) die "не арендую." ;; esac
+      case "$answer" in
+        y|Y|д|да) : ;;
+        *[!0-9]*|'') die "не арендую." ;;
+        *)
+          # Номер вместо «да» — это и есть согласие, только на другое
+          # предложение: второй раз не переспрашиваем, но говорим, что берём.
+          pick="$(offer_line "$answer")"
+          [ -n "$pick" ] || die "предложения $answer нет среди подходящих — не арендую.
+  Номера — в списке выше; шире список: VAST_MAX_PRICE, VAST_GPU_RAM в .env."
+          IFS=$'\t' read -r offer_id price what <<<"$pick"
+          announce
+          ;;
+      esac
     fi
 
     say "${BOLD}3/$STEPS${OFF} арендую"

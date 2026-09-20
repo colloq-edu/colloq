@@ -546,7 +546,7 @@ tunnel-setup: ## Один раз завести постоянный адрес.
 
 VAST_SCRIPT := $(if $(RELEASE),vast.sh,vast-legacy.sh)
 
-vast-up: ## Арендовать машину с GPU и развернуть Colloq. NAME=среда HOST=имя GPU="RTX 5070"
+vast-up: ## Арендовать машину с GPU и развернуть Colloq. NAME=среда HOST=имя GPU="RTX 5070" OFFER=номер
 	@# NAME, HOST и GPU уходят окружением, а не аргументами, — как
 	@# COLLOQ_HOSTNAME в `make host`. Пустые они и означают «не просили»: скрипт
 	@# тогда ведёт себя ровно как до их появления.
@@ -554,7 +554,9 @@ vast-up: ## Арендовать машину с GPU и развернуть Col
 	@# копия из backups/<среда>/, служба systemd и докер-ядра; с RELEASE=… —
 	@# k3s-релиз (scripts/vast.sh). Прежний вернули 13.09.2026: релиза под рукой
 	@# не оказалось за два часа до лекции, а машина из копии нужна была сразу.
-	@NAME="$(NAME)" HOST="$(HOST)" GPU="$(GPU)" ./scripts/$(VAST_SCRIPT) up
+	@# OFFER — номер предложения из списка, если брать не самое дешёвое; то же
+	@# самое можно ответить и на вопрос «арендовать?» вместо y.
+	@NAME="$(NAME)" HOST="$(HOST)" GPU="$(GPU)" OFFER="$(OFFER)" ./scripts/$(VAST_SCRIPT) up
 
 vast-status: ## Что арендовано: без NAME — все среды, с NAME — подробности одной
 	@NAME="$(NAME)" ./scripts/$(VAST_SCRIPT) status
