@@ -221,7 +221,9 @@ test('в пульте нет ни тетради, ни панелей — тол
   const screen = code(read('web/src/screens/SessionScreen.svelte'))
   assert.match(screen, /\{:else if councilPult && councilCell\}/)
   const branch = screen.slice(screen.indexOf('{:else if councilPult'), screen.indexOf('{:else if pult}'))
-  assert.match(branch, /<Pult cellId=\{councilCell\}/)
+  assert.match(branch, /<Pult\b[\s\S]*?cellId=\{councilCell\}/)
+  // Ячейку переключают ВНУТРИ окна, адресом: пульт один на комнату.
+  assert.match(branch, /onpick=\{\(next\) => onnavigate\?\.\(pultPath\(/)
   assert.doesNotMatch(branch, /<Notebook|<FilesPanel|<OraclePanel/)
 })
 
@@ -415,18 +417,39 @@ test('вывод подписан тем, кто запускал, и окраш
 
 /* ------------------------------- что переехало из тетради вместе с консолью */
 
-test('черновик оракула правят в поле, а не подтверждают кнопкой', () => {
-  // Письмо уйдёт от имени преподавателя, поэтому палец обязан пройти через
-  // поле: черновик встаёт текстом и только в пустое поле — своё не затирает.
-  assert.match(WINDOW, /board\?\.oracle\?\.drafts\[group\.key\]/, 'черновик группы не читается')
-  assert.match(WINDOW, /toGroup && reply\.trim\(\) === '' && groupDraft/)
-  assert.match(WINDOW, /fromOracle: true/)
-  assert.doesNotMatch(WINDOW, /отправить как есть/)
-  // Пометка на «Всем N» — что черновик для этой группы есть; строка под полем
-  // — что в поле стоит именно он.
-  assert.match(REPLY, /hasDraft \? tr\('room\.ui\.41'\) : ''/, 'пометки о черновике нет')
+test('письмо пишут автору работы, и адресата у него больше нет другого', () => {
+  /*
+   * Рядом с полем стояла кнопка «Всем N»: то же письмо уходило всей группе
+   * одинаковых ответов, и к ней прилагался черновик от оракула. 20.09
+   * группировку убрали из пульта целиком, и письмо группе ушло вместе с ней —
+   * замены ему не придумывали.
+   */
+  assert.match(WINDOW, /\{ participantId: current\.participantId \}/)
+  assert.doesNotMatch(WINDOW, /groupKey/, 'адрес письма всё ещё знает про группы')
+  assert.doesNotMatch(WINDOW, /toGroup/)
+  assert.doesNotMatch(REPLY, /toGroup|groupSize|hasDraft/, 'переключатель группы остался в поле')
+  assert.doesNotMatch(REPLY, /room\.ui\.1333/, '«Всем N» осталось кнопкой')
+  // Строка под полем — что в поле стоит черновик оракула, а не своё: он уходит
+  // от имени преподавателя, и палец обязан пройти через поле.
+  assert.match(WINDOW, /fromOracle: true|replyFromOracle/)
   assert.match(REPLY, /\{#if fromOracle\}/)
   assert.match(REPLY, /tr\('room\.ui\.30'\)/, 'не сказано, чей это текст')
+})
+
+test('группировки в пульте нет нигде: ни в списке, ни в работе, ни в поле', () => {
+  // «Эту группировку по типам решения я бы убрал к хуям собачьим» — 20.09.
+  // Убрана она целиком, а не спрятана за настройку, и проверяется это по всем
+  // четырём местам, где она была видна.
+  const pult = code(read('web/src/lib/council-pult.ts'))
+  assert.doesNotMatch(pult, /neighbourInGroup/, 'стрелки по группе остались')
+  assert.doesNotMatch(pult, /kind: 'collapsed'|kind: 'header'/, 'строки группы остались в сборке')
+  assert.doesNotMatch(pult, /'groups'/, 'чип отбора «группы» остался')
+  assert.doesNotMatch(LIST, /row\.groupKey|row\.faces|ontoggle/, 'список всё ещё сворачивает')
+  assert.doesNotMatch(read('web/src/components/council/pult/PultRow.svelte'), /same|inGroup/)
+  assert.doesNotMatch(WORK, /groupIndex|room\.ui\.1323|workSame/)
+  // Номера вариантов при выключенных именах остаются: это подпись человека, а
+  // не признак группы, и она обязана совпадать с тем, что видит зал.
+  assert.match(pult, /export function variantNumbers/)
 })
 
 // Recipient changes, retained drafts and actual sends are verified in the browser audit.
@@ -438,25 +461,72 @@ test('удалить с занятия можно из работы — меню
   assert.match(WINDOW, /askToBan\(banTargetOf\(attempt, event\)\)/)
 })
 
-test('удалить с занятия можно у выполняющегося, ждущего разрешения и стоящего в очереди', () => {
+/**
+ * Опасное действие ушло из строки очереди в меню «⋯» — и это решение владельца.
+ *
+ * «Я вижу только первые несколько строк и могу сразу убрать его с занятия, что
+ * не совсем честно по отношению к участникам» (20.09). Раньше у чужой записи в
+ * очереди стояла ровно одна кнопка, и та — «Удалить с занятия»: снять с пары
+ * было ЛЕГЧЕ, чем прочитать код. Теперь строка целиком открывает работу, а
+ * снятие человека лежит под «⋯» рядом со своим соразмерным соседом — «снять
+ * запуск».
+ */
+test('в строке очереди нет кнопки «удалить»: она под «⋯» рядом со «снять запуск»', () => {
   assert.match(QUEUE, /onremove: \(attempt: CouncilAttempt, event: MouseEvent\) => void/)
+  assert.match(QUEUE, /ondrop: \(attempt: CouncilAttempt\) => void/)
   assert.equal(
     QUEUE.match(/data-pult-remove/g)?.length,
-    3,
-    'кнопка должна быть у каждого из трёх видов записи очереди',
+    undefined,
+    'опасная кнопка снова стоит в строке очереди',
   )
-  assert.equal(
-    QUEUE.match(/tr\('room\.ui\.78'\)/g)?.length,
-    3,
-    'все три кнопки должны быть подписаны, а не спрятаны под значком',
-  )
+  // Меню — общее на всю комнату, а не своё: клавиатура, кромки окна и нижний
+  // лист на пальце уже решены там один раз.
+  assert.match(QUEUE, /import ContextMenu, \{ type ContextMenuItem \} from '@\/components\/ui\/ContextMenu\.svelte'/)
+  assert.match(QUEUE, /label: tr\('room\.pult\.v3\.queue\.drop'\)/)
+  assert.match(QUEUE, /label: tr\('room\.ui\.78'\),\s*icon: 'trash',\s*danger: true/)
+  // Кнопка «⋯» — у каждого вида записи, где раньше стояло «удалить»: у просьбы
+  // и у стоящего в очереди. У выполняющегося её нет: его строка — карточка с
+  // «Прервать», и человека с неё не снимают.
+  assert.equal(QUEUE.match(/data-pult-more/g)?.length, 2)
   assert.match(WINDOW, /onremove=\{remove\}/)
+  assert.match(WINDOW, /ondrop=\{dropRun\}/)
 })
 
-test('шапка раскрытой группы называет группу, а не только считает её', () => {
-  assert.match(LIST, /\{row\.label\}/, 'имя группы в шапке не печатается')
+/**
+ * Строка очереди — кнопка, открывающая работу. По ней и просили: «не могу во
+ * вкладке очереди посмотреть на каждый конкретный запуск, нажав просто на
+ * него».
+ */
+test('по записи очереди можно нажать и перейти к работе', () => {
+  assert.match(QUEUE, /data-pult-queued-open/)
+  assert.match(QUEUE, /onclick=\{\(\) => onopen\(attempt\.participantId\)\}/)
+  assert.match(QUEUE, /aria-label=\{tr\('room\.pult\.v3\.queue\.openRow', \{ name: who\(attempt\) \}\)\}/)
+  // И сколько человек ждёт — числом: «в очереди 4» без движения не отвечает,
+  // идёт ли она вообще.
+  assert.match(QUEUE, /room\.pult\.v3\.queue\.waitingFor/)
+  // Снять запуск умеет и состояние комнаты, и сервер.
+  assert.match(read('web/src/lib/council.svelte.ts'), /dropRun\(cellId: string, participantId: string\)/)
+  assert.match(read('server/src/control.ts'), /case 'council:run:drop': \{/)
+})
+
+/**
+ * Очередь у ТЕТРАДИ, а не у ячейки: пульт обязан видеть чужую работу, которая
+ * её держит, и уметь её прервать.
+ */
+test('пульт считает очередь тетради и прерывает то, что её держит', () => {
+  assert.match(QUEUE, /kernelIsBusy|queuedInBook/)
+  assert.match(QUEUE, /room\.pult\.v3\.queue\.countsBook/)
+  assert.match(QUEUE, /room\.pult\.v3\.queue\.busyCell/)
+  assert.match(QUEUE, /room\.pult\.v3\.queue\.busyOther/)
+  // Кнопка «Прервать» — вне ветки «своя попытка»: она нужна ровно тогда, когда
+  // очередь держит ЧУЖАЯ работа.
+  assert.match(QUEUE, /\{#if busy\}/)
+  assert.match(QUEUE, /data-pult-restart/)
+  assert.match(QUEUE, /room\.pult\.v3\.queue\.stuck/)
   const pult = code(read('web/src/lib/council-pult.ts'))
-  assert.match(pult, /label: groupTitle\(group\)/, 'имя берётся не общей функцией')
+  assert.match(pult, /export function queuedInBook/)
+  assert.match(pult, /export function kernelIsBusy/)
+  assert.match(read('shared/protocol.ts'), /export interface CouncilKernel/)
 })
 
 

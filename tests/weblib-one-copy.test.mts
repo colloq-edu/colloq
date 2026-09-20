@@ -53,7 +53,10 @@ test('полосу режима кто-то рисует: функция без 
     resolve(import.meta.dirname, '..', 'web/src/components/council/pult/PultFilters.svelte'),
     'utf8',
   )
-  assert.match(filters, /councilStripText\(counts, groups\)/)
+  // Нулём, а не числом групп: группировку из пульта убрали целиком (20.09), и
+  // «6 разных ответов» в подписи к списку осталось бы последним её следом —
+  // числом, которого в самом списке не пересчитать глазами.
+  assert.match(filters, /councilStripText\(counts, 0\)/)
 })
 
 test('нечего сказать — не говорим: ни «0 черновиков», ни «0 разных ответов»', () => {

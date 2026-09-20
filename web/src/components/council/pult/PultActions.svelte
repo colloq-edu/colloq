@@ -32,13 +32,10 @@
     /** Работа — черновик: показывать классу нечего. */
     writing: boolean
     disabled: boolean
-    /** Сосед внутри той же группы есть. */
-    hasNeighbour: boolean
     onshow: () => void
     onclear: () => void
     onrun: () => void
     oninterrupt: () => void
-    onneighbour: () => void
     onmark: (correct: boolean) => void
   }
 

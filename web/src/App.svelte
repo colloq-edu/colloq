@@ -18,7 +18,7 @@
     recallSessionInfo,
     rememberSessionInfo,
   } from '@/lib/session-cache'
-  import { isAdminPath, readCourseId, readPublicRoute, readRoomRoute } from '@/lib/routes'
+  import { handoffLanding, isAdminPath, readCourseId, readPublicRoute, readRoomRoute } from '@/lib/routes'
   import { upgradeIfStaff } from '@/screens/staff'
   import { loadLocalizedScreen, reloadAreaMessages } from '@/lib/screen-language'
   import { language, messagesChanged } from '@/lib/i18n.svelte'
@@ -372,11 +372,16 @@
    * преподаватель потом покажет классу. Поэтому сразу после обмена адрес
    * заменяется — replaceState, чтобы «назад» не возвращало на мёртвый ключ.
    *
-   * Заменяется на `/s/:id/pult`, а не на комнату: этой ссылкой открывают
-   * планшет, чтобы ВЕСТИ, и раньше он приезжал в ту же комнату, что и ноутбук —
-   * с вкладками, панелью файлов и оракулом, из которых на паре не нужно ничего.
-   * Комната остаётся в одном нажатии («В комнату» в «Ещё»), а пульт больше не
-   * надо искать.
+   * Заменяется на ЭКРАН, КОТОРЫЙ НАЗВАЛА ССЫЛКА (`handoffLanding`), а не на
+   * комнату: этой ссылкой открывают планшет, чтобы ВЕСТИ, и раньше он приезжал
+   * в ту же комнату, что и ноутбук — с вкладками, панелью файлов и оракулом, из
+   * которых на паре не нужно ничего. Комната остаётся в одном нажатии («В
+   * комнату» в «Ещё»), а пульт больше не надо искать.
+   *
+   * Экран берётся из разбора ДО обмена и запоминается: `path` меняется здесь же,
+   * и читать его после было бы чтением собственного следа. Пульт консилиума
+   * этим и живёт — ссылка с ключом ведёт в конкретную ячейку, а не «куда-нибудь
+   * в пульт»; голый `/s/:id/t/<ключ>` по-прежнему означает пульт лекции.
    *
    * Не сработавший ключ — исключение: там пульта не будет (право на него —
    * `role === 'host'`), и адрес пульта, оставшийся в строке после отказа, был
@@ -390,7 +395,7 @@
     if (!id || !key || claimedKey === key) return
     claimedKey = key
     claiming = true
-    let landing = `/s/${id}/pult`
+    let landing = handoffLanding({ id, mode, cellId: councilCell })
     void api
       .claimHandoff(id, key)
       .then((res) => {

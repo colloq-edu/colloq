@@ -1,12 +1,15 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  import Avatar from '@/components/ui/Avatar.svelte'
-  /**
+    /**
    * Левая колонка пульта: люди сверху вниз, свежие первыми.
    *
-   * Три вида строк: человек (PultRow), свёрнутый хвост группы и шапка
-   * раскрытой. Выбирается курсором только первый — Enter на хвосте означал бы
-   * «показать классу» неизвестно чью работу.
+   * Два вида строк: человек (PultRow) и заголовок половины ленты («Сдали · 12»,
+   * «Пишут · 5»). Выбирается курсором только первый — Enter на заголовке
+   * означал бы «показать классу» неизвестно чью работу.
+   *
+   * Строк было четыре: сюда же входили свёрнутый хвост группы и шапка
+   * раскрытой. Группировки в пульте больше нет (20.09), и людей под чужим
+   * хвостом тоже: одна сдача — одна строка.
    *
    * Полоса «↑ ещё N сдали — показать» появляется, когда список прокручен или
    * курсор не на первой строке: строка, вставшая сверху под читающим глазом,
@@ -30,8 +33,6 @@
     names: boolean
     /** Кто сейчас на экране у зала. */
     shown: string | null
-    /** Размеры групп по ключу — для «так же ещё N». */
-    sizes: ReadonlyMap<string, number>
     /** Сколько сдач придержано за полосой; 0 — полосы нет. */
     held: number
     /** Часы окна: живой счётчик «Считает 3 с» в строке того, кто считается. */
@@ -40,7 +41,6 @@
     decisionsOff: boolean
     onopen: (participantId: string) => void
     onlet: (attempt: CouncilAttempt) => void
-    ontoggle: (groupKey: string) => void
     onrelease: () => void
     /** Насколько список прокручен: от этого зависит, держать ли новые сдачи. */
     onscroll: (top: number) => void
@@ -55,13 +55,11 @@
     keyboard,
     names,
     shown,
-    sizes,
     held,
     now,
     decisionsOff,
     onopen,
     onlet,
-    ontoggle,
     onrelease,
     onscroll,
   }: Props = $props()
@@ -100,20 +98,18 @@
           attempt={row.attempt}
           presence={pultPresence(connected, people, row.attempt.participantId)}
           unread={row.unread}
-          inGroup={row.inGroup}
           variant={row.variant}
           {names}
           {now}
           selected={cursor === row.id}
           focused={keyboard && cursor === row.id}
           meaning={rowMeaning(row.attempt, cursor, shown)}
-          same={Math.max((sizes.get(row.attempt.groupKey) ?? 1) - 1, 0)}
           onlet={row.attempt.runRequest?.status === 'pending' && !decisionsOff
             ? () => onlet(row.attempt)
             : null}
           onopen={() => onopen(row.id)}
         />
-      {:else if row.kind === 'section'}
+      {:else}
         <!--
           Граница ленты: «Сдали · 12» и «Пишут · 5».
           Липкая внутри прокрутки — уехав, она перестала бы отвечать на
@@ -128,46 +124,6 @@
               : 'room.pult.v3.sections.writing',
             { count: row.count },
           )}
-        </div>
-      {:else if row.kind === 'collapsed'}
-        <!--
-          Свёрнутая группа стоит ПОД первым из совпавших и ниже обычной строки:
-          её нельзя выбрать, j и k её перепрыгивают.
-        -->
-        <button
-          type="button"
-          class="flex min-h-12 w-full shrink-0 items-center gap-[9px] border-b border-line px-3 text-left"
-          onclick={() => ontoggle(row.groupKey)}
-        >
-          <span class="flex shrink-0" aria-hidden="true">
-            {#each row.faces as face, at (face.participantId)}
-              <span
-                class="h-5 w-5 shrink-0 rounded-full"
-                style:background-color={names ? face.color : 'rgb(var(--line))'}
-                style:margin-left={at === 0 ? '0' : '-7px'}
-              >
-                {#if names}
-                  <Avatar name={face.name} color={face.color} avatar={face.avatar} size="xs" class="!h-full !w-full" />
-                {/if}
-              </span>
-            {/each}
-          </span>
-          <span class="min-w-0 flex-1 truncate text-[14px] text-muted">
-            {tr('room.ui.1317', { count: row.rest })}
-          </span>
-          <span class={cn(CAPS, 'shrink-0 text-accent-text')}>{tr('room.ui.1315')}</span>
-        </button>
-      {:else}
-        <div class="flex min-h-10 shrink-0 items-center gap-[9px] border-b border-line bg-surface px-3">
-          <span class={cn(CAPS, 'shrink-0 text-faint')}>
-            {tr('room.ui.1318', { p0: row.index, p1: row.count })}
-          </span>
-          <!-- Имя группы — от оракула, а до него первая строка кода: шапка
-               обязана сказать, ЧТО написали эти люди, а не только сколько их. -->
-          <span class="min-w-0 flex-1 truncate text-[13px] text-muted" title={row.label}>{row.label}</span>
-          <button type="button" class={cn(CAPS, 'shrink-0 text-accent-text')} onclick={() => ontoggle(row.groupKey)}>
-            {tr('room.ui.1316')}
-          </button>
         </div>
       {/if}
     {:else}

@@ -7,8 +7,9 @@
  *   порядок — по времени сдачи, свежие сверху, а НЕ по размеру группы (так
  *             ходила стопка под ячейкой, пока она была): два разных вопроса,
  *             и однажды они уже были одной функцией;
- *   группы  — от трёх одинаковых в списке стоит ОДИН, остальные за хвостом;
- *   курсор  — j и k перепрыгивают свёрнутое целиком: строка, которой на экране
+ *   группы  — их НЕТ: список не сворачивает одинаковые ответы и не прячет
+ *             людей под чужим хвостом (убрано 20.09);
+ *   курсор  — j и k перепрыгивают заголовки секций: строка, которой на экране
  *             нет, не должна оказываться под Enter «показать классу»;
  *   держать — новая сдача не двигает строку под курсором; полоса «ещё N сдали»
  *             появляется только когда список прокручен или курсор не наверху;
@@ -18,14 +19,14 @@
  * И окно: «открыт ли пульт» тетрадь узнаёт стуком, а не ссылкой на окно, —
  * ссылку теряет перезагрузка тетради, а окно при этом живо. По тому же стуку
  * решается, что делать с кнопкой «Пульт ↗»: открыть, поднять или перевести
- * единственное окно комнаты на эту ячейку.
+ * единственное окно комнаты на эту ячейку. И место окна: геометрия во весь
+ * экран — это след вкладки, а не пульта, и применять её нельзя.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { groupAttempts } from '../shared/protocol.js'
-import type { CouncilAttempt } from '../shared/protocol.js'
+import type { CouncilAttempt, CouncilBoard } from '../shared/protocol.js'
 import {
-  GROUP_MIN,
+  FILTERS,
   attemptRunLine,
   bySubmissionDesc,
   classBar,
@@ -35,7 +36,7 @@ import {
   listRows,
   matchesFilter,
   moveCursor,
-  neighbourInGroup,
+  pultCells,
   pultClock,
   pultKeyAction,
   pultRanFor,
@@ -46,11 +47,18 @@ import {
   variantNumbers,
 } from '../web/src/lib/council-pult.js'
 import {
+  PULT_HEIGHT,
+  PULT_MIN_HEIGHT,
+  PULT_MIN_WIDTH,
   PULT_STALE_MS,
+  PULT_WIDTH,
   beatsAlive,
+  fillsScreen,
+  fitPlace,
   pultPath,
   pultReach,
   pultWindowName,
+  savesPlace,
   windowFeatures,
 } from '../web/src/lib/council-pult-window.js'
 
@@ -82,11 +90,9 @@ const NONE = new Set<string>()
 function rows(attempts: CouncilAttempt[], over: Partial<Parameters<typeof listRows>[0]> = {}) {
   return listRows({
     attempts,
-    groups: groupAttempts(attempts, {}),
     filter: 'all',
     search: '',
     unread: NONE,
-    expanded: NONE,
     held: NONE,
     ...over,
   })
@@ -111,39 +117,27 @@ test('лента идёт по времени сдачи, свежие свер�
 
 /* --------------------------------------------------------------- группы */
 
-test('одинаковые ответы сворачиваются с трёх, и в ленте стоит один', () => {
+test('одинаковые ответы НЕ сворачиваются: одна сдача — одна строка', () => {
+  /*
+   * Группировка стояла здесь с самого начала: от трёх одинаковых в ленте
+   * показывался один, остальные уходили под хвост «ещё N с тем же ответом».
+   * 20.09 владелец попросил убрать её целиком, и главное последствие проверяется
+   * тут: человека из большой группы видно в списке, он выбирается курсором, и
+   * Enter показывает классу именно его.
+   */
   const same = (id: string, at: number) => attempt({ participantId: id, submittedAt: at, text: 'x = 1' })
-  const pair = [same('a', T + 1), same('b', T + 2)]
-  // Двое — это ещё не группа: сворачивать нечего, оба стоят в ленте.
-  assert.equal(GROUP_MIN, 3)
-  assert.deepEqual(selectable(rows(pair)), ['b', 'a'])
-
-  const three = [...pair, same('c', T + 3)]
+  const three = [same('a', T + 1), same('b', T + 2), same('c', T + 3)]
   const built = rows(three)
   assert.deepEqual(
     built.map((row) => row.kind),
-    ['section', 'attempt', 'collapsed'],
-    'в ленте заголовок «Сдали», один человек и хвост',
+    ['section', 'attempt', 'attempt', 'attempt'],
+    'ни свёрнутого хвоста, ни шапки группы',
   )
-  assert.equal(built[1].kind === 'attempt' && built[1].id, 'c', 'стоит самый свежий')
-  assert.equal(built[2].kind === 'collapsed' && built[2].rest, 2)
-  // Свёрнутые под курсор не попадают вовсе.
-  assert.deepEqual(selectable(built), ['c'])
-})
-
-test('раскрытая группа даёт шапку и членов с отступом, и все они выбираются', () => {
-  const list = ['a', 'b', 'c'].map((id, at) =>
-    attempt({ participantId: id, submittedAt: T + at, text: 'x = 1' }),
-  )
-  const built = rows(list, { expanded: new Set(['x=1']) })
-  assert.deepEqual(
-    built.map((row) => row.kind),
-    ['section', 'attempt', 'header', 'attempt', 'attempt'],
-  )
-  const header = built[2]
-  assert.equal(header.kind === 'header' && header.count, 3)
-  assert.equal(built[3].kind === 'attempt' && built[3].inGroup, true, 'член группы с отступом')
-  assert.deepEqual(selectable(built), ['c', 'b', 'a'])
+  assert.deepEqual(selectable(built), ['c', 'b', 'a'], 'все трое под курсором')
+  // И восемьдесят семь одинаковых — тоже восемьдесят семь строк: список пульта
+  // отвечает на «кто сдал», а не на «какие бывают ответы».
+  const many = Array.from({ length: 87 }, (_, at) => same(`p${at}`, T + at))
+  assert.equal(selectable(rows(many)).length, 87)
 })
 
 /* -------------------------------------------------------------- секции */
@@ -163,16 +157,15 @@ test('лента делится на «Сдали» и «Пишут», и заг
   const built = rows(list)
   const sections = built.filter((row) => row.kind === 'section')
   assert.deepEqual(sections.map((row) => row.kind === 'section' && row.section), ['submitted', 'writing'])
-  // Четверо сдали, хотя строк в ленте две: трое свёрнуты под хвостом группы.
-  assert.equal(sections[0].kind === 'section' && sections[0].count, 4, 'счёт по строкам, а не по людям')
+  assert.equal(sections[0].kind === 'section' && sections[0].count, 4)
   assert.equal(sections[1].kind === 'section' && sections[1].count, 2)
   // Заголовок стоит ПЕРЕД своей половиной.
   const at = built.findIndex((row) => row.kind === 'section' && row.section === 'writing')
   assert.equal(built[at + 1].kind === 'attempt' && built[at + 1].id, 'draft1')
   // И курсору не даётся: j и k их перепрыгивают, Enter на них ничего не значит.
-  assert.deepEqual(selectable(built), ['alone', 'c', 'draft1', 'draft2'])
+  assert.deepEqual(selectable(built), ['alone', 'c', 'b', 'a', 'draft1', 'draft2'])
   assert.equal(moveCursor(built, 'alone', 1), 'c')
-  assert.equal(moveCursor(built, 'c', 1), 'draft1', 'курсор застрял на заголовке секции')
+  assert.equal(moveCursor(built, 'a', 1), 'draft1', 'курсор застрял на заголовке секции')
 })
 
 test('пустая половина заголовка не получает, а отбор и поиск секций не знают вовсе', () => {
@@ -196,8 +189,7 @@ test('пустая половина заголовка не получает, а
 
 /* -------------------------------------------------------------- фильтры */
 
-test('шесть чипов отбирают то, что обещают', () => {
-  const grouped = new Set(['x=1'])
+test('пять чипов отбирают то, что обещают', () => {
   const failed = attempt({ participantId: 'f', status: 'failed', run: { state: 'error', outputs: [], execCount: 1, ranMs: 10, startedAt: T, by: 'host' } })
   const wrong = attempt({ participantId: 'w', status: 'wrong', correct: false })
   const ran = attempt({
@@ -206,20 +198,19 @@ test('шесть чипов отбирают то, что обещают', () =>
     run: { state: 'ok', outputs: [], execCount: 1, ranMs: 10, startedAt: T, by: 'host' },
   })
   const draft = attempt({ participantId: 'd', submittedAt: null })
-  const inGroup = attempt({ participantId: 'g', text: 'x = 1' })
   const unread = new Set(['f'])
 
-  assert.equal(matchesFilter(failed, 'error', unread, grouped), true)
-  assert.equal(matchesFilter(wrong, 'error', unread, grouped), true, '«неверно» — тоже ошибка')
-  assert.equal(matchesFilter(ran, 'error', unread, grouped), false)
-  assert.equal(matchesFilter(ran, 'unrun', unread, grouped), false, 'запускали — значит не сюда')
-  assert.equal(matchesFilter(failed, 'unrun', unread, grouped), false)
-  assert.equal(matchesFilter(draft, 'writing', unread, grouped), true)
-  assert.equal(matchesFilter(ran, 'writing', unread, grouped), false)
-  assert.equal(matchesFilter(failed, 'new', unread, grouped), true)
-  assert.equal(matchesFilter(ran, 'new', unread, grouped), false)
-  assert.equal(matchesFilter(inGroup, 'groups', unread, grouped), true)
-  assert.equal(matchesFilter(ran, 'groups', unread, grouped), false)
+  assert.equal(matchesFilter(failed, 'error', unread), true)
+  assert.equal(matchesFilter(wrong, 'error', unread), true, '«неверно» — тоже ошибка')
+  assert.equal(matchesFilter(ran, 'error', unread), false)
+  assert.equal(matchesFilter(ran, 'unrun', unread), false, 'запускали — значит не сюда')
+  assert.equal(matchesFilter(failed, 'unrun', unread), false)
+  assert.equal(matchesFilter(draft, 'writing', unread), true)
+  assert.equal(matchesFilter(ran, 'writing', unread), false)
+  assert.equal(matchesFilter(failed, 'new', unread), true)
+  assert.equal(matchesFilter(ran, 'new', unread), false)
+  // Чипа «группы» больше нет — отбирать по невидимому нечем.
+  assert.equal(FILTERS.includes('groups' as never), false)
 })
 
 test('поиск идёт по имени и не путает регистр', () => {
@@ -247,16 +238,16 @@ test('точка непрочитанного — только про сдавш
 
 /* ---------------------------------------------------------- курсор */
 
-test('j и k ходят по людям и перепрыгивают свёрнутую группу целиком', () => {
+test('j и k ходят по людям и перепрыгивают заголовки секций', () => {
   const list = [
     attempt({ participantId: 'top', submittedAt: T + 10, text: 'top' }),
-    ...['a', 'b', 'c'].map((id, at) => attempt({ participantId: id, submittedAt: T + at, text: 'x = 1' })),
+    attempt({ participantId: 'mid', submittedAt: T, text: 'x = 1' }),
     attempt({ participantId: 'bottom', submittedAt: T - 10, text: 'bottom' }),
   ]
   const built = rows(list)
-  assert.deepEqual(selectable(built), ['top', 'c', 'bottom'])
-  assert.equal(moveCursor(built, 'top', 1), 'c')
-  assert.equal(moveCursor(built, 'c', 1), 'bottom')
+  assert.deepEqual(selectable(built), ['top', 'mid', 'bottom'])
+  assert.equal(moveCursor(built, 'top', 1), 'mid')
+  assert.equal(moveCursor(built, 'mid', 1), 'bottom')
   // На краях курсор стоит, а не заворачивается: список не карусель.
   assert.equal(moveCursor(built, 'bottom', 1), 'bottom')
   assert.equal(moveCursor(built, 'top', -1), 'top')
@@ -264,22 +255,8 @@ test('j и k ходят по людям и перепрыгивают свёрн
   assert.equal(moveCursor(built, null, 1), 'top')
   assert.equal(moveCursor(built, null, -1), 'bottom')
   // Курсор на строке, которой в отборе больше нет, — к первой.
-  assert.equal(moveCursor(built, 'a', 1), 'top')
+  assert.equal(moveCursor(built, 'gone', 1), 'top')
   assert.equal(moveCursor([], 'top', 1), null)
-})
-
-test('стрелки ходят внутри одной группы и из неё не выводят', () => {
-  const list = [
-    ...['a', 'b', 'c'].map((id, at) => attempt({ participantId: id, submittedAt: T + at, text: 'x = 1' })),
-    attempt({ participantId: 'alone', submittedAt: T + 9, text: 'y = 2' }),
-  ]
-  assert.equal(neighbourInGroup(list, 'c', 1), 'b')
-  assert.equal(neighbourInGroup(list, 'b', 1), 'a')
-  // Кольцом: последний ведёт к первому той же группы, а не наружу.
-  assert.equal(neighbourInGroup(list, 'a', 1), 'c')
-  assert.equal(neighbourInGroup(list, 'c', -1), 'a')
-  assert.equal(neighbourInGroup(list, 'alone', 1), null, 'соседа у одиночки нет')
-  assert.equal(neighbourInGroup(list, null, 1), null)
 })
 
 /* -------------------------------------------------- придержанные сдачи */
@@ -325,15 +302,17 @@ test('в поиске стрелки продолжают ходить по сп
 test('буквы пульта работают в списке, а Enter на кнопке нажимает кнопку', () => {
   assert.equal(pultKeyAction({ key: 'j' }, 'list'), 'next')
   assert.equal(pultKeyAction({ key: 'k' }, 'list'), 'prev')
-  assert.equal(pultKeyAction({ key: ' ' }, 'list'), 'toggleGroup')
+  // Пробел раскрывал группу; группировки нет — и клавиша ничего не делает.
+  assert.equal(pultKeyAction({ key: ' ' }, 'list'), null)
   assert.equal(pultKeyAction({ key: 'Enter' }, 'list'), 'show')
   assert.equal(pultKeyAction({ key: 'Enter' }, 'actions'), null, 'иначе одно нажатие делает два дела')
   assert.equal(pultKeyAction({ key: 'R' }, 'list'), 'run')
   assert.equal(pultKeyAction({ key: '1' }, 'list'), 'correct')
   assert.equal(pultKeyAction({ key: '2' }, 'list'), 'wrong')
   assert.equal(pultKeyAction({ key: '3' }, 'list'), 'clearShown')
-  assert.equal(pultKeyAction({ key: 'ArrowRight' }, 'list'), 'neighbourNext')
-  assert.equal(pultKeyAction({ key: 'ArrowLeft' }, 'list'), 'neighbourPrev')
+  // ← и → ходили по соседям внутри группы — некуда ходить.
+  assert.equal(pultKeyAction({ key: 'ArrowRight' }, 'list'), null)
+  assert.equal(pultKeyAction({ key: 'ArrowLeft' }, 'list'), null)
   assert.equal(pultKeyAction({ key: '?' }, 'list'), 'help')
   assert.equal(pultKeyAction({ key: 'f', meta: true }, 'list'), 'search')
   // Русская раскладка — те же клавиши: пульт держат в аудитории, где её никто
@@ -519,22 +498,117 @@ test('кнопка «Пульт»: открыть, поднять или пер�
   assert.equal(pultReach(here, 'c1', T + PULT_STALE_MS), 'open')
   assert.equal(pultReach({ ...here, closed: true }, 'c1', T), 'open', 'попрощалось — значит закрыто')
   // Живо и по этой ячейке — поднять, не перезагружая: иначе стёрся бы отбор,
-  // курсор и раскрытые группы, то есть весь способ смотреть.
+  // курсор и прочитанное, то есть весь способ смотреть.
   assert.equal(pultReach(here, 'c1', T + 100), 'focus')
   // Живо, но по другой ячейке — перевести его сюда: второе окно той же комнаты
   // было бы вторым местом с именами, ради чего окно и заводили.
   assert.equal(pultReach(here, 'c2', T + 100), 'navigate')
 })
 
-test('шапка раскрытой группы несёт её имя, а не только номер и счёт', () => {
-  const list = [
-    attempt({ participantId: 'a', text: 'x = 1', submittedAt: T + 3 }),
-    attempt({ participantId: 'b', text: 'x = 1', submittedAt: T + 2 }),
-    attempt({ participantId: 'c', text: 'x = 1', submittedAt: T + 1 }),
-  ]
-  const built = rows(list, { expanded: new Set([groupAttempts(list)[0].key]) })
-  const header = built.find((row) => row.kind === 'header')
-  assert.ok(header && header.kind === 'header')
-  assert.equal(header.count, 3)
-  assert.equal(header.label, 'x = 1', 'шапка не говорит, ЧТО написали эти трое')
+
+/* ------------------------------------------------------------ место окна */
+
+const SCREEN = { width: 1512, height: 944 }
+
+test('место во весь экран — это след вкладки, и оно не применяется', () => {
+  /*
+   * Жалоба 20.09: «пульт открывается вкладкой, а не окном». Половина её —
+   * отравленная память. Пульт, открытый один раз по прямому адресу (ссылку
+   * вставили в адресную строку), мерил собой ВЕСЬ браузер и записывал в
+   * localStorage геометрию чужого окна. Следующий `window.open` просил попап
+   * размером в экран из точки 0,0 — от вкладки неотличимый, — и каждое
+   * открытие подтверждало память следующему.
+   */
+  const poison = { left: 0, top: 0, width: SCREEN.width, height: SCREEN.height }
+  assert.equal(fillsScreen(poison, SCREEN), true)
+  assert.equal(fitPlace(poison, SCREEN), null, 'такое место забывается целиком')
+  // И записать его тоже нельзя — ни из вкладки, ни из своего окна.
+  assert.equal(savesPlace(poison, SCREEN, true), false)
+  assert.equal(savesPlace({ left: 40, top: 40, width: 1000, height: 800 }, SCREEN, false), false,
+    'не наше окно — не его место')
+  assert.equal(savesPlace({ left: 40, top: 40, width: 1000, height: 800 }, SCREEN, true), true)
+})
+
+test('запомненное место зажимается с двух сторон, а монитор слева остаётся', () => {
+  // Не «во весь экран» (по высоте меньше), значит место живое, но ширину у
+  // него подрезают: попап шире монитора браузер всё равно не даст.
+  const big = fitPlace({ left: 10, top: 20, width: 9000, height: 700 }, SCREEN)
+  assert.ok(big)
+  assert.ok(big.width <= SCREEN.width && big.height <= SCREEN.height, 'шире экрана не просим')
+  const small = fitPlace({ left: 10, top: 20, width: 200, height: 120 }, SCREEN)
+  assert.equal(small?.width, PULT_MIN_WIDTH, 'щель в 200 px — это не пульт')
+  assert.equal(small?.height, PULT_MIN_HEIGHT)
+  // Отрицательная координата — второй монитор слева, а не мусор: `screen` о
+  // нём ничего не знает, и зажимать её значило бы стаскивать окно обратно.
+  assert.equal(fitPlace({ left: -1800, top: 40, width: 1000, height: 800 }, SCREEN)?.left, -1800)
+  // Экран неизвестен (тест, старый браузер) — остаются только нижние пределы.
+  assert.equal(fitPlace({ left: 0, top: 0, width: 4000, height: 3000 }, null)?.width, 4000)
+})
+
+test('размер в features стоит всегда: без него Chrome не уважает popup=yes', () => {
+  for (const place of [null, { left: 10, top: 10, width: 900, height: 700 }]) {
+    const features = windowFeatures(place)
+    assert.match(features, /popup=yes/)
+    assert.match(features, /width=\d+/)
+    assert.match(features, /height=\d+/)
+  }
+  assert.match(windowFeatures(null), new RegExp(`width=${PULT_WIDTH}`))
+  assert.match(windowFeatures(null), new RegExp(`height=${PULT_HEIGHT}`))
+})
+
+/* --------------------------------------------------------- список ячеек */
+
+function board(over: Partial<CouncilBoard> = {}): CouncilBoard {
+  return {
+    lock: 'council',
+    settings: { studentRun: 'free', runLimitSec: 30, rerunPauseSec: 0, namesOnProjector: true },
+    counts: { attempts: 3, submitted: 2, writing: 1, groups: 1 },
+    attempts: [],
+    groups: [],
+    oracle: null,
+    ...over,
+  } as CouncilBoard
+}
+
+test('список ячеек: порядок по тетради и номеру, числа и пометки', () => {
+  const running = attempt({
+    participantId: 'r',
+    run: { state: 'running', outputs: [], execCount: 1, ranMs: null, startedAt: T, by: 'host' },
+  })
+  const list = pultCells([
+    { cellId: 'c2', index: 7, book: 'lab.ipynb', lock: 'council', counts: board().counts,
+      room: { submitted: 12, total: 25 }, attempts: [running], onScreen: false },
+    { cellId: 'c1', index: 3, book: 'lab.ipynb', lock: 'council', counts: board().counts,
+      room: { submitted: 4, total: 25 }, attempts: [], onScreen: true },
+    { cellId: 'c3', index: 1, book: 'hw.ipynb', lock: 'open', counts: board().counts,
+      room: null, attempts: [], onScreen: false },
+  ])
+  assert.deepEqual(list.map((cell) => cell.cellId), ['c3', 'c1', 'c2'], 'тетрадь, потом номер')
+  // Ячейки из разных тетрадей — имя тетради печатается: номера уникальны
+  // только внутри тетради, и две «ячейки 03» иначе не различить.
+  assert.equal(list[0].book, 'hw.ipynb')
+  assert.equal(list[1].submitted, 4)
+  assert.equal(list[1].total, 25)
+  assert.equal(list[1].onScreen, true)
+  assert.equal(list[2].running, true, 'кто-то считается прямо сейчас')
+  // Консилиум сняли, попытки остались: ячейка не уходит, у неё «просмотр».
+  assert.equal(list[0].review, true)
+  assert.equal(list[1].review, false)
+  // Комнатный счёт не приехал — берётся счёт стопки, а не ноль.
+  assert.equal(list[0].submitted, 2)
+  assert.equal(list[0].total, 3)
+})
+
+test('одна тетрадь — имени тетради в списке нет', () => {
+  const one = pultCells([
+    { cellId: 'a', index: 2, book: 'lab.ipynb', lock: 'council', counts: board().counts, room: null, attempts: [], onScreen: false },
+    { cellId: 'b', index: 5, book: 'lab.ipynb', lock: 'council', counts: board().counts, room: null, attempts: [], onScreen: false },
+  ])
+  assert.deepEqual(one.map((cell) => cell.book), ['', ''])
+  // Ячейку удалили из документа — она уходит в хвост, а не встаёт первой.
+  const gone = pultCells([
+    { cellId: 'a', index: null, book: '', lock: 'council', counts: board().counts, room: null, attempts: [], onScreen: false },
+    { cellId: 'b', index: 5, book: '', lock: 'council', counts: board().counts, room: null, attempts: [], onScreen: false },
+  ])
+  assert.deepEqual(gone.map((cell) => cell.cellId), ['b', 'a'])
 })

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
   import Avatar from '@/components/ui/Avatar.svelte'
-  import { councilLetters, type CouncilAttempt, type CouncilGroup } from '@shared/protocol'
+  import { councilLetters, type CouncilAttempt } from '@shared/protocol'
   import CellOutputs from '@/components/notebook/CellOutputs.svelte'
   import Code from '@/components/ui/Code.svelte'
   import { attemptReview, attemptExecution, pultClock, pultDuration, pultRanFor, timedOutLimit, type PultPresence, type PultRule } from '@/lib/council-pult'
@@ -28,10 +28,6 @@
   interface Props {
     attempt: CouncilAttempt | null
     presence: PultPresence
-    group: CouncilGroup | undefined
-    /** Номер группы с единицы и сколько групп всего. */
-    groupIndex: number
-    groups: number
     /** Место работы в ленте: «12 / 487». */
     index: number
     total: number
@@ -41,26 +37,20 @@
     onScreen: boolean
     shownAt: number | null
     disabled: boolean
-    hasNeighbour: boolean
     /** Предел запуска из регламента ячейки; `null` — без предела. */
     limit: number | null
     /** Узкое окно: имя автора стоит в верхней планке экрана работы. */
     phone: boolean
     onrules: (rule: PultRule, from: HTMLElement) => void
     reply: string
-    replyToGroup: boolean
-    /** У группы есть черновик оракула. */
-    replyDraft: boolean
     /** В поле ответа стоит черновик оракула. */
     replyFromOracle: boolean
     onshow: () => void
     onclear: () => void
     onrun: () => void
     oninterrupt: () => void
-    onneighbour: () => void
     onmark: (correct: boolean) => void
     onreplychange: (text: string) => void
-    onreplytoggle: () => void
     onreplysend: () => void
     onreplyfocus: () => void
     onreplyblur: () => void
@@ -71,9 +61,6 @@
   let {
     attempt,
     presence,
-    group,
-    groupIndex,
-    groups,
     index,
     total,
     variant,
@@ -82,22 +69,17 @@
     onScreen,
     shownAt,
     disabled,
-    hasNeighbour,
     limit,
     phone,
     onrules,
     reply,
-    replyToGroup,
-    replyDraft,
     replyFromOracle,
     onshow,
     onclear,
     onrun,
     oninterrupt,
-    onneighbour,
     onmark,
     onreplychange,
-    onreplytoggle,
     onreplysend,
     onreplyfocus,
     onreplyblur,
@@ -108,7 +90,6 @@
   const run = $derived(attempt?.run ?? null)
   const letters = $derived(councilLetters(attempt))
   const lines = $derived(attempt ? attempt.text.split('\n').length : 0)
-  const same = $derived(group ? group.count - 1 : 0)
   const review = $derived(attempt ? attemptReview(attempt) : null)
   const execution = $derived(attempt ? attemptExecution(attempt) : null)
   /** Предел, оборвавший ИМЕННО этот запуск: регламент с тех пор могли поменять. */
@@ -213,9 +194,7 @@
         <span class="pult-badge work-review" data-tone={review?.tone} data-shape={review?.shape} data-pult-review
           title={tr('room.pult.v2.workReview')}>{review?.label}</span>
       {/if}
-      <span class="pult-meta work-place">
-        {tr('room.pult.v3.place', { index, total })}{#if groupIndex > 0}<span>{' · '}{tr('room.ui.1323', { p0: groupIndex, p1: groups })}</span>{/if}
-      </span>
+      <span class="pult-meta work-place">{tr('room.pult.v3.place', { index, total })}</span>
       <!-- svelte-ignore a11y_no_static_element_interactions (Escape closes the menu; the trigger and the item are buttons.) -->
       <div class="work-menu" bind:this={menu} onkeydown={(event) => {
         if (event.key !== 'Escape' || !menuOpen) return
@@ -241,7 +220,6 @@
       <section class="work-code" aria-label={tr('room.pult.v2.workCode')}>
         <div class="work-section-meta pult-meta">
           <span>{tr('room.pult.v2.workCode')}</span>
-          {#if same > 0}<span>{tr('room.pult.v2.workSame', { count: same })}</span>{/if}
         </div>
         <div class="work-code-surface">
           <div class="work-code-scroll">
@@ -298,16 +276,15 @@
       ответа и четыре действия — всегда на экране, что бы ни творилось выше.
     -->
     <div class="work-dock" data-pult-dock>
-      <PultLetters {letters} groupSize={group?.count ?? 1} />
-      <PultReply text={reply} toGroup={replyToGroup} groupSize={group?.count ?? 1}
-        hasDraft={replyDraft} fromOracle={replyFromOracle} {disabled}
-        onchange={onreplychange} ontoggle={onreplytoggle} onsend={onreplysend}
+      <PultLetters {letters} />
+      <PultReply text={reply} fromOracle={replyFromOracle} {disabled}
+        onchange={onreplychange} onsend={onreplysend}
         onfocus={onreplyfocus} onblur={onreplyblur} />
       <PultActions {onScreen} running={run?.state === 'running'} queued={run?.state === 'queued'}
         elapsed={run ? Math.max(now - run.startedAt, 0) : 0}
         inFrame={shownAt === null ? 0 : Math.max(now - shownAt, 0)} ran={run !== null}
-        correct={attempt.correct} {writing} {disabled} {hasNeighbour}
-        {onshow} {onclear} {onrun} {oninterrupt} {onneighbour} {onmark} />
+        correct={attempt.correct} {writing} {disabled}
+        {onshow} {onclear} {onrun} {oninterrupt} {onmark} />
     </div>
   </div>
 {/if}

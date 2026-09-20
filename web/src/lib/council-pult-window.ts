@@ -35,6 +35,29 @@ export const PULT_WIDTH = 1120
 export const PULT_HEIGHT = 820
 export const PULT_MIN_WIDTH = 760
 export const PULT_MIN_HEIGHT = 600
+/**
+ * Доля экрана, за которой «окно» перестаёт быть окном.
+ *
+ * Запомненное место — это лучшее усилие, но одно его значение ядовито: место
+ * ВО ВЕСЬ ЭКРАН. Пульт, открытый один раз вкладкой или прямым адресом (а так
+ * его и открывают, когда ссылку на окно вставляют в адресную строку),
+ * записывал в память геометрию ВСЕГО браузера — и следующий `window.open`
+ * просил попап размером в экран из точки 0,0. От вкладки такое окно не
+ * отличить ничем, и жалоба «открывается вкладкой» после этого верна навсегда:
+ * каждое открытие подтверждало память следующему.
+ *
+ * Поэтому 0,95: место крупнее этой доли ПО ОБЕИМ сторонам считается не местом,
+ * а следом вкладки, и окно открывается по умолчанию — 1120×820 там, куда
+ * поставит браузер. Ошибка в эту сторону стоит одно перетаскивание окна;
+ * ошибка в другую стоит саму возможность шарить одно окно из двух.
+ */
+export const PULT_MAX_SHARE = 0.95
+
+/** Сколько места на экране вообще есть. `null` — экран неизвестен (тест, SSR). */
+export interface PultScreen {
+  width: number
+  height: number
+}
 
 export interface PultBeat {
   sessionId: string
@@ -71,8 +94,71 @@ export function pultPath(sessionId: string, cellId: string): string {
 
 const placeKey = (sessionId: string): string => `colloq.council.pult.${sessionId}`
 
-/** Где окно стояло в прошлый раз. Мусор в хранилище — как будто ничего нет. */
-export function readPultPlace(sessionId: string): PultPlace | null {
+/** Экран этой машины, каким его знает браузер. `null` — спросить негде. */
+export function availScreen(): PultScreen | null {
+  try {
+    const { availWidth, availHeight } = window.screen
+    if (!Number.isFinite(availWidth) || !Number.isFinite(availHeight)) return null
+    if (availWidth <= 0 || availHeight <= 0) return null
+    return { width: availWidth, height: availHeight }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Занимает ли это место весь экран — то есть след вкладки, а не пульта.
+ *
+ * По ОБЕИМ сторонам разом: пульт, растянутый по высоте на узком мониторе, —
+ * обычное дело, а окно в экран и по ширине, и по высоте пультом не бывает.
+ */
+export function fillsScreen(place: PultPlace, screen: PultScreen | null): boolean {
+  if (!screen) return false
+  return place.width >= screen.width * PULT_MAX_SHARE && place.height >= screen.height * PULT_MAX_SHARE
+}
+
+/**
+ * Место, которое МОЖНО просить у браузера, — или `null`, если просить нечего.
+ *
+ * Зажимает с двух сторон, и это две разные заботы. Снизу — чтобы окно не
+ * открылось щелью в 200 px: список и работа обязаны стоять рядом. Сверху — то
+ * самое лечение отравленной памяти: место во весь экран выбрасывается ЦЕЛИКОМ,
+ * а не подрезается, потому что подрезанное на пять процентов окно всё ещё
+ * читается как вкладка, а подрезанное сильнее врало бы про то, где его
+ * оставили.
+ *
+ * Координаты не трогаются и не зажимаются: отрицательный `left` — это второй
+ * монитор слева, и `screen` о нём ничего не знает. Пульт, оставленный на
+ * соседнем мониторе, обязан вернуться туда же.
+ */
+export function fitPlace(place: PultPlace, screen: PultScreen | null): PultPlace | null {
+  if (fillsScreen(place, screen)) return null
+  const left = Math.round(place.left)
+  const top = Math.round(place.top)
+  let width = Math.max(PULT_MIN_WIDTH, Math.round(place.width))
+  let height = Math.max(PULT_MIN_HEIGHT, Math.round(place.height))
+  if (screen) {
+    width = Math.max(PULT_MIN_WIDTH, Math.min(width, Math.round(screen.width * PULT_MAX_SHARE)))
+    height = Math.max(PULT_MIN_HEIGHT, Math.min(height, Math.round(screen.height * PULT_MAX_SHARE)))
+  }
+  return { left, top, width, height }
+}
+
+/**
+ * Стоит ли запоминать это место.
+ *
+ * `ownWindow` — открыто ли окно нами (`window.opener` есть). Пульт, открытый
+ * вкладкой или прямым адресом, меряет собой ВЕСЬ браузер, и его геометрия —
+ * это не место пульта, а размер чужого окна; записать её значит отравить
+ * следующее открытие. Второе условие — то же самое, но для случая, когда
+ * `opener` есть, а окно тем временем развернули во весь экран.
+ */
+export function savesPlace(place: PultPlace, screen: PultScreen | null, ownWindow: boolean): boolean {
+  return ownWindow && !fillsScreen(place, screen)
+}
+
+/** Где окно стояло в прошлый раз. Мусор и след вкладки — как будто ничего нет. */
+export function readPultPlace(sessionId: string, screen = availScreen()): PultPlace | null {
   try {
     const raw = localStorage.getItem(placeKey(sessionId))
     if (!raw) return null
@@ -81,22 +167,54 @@ export function readPultPlace(sessionId: string): PultPlace | null {
     const place = parsed as Record<string, unknown>
     const numbers = ['left', 'top', 'width', 'height'].map((key) => place[key])
     if (!numbers.every((value) => typeof value === 'number' && Number.isFinite(value))) return null
-    return {
-      left: Math.round(place.left as number),
-      top: Math.round(place.top as number),
-      width: Math.max(PULT_MIN_WIDTH, Math.round(place.width as number)),
-      height: Math.max(PULT_MIN_HEIGHT, Math.round(place.height as number)),
-    }
+    return fitPlace(place as unknown as PultPlace, screen)
   } catch {
     return null
   }
 }
 
-export function savePultPlace(sessionId: string, place: PultPlace): void {
+/**
+ * Запомнить место — если это вообще место пульта.
+ *
+ * Вторая застава после `savesPlace`: тот знает про `window.opener`, а этот про
+ * экран, и записать геометрию во весь экран отсюда нельзя никак. Одна забытая
+ * проверка у зовущего стоила бы отравленной памяти на всю комнату — и жалобы
+ * «пульт открывается вкладкой», которую потом не объяснить ничем.
+ */
+export function savePultPlace(sessionId: string, place: PultPlace, screen = availScreen()): void {
+  if (fillsScreen(place, screen)) return
   try {
     localStorage.setItem(placeKey(sessionId), JSON.stringify(place))
   } catch {
     // Приватное окно, переполненное хранилище — место просто не запомнится.
+  }
+}
+
+/**
+ * Похоже ли, что браузер стоит во весь экран.
+ *
+ * Спрашивается не из любопытства: в полноэкранном Chrome и Safari на macOS
+ * всплывающее окно ложится ВКЛАДКОЙ в то же пространство, что бы ни стояло в
+ * `features`, — и это единственная часть жалобы «открывается вкладкой»,
+ * которую кодом не чинят. Раз не чинят, о ней говорят словом, и говорят ровно
+ * тогда, когда это правда.
+ *
+ * `document.fullscreenElement` знает только про полноэкранный режим, который
+ * включил скрипт; зелёную кнопку macOS он не видит. Её видно по другому:
+ * окно закрывает экран ЦЕЛИКОМ, вместе с полосой меню, — то есть `outerHeight`
+ * дорастает до `screen.height`, а не до `availHeight`.
+ */
+export function looksFullscreen(): boolean {
+  try {
+    if (document.fullscreenElement) return true
+    const { width, height, availHeight } = window.screen
+    if (!Number.isFinite(height) || height <= 0) return false
+    // Развёрнутое (не полноэкранное) окно упирается в availHeight и полосу
+    // меню не закрывает — разница между ними и есть признак.
+    if (availHeight >= height) return false
+    return window.outerHeight >= height - 2 && window.outerWidth >= width - 2
+  } catch {
+    return false
   }
 }
 

@@ -6,7 +6,8 @@
    * Оракул — полоса accent и пометка, попросил ли подсказку студент; такое
    * письмо студент видит у себя, потому что просил сам. Личное письмо
    * преподавателя — raised без полосы. Письмо всей группе — raised с полосой
-   * muted и счётом прочитавших, если он известен.
+   * muted; отправить такое из пульта больше нельзя (группировка ушла 20.09), но
+   * написанные раньше в ленте остаются: переписку задним числом не переписывают.
    *
    * Счёт прочитавших сервер не везёт (`CouncilReply` — текст, время, автор и
    * адресат), поэтому строка «прочитали N из M» здесь НЕ печатается: число,
@@ -24,11 +25,9 @@
 
   interface Props {
     letters: readonly CouncilReply[]
-    /** Сколько человек в группе — для подписи «Вы · всем N». */
-    groupSize: number
   }
 
-  let { letters, groupSize }: Props = $props()
+  let { letters }: Props = $props()
 
   let feed = $state<HTMLElement | null>(null)
   /**
@@ -52,7 +51,7 @@
       <article class="letter" class:letter-oracle={letter.to === 'oracle'} class:letter-group={letter.to === 'group'}>
         <div class="letter-meta pult-meta">
           <span class="letter-author">
-            {letter.to === 'oracle' ? tr('room.ui.1325') : letter.to === 'group' ? tr('room.ui.1329', { p0: groupSize }) : tr('room.ui.1328')}
+            {letter.to === 'oracle' ? tr('room.ui.1325') : letter.to === 'group' ? tr('room.pult.v3.letterToGroup') : tr('room.ui.1328')}
           </span>
           <span>· {pultClock(letter.at)}</span>
           {#if letter.to === 'oracle'}

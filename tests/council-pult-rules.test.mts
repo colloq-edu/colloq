@@ -218,8 +218,8 @@ test('остановленный пределом — не «ошибка зап
   assert.equal(badge.icon, '◷', 'часы вместо крестика: ошибки в коде не было')
   assert.notEqual(badge.label, attemptExecution(broken).label)
   // Отбор ловит и то и другое: чип про неудавшийся запуск, а не про имя ошибки.
-  for (const one of [slow, broken]) assert.equal(matchesFilter(one, 'error', new Set(), new Set()), true)
-  assert.equal(matchesFilter(attempt('ok', {}), 'error', new Set(), new Set()), false)
+  for (const one of [slow, broken]) assert.equal(matchesFilter(one, 'error', new Set()), true)
+  assert.equal(matchesFilter(attempt('ok', {}), 'error', new Set()), false)
 })
 
 test('«предел 30 с» и «Остановлен: дольше 30 с» говорят одними словами на обоих языках', () => {

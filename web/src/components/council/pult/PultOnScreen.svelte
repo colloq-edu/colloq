@@ -8,13 +8,11 @@
   interface Props {
     shown: CouncilShown
     now: number
-    hasNeighbour: boolean
     disabled: boolean
-    onneighbour: () => void
     onclear: () => void
   }
 
-  let { shown, now, hasNeighbour, disabled, onneighbour, onclear }: Props = $props()
+  let { shown, now, disabled, onclear }: Props = $props()
 </script>
 
 <div class="projection-banner" data-pult-onscreen>
@@ -31,9 +29,6 @@
     {/if}
   </span>
   <div class="projection-actions">
-    {#if hasNeighbour}
-      <button type="button" class="pult-button projection-neighbour" {disabled} onclick={onneighbour}>{tr('room.pult.v2.projection.neighbour')} →</button>
-    {/if}
     <button type="button" class="pult-button pult-button--danger" {disabled} onclick={onclear}>
       <span class="projection-clear-long">{tr('room.pult.v2.projection.clear')}</span>
       <span class="projection-clear-short">{tr('room.pult.v3.shortClear')}</span>
@@ -59,7 +54,7 @@
   .projection-actions { display: flex; flex-shrink: 0; gap: 6px; margin-left: auto; }
   .projection-actions :global(.pult-button) { min-height: 30px; padding: 5px 10px; font-size: 13px; }
   .projection-clear-short { display: none; }
-  @media (max-width: 900px) { .projection-banner { padding-inline: 12px 12px; } .projection-neighbour { display: none; } }
+  @media (max-width: 900px) { .projection-banner { padding-inline: 12px 12px; } }
   @media (max-width: 650px) {
     .projection-time { display: none; }
     .projection-clear-long { display: none; }

@@ -4,25 +4,27 @@
   import type { CouncilBoard } from '@shared/protocol'
   import { FILTERS, filterLabel, type PultFilter } from '@/lib/council-pult'
   /**
-   * Надпись над списком: сколько сдано, поиск и шесть чипов отбора.
+   * Надпись над списком: сколько сдано, поиск и пять чипов отбора.
    *
    * Всё это — постоянная обвязка, и цена ей — строки списка: в окне 900×650 она
    * съедала около ста пикселей, то есть полторы работы из двух с половиной
    * видимых. Поэтому здесь ровно две строки: числа с поиском и ряд чипов.
    *
-   * Чипы — все шесть, без «Ещё» в выпадающем списке. Отбор, спрятанный в
+   * Чипы — все пять, без «Ещё» в выпадающем списке. Шестым стояли «группы»; он
+   * ушёл вместе со всей группировкой (20.09), потому что отбор по признаку,
+   * которого в списке больше нет, отбирал бы по невидимому. Отбор, спрятанный в
    * `<select>`, надо СНАЧАЛА открыть, чтобы узнать, что в нём есть, а на паре
    * его открывают одной рукой, глядя в зал; на телефоне ряд листается вбок.
    */
   interface Props {
     filter: PultFilter; search: string; searching: boolean; names: boolean;
-    counts: CouncilBoard['counts']; groups: number;
+    counts: CouncilBoard['counts'];
     /** Узкое окно: поиск раскрывается по значку, чипы листаются вбок. */
     phone: boolean;
     onfilter: (filter: PultFilter) => void; onsearch: (text: string) => void;
     onclose: () => void; onopensearch: () => void
   }
-  let { filter, search, searching, names, counts, groups, phone, onfilter, onsearch, onclose, onopensearch }: Props = $props()
+  let { filter, search, searching, names, counts, phone, onfilter, onsearch, onclose, onopensearch }: Props = $props()
   let field = $state<HTMLInputElement | null>(null)
   $effect(() => { if(searching) field?.focus() })
   /** На телефоне поле поиска занимает всю строку — числа уступают ему место. */
@@ -30,7 +32,7 @@
 </script>
 <div class="pult-filters" data-searching={openField ? 'yes' : 'no'}>
   <div class="pult-filters-top">
-    <div class="pult-counts" role="group" aria-label={councilStripText(counts, groups)}><strong>{counts.submitted}</strong><span>{tr('room.pult.v2.submitted')} · {tr('room.ui.1056',{count:counts.writing})}</span></div>
+    <div class="pult-counts" role="group" aria-label={councilStripText(counts, 0)}><strong>{counts.submitted}</strong><span>{tr('room.pult.v2.submitted')} · {tr('room.ui.1056',{count:counts.writing})}</span></div>
     {#if names}
       {#if openField}
         <div class="pult-search">

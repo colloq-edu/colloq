@@ -39,9 +39,9 @@ test('queue, Oracle and navigation focus never execute shortcuts against a hidde
 
 test('error filter includes execution errors independently from teacher grade', () => {
   const one = { participantId:'one', status:'correct', correct:true, run:{state:'error'} } as any
-  assert.equal(matchesFilter(one,'error',new Set(),new Set()),true)
-  assert.equal(matchesFilter({...one,correct:false,run:{state:'ok'}},'error',new Set(),new Set()),true)
-  assert.equal(matchesFilter({...one,run:{state:'ok'}},'error',new Set(),new Set()),false)
+  assert.equal(matchesFilter(one,'error',new Set()),true)
+  assert.equal(matchesFilter({...one,correct:false,run:{state:'ok'}},'error',new Set()),true)
+  assert.equal(matchesFilter({...one,run:{state:'ok'}},'error',new Set()),false)
 })
 
 test('a ban menu or confirmation blocks every console shortcut against the work behind it', () => {

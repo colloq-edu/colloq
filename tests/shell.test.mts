@@ -15,7 +15,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { signHandoffToken } from '../server/src/auth.js'
 import { OPEN_ROOM } from '../shared/rules.js'
-import { isAdminPath, readCourseId, readPublicRoute, readRoomRoute } from '../web/src/lib/routes.js'
+import { handoffLanding, isAdminPath, readCourseId, readPublicRoute, readRoomRoute } from '../web/src/lib/routes.js'
 import { forgetIdentity, loadIdentity, loadProfile, saveIdentity } from '../web/src/lib/identity.js'
 import {
   forgetSessionInfo,
@@ -108,6 +108,51 @@ test('ключ пульта, подписанный сервером, узнаё
   // И без штатной куки — ключ тогда короче, но того же алфавита.
   const plain = signHandoffToken('kf3n8q2p', 'p-123')
   assert.equal(readRoomRoute(`/s/kf3n8q2p/t/${plain}`)?.handoffKey, plain, plain)
+})
+
+test('ключ — хвост к ЛЮБОМУ экрану, а не пятый экран', () => {
+  /*
+   * «Хочется, чтобы пульт консилиума работал по типу пульта лекции: легко
+   * скопировать ссылку, чтобы она содержала преподавательский токен, открыть её
+   * на телефоне и смотреть всё там» — 20.09.
+   *
+   * Пока `/t/<ключ>` стоял в одной альтернации с `pult` и `council/:cell`,
+   * ссылки `/s/:id/council/:cell/t/<ключ>` не существовало вовсе, и куда вести
+   * после обмена, решал не адрес, а захардкоженная строка в App.
+   */
+  const key = signHandoffToken('kf3n8q2p', 'p-123')
+  const council = readRoomRoute(`/s/kf3n8q2p/council/cell-04/t/${key}`)
+  assert.equal(council?.mode, 'council')
+  assert.equal(council?.cellId, 'cell-04')
+  assert.equal(council?.handoffKey, key)
+  const pult = readRoomRoute(`/s/kf3n8q2p/pult/t/${key}`)
+  assert.equal(pult?.mode, 'pult')
+  assert.equal(pult?.handoffKey, key)
+  const screen = readRoomRoute(`/s/kf3n8q2p/screen/t/${key}`)
+  assert.equal(screen?.mode, 'screen')
+  assert.equal(screen?.handoffKey, key)
+  // Косая черта на конце — тот же адрес.
+  assert.equal(readRoomRoute(`/s/kf3n8q2p/council/cell-04/t/${key}/`)?.cellId, 'cell-04')
+  // «council/t/<ключ>» ячейкой не притворяется: ячейки там нет.
+  assert.equal(readRoomRoute(`/s/kf3n8q2p/council/t/${key}`), null)
+})
+
+test('после обмена высаживает туда, куда вела ссылка', () => {
+  /*
+   * Адрес заменяется сразу после обмена (ключ одноразовый, а строка переживает
+   * и вкладку, и снимок экрана), и замена обязана назвать ТОТ ЖЕ экран. Иначе
+   * ссылка на пульт консилиума высаживала бы на пульт лекции, как было до
+   * 20.09, — то есть открывала бы не то, на что её давали.
+   */
+  assert.equal(
+    handoffLanding({ id: 'kf3n8q2p', mode: 'council', cellId: 'cell-04' }),
+    '/s/kf3n8q2p/council/cell-04',
+  )
+  assert.equal(handoffLanding({ id: 'kf3n8q2p', mode: 'screen', cellId: null }), '/s/kf3n8q2p/screen')
+  assert.equal(handoffLanding({ id: 'kf3n8q2p', mode: 'pult', cellId: null }), '/s/kf3n8q2p/pult')
+  // Голый `/s/:id/t/<ключ>` — ссылка пульта лекции, выданная до того, как ключ
+  // стал хвостом к экрану: она ведёт на пульт, а не в комнату.
+  assert.equal(handoffLanding({ id: 'kf3n8q2p', mode: 'room', cellId: null }), '/s/kf3n8q2p/pult')
 })
 
 test('чужие адреса комнатой не притворяются', () => {

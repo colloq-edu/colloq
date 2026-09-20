@@ -64,6 +64,7 @@
     type KernelStatus,
   } from '@shared/notebook'
   import { countLine, shownOutputLines, type CouncilCount } from '@/lib/council.svelte'
+  import { pultPath } from '@/lib/council-pult-window'
   import { clock } from '@/lib/history'
   import type { CouncilShown, SessionInfo } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
@@ -2075,8 +2076,21 @@
   -->
   <div class="fixed inset-0 z-[95] bg-canvas">
     {#await councilWindow() then Pult}
+      <!--
+        Перемонтаж на смену ячейки — намеренный.
+
+        Стоит он одну перерисовку, а снимает девять состояний окна: прочитанное,
+        черновики писем, набор «новых», придержанные сдачи, момент заморозки,
+        снимок списка, момент открытия, раскрытое и курсор. Гасить их руками —
+        девять мест, в которых однажды забудут одно, и тогда во второй ячейке
+        окажется письмо, написанное человеку из первой.
+      -->
       {#key councilCell}
-        <Pult cellId={councilCell} onexit={exitCouncil} />
+        <Pult
+          cellId={councilCell}
+          onpick={(next) => onnavigate?.(pultPath(session.session.id, next))}
+          onexit={exitCouncil}
+        />
       {/key}
     {/await}
   </div>

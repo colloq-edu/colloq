@@ -3,8 +3,14 @@
  *
  * Пульт живёт в отдельном окне (components/council/pult) и показывает список
  * людей слева, открытую работу справа. Здесь лежит то, что решает, ЧТО стоит в
- * списке и в каком порядке: сборка строк, свёртывание одинаковых ответов,
- * фильтры, непрочитанное, придержанные сдачи и ходы курсора.
+ * списке и в каком порядке: сборка строк, фильтры, непрочитанное, придержанные
+ * сдачи, ходы курсора и перечень ячеек, между которыми окно переключается.
+ *
+ * ГРУППИРОВКИ ЗДЕСЬ БОЛЬШЕ НЕТ. Одинаковые ответы сворачивались в одну строку с
+ * хвостом «ещё N с тем же ответом», у работы стояло «группа 2 из 6», а письмо
+ * уходило «всем N». 20.09 владелец попросил убрать это целиком, и убрано оно
+ * целиком: список пульта — лента сдач, и человека в ней ищут по имени, а не по
+ * тому, на кого он похож. Какие бывают ответы — вопрос стопки и оракула.
  *
  * Отдельным модулем по тем же доводам, что и council-board.ts: стопку и полосу
  * групп там считает не компонент, и эти правила тоже проверяются без браузера
@@ -29,11 +35,9 @@ import {
 import type {
   CouncilAttempt,
   CouncilBoard,
-  CouncilGroup,
   CouncilKernel,
   CouncilStatus,
 } from '@shared/protocol'
-import { groupTitle } from './council-board'
 
 export type PultPresence = 'online' | 'offline' | 'unknown'
 
@@ -203,13 +207,21 @@ export function pultShortcutAllowed(action: PultAction, view: PultView, navigati
   return view === 'work' && !navigation
 }
 
-/** С какого числа одинаковых ответов группа сворачивается в одну строку. */
+/**
+ * С какого числа одинаковых ответов счёт группы вообще о чём-то говорит.
+ *
+ * Список пульта им больше не пользуется: группировку из пульта убрали целиком
+ * (20.09). Порог остаётся ОДНИМ местом, где это число названо, — его читает
+ * стопка и оракул, которому «двое написали одно и то же» не повод собирать
+ * группу. Переписать его в двух местах по-разному дешевле всего именно тогда,
+ * когда одно из них выглядит как ничей остаток.
+ */
 export const GROUP_MIN = 3
 
-/** Чипы отбора над списком — ровно шесть, в этом порядке. */
-export type PultFilter = 'all' | 'new' | 'error' | 'unrun' | 'groups' | 'writing'
+/** Чипы отбора над списком — ровно пять, в этом порядке. */
+export type PultFilter = 'all' | 'new' | 'error' | 'unrun' | 'writing'
 
-export const FILTERS: readonly PultFilter[] = ['all', 'new', 'error', 'unrun', 'groups', 'writing']
+export const FILTERS: readonly PultFilter[] = ['all', 'new', 'error', 'unrun', 'writing']
 
 /** Слово в чипе. Одно место, где фильтр становится словом. */
 export function filterLabel(filter: PultFilter): string {
@@ -220,8 +232,6 @@ export function filterLabel(filter: PultFilter): string {
       return tr('room.ui.1306')
     case 'unrun':
       return tr('room.ui.1307')
-    case 'groups':
-      return tr('room.ui.1308')
     case 'writing':
       return tr('room.ui.1309')
     default:
@@ -230,9 +240,15 @@ export function filterLabel(filter: PultFilter): string {
 }
 
 /**
- * Строка списка. Четыре вида, и только первый выбирается курсором: шапка
- * группы, свёрнутый хвост и заголовок секции — это не люди, а места в ленте, и
- * Enter на них означал бы «показать классу» неизвестно чью работу.
+ * Строка списка. Два вида, и только первый выбирается курсором: заголовок
+ * секции — это не человек, а место в ленте, и Enter на нём означал бы
+ * «показать классу» неизвестно чью работу.
+ *
+ * Видов было четыре: сюда же входили шапка группы и свёрнутый хвост «ещё N с
+ * тем же ответом». Группировки в пульте больше нет — вся она ушла 20.09 по
+ * одному слову владельца, и ушла целиком, а не спряталась за настройку: список
+ * пульта — ЛЕНТА СДАЧ, и человек, сдавший минуту назад, обязан стоять в ней
+ * сам по себе, а не под чужим хвостом.
  */
 export type PultRow =
   | {
@@ -241,46 +257,26 @@ export type PultRow =
       id: string
       attempt: CouncilAttempt
       unread: boolean
-      /** Строка внутри раскрытой группы: отступ слева и подпись «та же строка». */
-      inGroup: boolean
       /** Номер варианта при выключенных именах; с единицы. */
       variant: number
     }
-  | { kind: 'collapsed'; id: string; groupKey: string; rest: number; faces: CouncilAttempt[] }
   /**
    * Заголовок половины ленты: «Сдали · N» и «Пишут · N».
    *
    * Порядок в ленте и так ставит сданные первыми (bySubmissionDesc), но граница
    * между «уже сдал» и «ещё пишет» ничем не была отмечена, и в окне, где видно
    * две строки с половиной, её не существовало вовсе: список выглядел как один
-   * ряд людей без отличий. Курсору строка не даётся — как шапке группы и хвосту.
+   * ряд людей без отличий. Курсору строка не даётся.
    */
   | { kind: 'section'; id: string; section: 'submitted' | 'writing'; count: number }
-  | {
-      kind: 'header'
-      id: string
-      groupKey: string
-      index: number
-      count: number
-      /**
-       * Как группа называется: имя от оракула, а без него — первая строка кода
-       * (council-board.ts · groupTitle). «Группа 2 · 87 одинаковых» не говорит,
-       * ЧТО написали эти восемьдесят семь; название говорит.
-       */
-      label: string
-    }
 
 export interface PultListInput {
   attempts: readonly CouncilAttempt[]
-  /** Группы — те же, что у стопки (council-board.ts · groupAttempts). */
-  groups: readonly CouncilGroup[]
   filter: PultFilter
   /** Поиск по имени; при выключенных именах зовущий передаёт пустую строку. */
   search: string
   /** Кто сдал после того, как в список смотрели в последний раз. */
   unread: ReadonlySet<string>
-  /** Раскрытые группы — по ключу группы. */
-  expanded: ReadonlySet<string>
   /** Придержанные сдачи: они есть в стопке, но в список ещё не впущены. */
   held: ReadonlySet<string>
 }
@@ -324,7 +320,6 @@ export function matchesFilter(
   attempt: CouncilAttempt,
   filter: PultFilter,
   unread: ReadonlySet<string>,
-  grouped: ReadonlySet<string>,
 ): boolean {
   switch (filter) {
     case 'new':
@@ -335,8 +330,6 @@ export function matchesFilter(
       return attempt.run?.state === 'error' || timedOutLimit(attempt) !== null || attempt.correct === false
     case 'unrun':
       return attempt.run === null
-    case 'groups':
-      return grouped.has(attempt.groupKey)
     case 'writing':
       return !isSubmitted(attempt)
     default:
@@ -347,79 +340,34 @@ export function matchesFilter(
 /**
  * Строки списка — то, что рисует левая колонка.
  *
- * Правило свёртывания: группа от трёх одинаковых показывает ОДНОГО, самого
- * свежего, а под ним стоит строка «ещё N с тем же ответом». Раскрыли — на её
- * месте шапка группы и остальные с отступом. Свёрнутые члены из ленты уходят
- * целиком: иначе триста одинаковых строк — это и есть сегодняшняя жалоба.
- *
- * Фильтр и поиск свёртывание не отменяют, но отменяют его последствия: когда
- * из группы под отбор попал не представитель, а кто-то один, он стоит в ленте
- * сам по себе, без шапки и без хвоста, — иначе «с ошибкой» показывал бы
- * заголовок группы, в которой под отбор не попал никто.
+ * Одна строка на человека, сверху свежие. Ни свёртывания, ни шапок групп:
+ * список пульта — лента сдач, и единственный вопрос, на который она отвечает,
+ * — «кто только что сдал». Группировка одинаковых ответов жила здесь до 20.09
+ * и убрана по прямой просьбе владельца: она прятала людей под чужим хвостом
+ * («ещё N с тем же ответом»), а найти в списке конкретного человека — ровно то,
+ * ради чего в него смотрят. Какие бывают ответы — вопрос стопки и оракула, и
+ * задают его в другом месте.
  */
 export function listRows(input: PultListInput): PultRow[] {
-  const { attempts, groups, filter, search, unread, expanded, held } = input
+  const { attempts, filter, search, unread, held } = input
   const variants = variantNumbers(attempts)
-  const big = new Map(groups.filter((group) => group.count >= GROUP_MIN).map((group) => [group.key, group]))
-  const grouped = new Set(big.keys())
-  const index = new Map(groups.map((group, at) => [group.key, at + 1]))
   const needle = search.trim().toLocaleLowerCase()
 
   const visible = attempts.filter(
     (attempt) =>
       !held.has(attempt.participantId) &&
-      matchesFilter(attempt, filter, unread, grouped) &&
+      matchesFilter(attempt, filter, unread) &&
       (needle === '' || attempt.name.toLocaleLowerCase().includes(needle)),
   )
   const ordered = [...visible].sort(bySubmissionDesc)
 
-  // Кто стоит за группу: первый её член в ленте, то есть самый свежий из
-  // доехавших до отбора. Считается по УЖЕ отобранным — представитель, не
-  // прошедший фильтр, группу собой не заслоняет.
-  const head = new Map<string, string>()
-  for (const attempt of ordered) {
-    if (!isSubmitted(attempt) || !big.has(attempt.groupKey)) continue
-    if (!head.has(attempt.groupKey)) head.set(attempt.groupKey, attempt.participantId)
-  }
-
-  const rows: PultRow[] = []
-  const row = (attempt: CouncilAttempt, inGroup: boolean): PultRow => ({
+  const rows: PultRow[] = ordered.map((attempt) => ({
     kind: 'attempt',
     id: attempt.participantId,
     attempt,
     unread: unread.has(attempt.participantId),
-    inGroup,
     variant: variants.get(attempt.participantId) ?? 0,
-  })
-
-  for (const attempt of ordered) {
-    const key = attempt.groupKey
-    const group = isSubmitted(attempt) ? big.get(key) : undefined
-    if (!group || head.get(key) !== attempt.participantId) {
-      // Член свёрнутой группы — он уже под её хвостом; раскрытую собирает шапка.
-      if (group) continue
-      rows.push(row(attempt, false))
-      continue
-    }
-    rows.push(row(attempt, false))
-    const rest = ordered.filter(
-      (other) => other.groupKey === key && isSubmitted(other) && other.participantId !== attempt.participantId,
-    )
-    if (rest.length === 0) continue
-    if (!expanded.has(key)) {
-      rows.push({ kind: 'collapsed', id: `group:${key}`, groupKey: key, rest: rest.length, faces: rest.slice(0, 3) })
-      continue
-    }
-    rows.push({
-      kind: 'header',
-      id: `head:${key}`,
-      groupKey: key,
-      index: index.get(key) ?? 0,
-      count: group.count,
-      label: groupTitle(group),
-    })
-    for (const member of rest) rows.push(row(member, true))
-  }
+  }))
   return withSections(rows, ordered, filter === 'all' && needle === '')
 }
 
@@ -431,9 +379,9 @@ export function listRows(input: PultListInput): PultRow[] {
  * поверх первого читается как ошибка счёта. Поиск — то же самое: в нём стоят
  * найденные, а не «все сдавшие».
  *
- * Счёт — по людям, а не по строкам: свёрнутая группа прячет своих под хвостом,
- * и «Сдали · 3» при восьми сдавших было бы враньём ровно там, где на число
- * смотрят, чтобы понять, ждать ли ещё кого-то.
+ * Счёт — по людям, а не по строкам: разойтись им теперь негде, но считать по
+ * `ordered` дешевле и честнее, чем по собранным строкам, среди которых стоят
+ * сами заголовки.
  */
 function withSections(rows: PultRow[], ordered: readonly CouncilAttempt[], on: boolean): PultRow[] {
   if (!on) return rows
@@ -457,9 +405,89 @@ function withSections(rows: PultRow[], ordered: readonly CouncilAttempt[], on: b
   return out
 }
 
-/** Только по людям: шапка группы, свёрнутый хвост и заголовок секции курсору не даются. */
+/** Только по людям: заголовок секции курсору не даётся. */
 export function selectable(rows: readonly PultRow[]): string[] {
   return rows.filter((row) => row.kind === 'attempt').map((row) => row.id)
+}
+
+/* --------------------------------------------------- ячейки консилиума */
+
+/**
+ * Ячейка в списке выбора — всё, что о ней говорит строка меню.
+ *
+ * Пульт — ОДНО окно на комнату, и ячейку в нём выбирают, а не открывают
+ * вторым окном: «будет круто иметь один общий пульт, в котором можно
+ * перемещаться между ячейками». Номер ячейки в шапке стал дверью в этот
+ * список, и список обязан отвечать на единственный вопрос, ради которого его
+ * открывают: куда переключиться прямо сейчас.
+ */
+export interface PultCellRow {
+  cellId: string
+  /** Номер ячейки в своей тетради, с единицы; `null` — ячейки в документе нет. */
+  index: number | null
+  /** Имя тетради. Пустое, пока все ячейки из одной: подпись там ничего не решает. */
+  book: string
+  submitted: number
+  total: number
+  /** В ядре прямо сейчас считается чья-то попытка этой ячейки. */
+  running: boolean
+  /** Чья-то работа по этой ячейке стоит на проекторе. */
+  onScreen: boolean
+  /**
+   * Консилиум закрыт, а попытки остались.
+   *
+   * Такие ячейки из списка НЕ УХОДЯТ: сданное смотрят до конца занятия, и
+   * ячейка, снятая с консилиума под открытым на ней пультом, обязана остаться
+   * на месте — выкинуть человека из того, на что он смотрит, хуже, чем
+   * признаться словом, что менять здесь больше нечего.
+   */
+  review: boolean
+}
+
+export interface PultCellFacts {
+  cellId: string
+  index: number | null
+  book: string
+  lock: CellLock
+  /** Числа стопки — запасной счёт, когда комнатный ещё не приехал. */
+  counts: CouncilBoard['counts']
+  /** «Сдали N из M» по всей комнате — те же числа, что под ячейкой в тетради. */
+  room: { submitted: number; total: number } | null
+  attempts: readonly CouncilAttempt[]
+  onScreen: boolean
+}
+
+/**
+ * Список ячеек для меню: порядок, числа и пометки.
+ *
+ * Порядок — по тетради и номеру, а не по приходу кадров: меню открывают,
+ * чтобы найти известную ячейку, и «та, чья стопка приехала первой» — не тот
+ * порядок, в котором её ищут. Номера уникальны ВНУТРИ тетради, поэтому имя
+ * тетради появляется ровно тогда, когда ячейки из разных: иначе «ячейка 03»
+ * стояла бы в списке дважды и ничем не различалась.
+ */
+export function pultCells(facts: readonly PultCellFacts[]): PultCellRow[] {
+  const books = new Set(facts.map((fact) => fact.book))
+  const many = books.size > 1
+  return [...facts]
+    .sort(
+      (a, b) =>
+        a.book.localeCompare(b.book) ||
+        // Ячейка, которой в документе нет, уходит в хвост: у неё нет места в
+        // тетради, и вставлять её по нулю значило бы ставить первой.
+        (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER) ||
+        a.cellId.localeCompare(b.cellId),
+    )
+    .map((fact) => ({
+      cellId: fact.cellId,
+      index: fact.index,
+      book: many ? fact.book : '',
+      submitted: fact.room?.submitted ?? fact.counts.submitted,
+      total: fact.room?.total ?? fact.counts.attempts,
+      running: fact.attempts.some((attempt) => attempt.run?.state === 'running'),
+      onScreen: fact.onScreen,
+      review: fact.lock !== 'council',
+    }))
 }
 
 /**
@@ -477,30 +505,6 @@ export function moveCursor(rows: readonly PultRow[], cursor: string | null, delt
   const next = at + delta
   if (next < 0 || next >= ids.length) return ids[at]
   return ids[next]
-}
-
-/**
- * Сосед ВНУТРИ одной группы — стрелки ← →.
- *
- * Из группы они не выводят: у них одна работа — «покажите другой вариант того
- * же ответа», и выход в соседнюю группу означал бы, что стрелка иногда меняет
- * тему разговора, а иногда нет. Вне группы соседа нет вовсе.
- */
-export function neighbourInGroup(
-  attempts: readonly CouncilAttempt[],
-  current: string | null,
-  delta: 1 | -1,
-): string | null {
-  if (current === null) return null
-  const at = attempts.find((attempt) => attempt.participantId === current)
-  if (!at || !isSubmitted(at)) return null
-  const mates = attempts
-    .filter((attempt) => attempt.groupKey === at.groupKey && isSubmitted(attempt))
-    .sort(bySubmissionDesc)
-  if (mates.length < 2) return null
-  const index = mates.findIndex((attempt) => attempt.participantId === current)
-  const next = (index + delta + mates.length) % mates.length
-  return mates[next].participantId
 }
 
 /* ------------------------------------------------------- непрочитанное */
@@ -571,15 +575,12 @@ export type PultFocus = 'list' | 'search' | 'reply' | 'actions'
 export type PultAction =
   | 'next'
   | 'prev'
-  | 'toggleGroup'
   | 'search'
   | 'show'
   | 'run'
   | 'correct'
   | 'wrong'
   | 'clearShown'
-  | 'neighbourNext'
-  | 'neighbourPrev'
   | 'send'
   | 'escape'
   | 'help'
@@ -629,8 +630,6 @@ export function pultKeyAction(event: PultKey, focus: PultFocus): PultAction {
     case 'k':
     case 'л':
       return 'prev'
-    case ' ':
-      return 'toggleGroup'
     case 'Enter':
       return focus === 'actions' ? null : 'show'
     case 'r':
@@ -650,10 +649,6 @@ export function pultKeyAction(event: PultKey, focus: PultFocus): PultAction {
     case 'п':
     case 'П':
       return 'rules'
-    case 'ArrowRight':
-      return 'neighbourNext'
-    case 'ArrowLeft':
-      return 'neighbourPrev'
     case '?':
       return 'help'
     default:

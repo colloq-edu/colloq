@@ -18,29 +18,40 @@
    * 900×650 постоянная обвязка съедала 290 px из 650, то есть почти половину
    * окна под то, что не меняется за пару. Бюджет шапки теперь 56 px.
    */
-  import type { PultRule, RulePart } from '@/lib/council-pult'
+  import type { PultCellRow, PultRule, RulePart } from '@/lib/council-pult'
+  import ConsoleLink from '@/components/lecture/ConsoleLink.svelte'
+  import PultCells from './PultCells.svelte'
   interface Props {
-    cellIndex: number | null
+    /** Ячейка, на которой пульт стоит сейчас. */
+    cellId: string
+    /** Все ячейки консилиума комнаты — список выбора за номером ячейки. */
+    cells: readonly PultCellRow[]
     title: string
     /** Регламент словами — council-pult.ts · rulesSentence. */
     rules: RulePart[]
     /** На каком правиле открыт лист: его значение подчёркнуто сплошной. */
     openRule: PultRule | null
     onrules: (rule: PultRule, from: HTMLElement) => void
+    onpick: (cellId: string) => void
     onexit: () => void
   }
-  let { cellIndex, title, rules, openRule, onrules, onexit }: Props = $props()
-  const cell = $derived(cellIndex === null ? '' : tr('room.ui.1272', { p0: String(cellIndex).padStart(2, '0') }))
-  const where = $derived([cell, title].filter(Boolean).join(' · '))
+  let { cellId, cells, title, rules, openRule, onrules, onpick, onexit }: Props = $props()
+  const here = $derived(cells.find((cell) => cell.cellId === cellId) ?? null)
 </script>
 <header class="pult-header">
   <h1>{tr('room.pult.v2.title')}</h1>
   <!-- Ячейка и комната — подпись к заголовку, а не вторая строка: на телефоне
-       от неё остаётся номер ячейки, имя комнаты там ничего не решает. -->
-  <p class="pult-context" title={where}>
-    {#if cell}<span class="pult-context-cell">{cell}</span>{/if}
-    {#if title}<span class="pult-context-room">{cell ? ' · ' : ''}{title}</span>{/if}
-  </p>
+       от неё остаётся номер ячейки, имя комнаты там ничего не решает. Номер —
+       дверь в список ячеек: пульт один на комнату, и вторую ячейку смотрят в
+       нём же, а не вторым окном. -->
+  <!-- `div`, а не `p`: внутри стоит меню ячеек, а `div` внутри абзаца — это
+       разметка, которую разбиратель HTML чинит по-своему. -->
+  <div class="pult-context">
+    <PultCells {cells} current={cellId} {onpick} />
+    <!-- Консилиум закрыт, попытки остались: менять нечего, смотреть можно. -->
+    {#if here?.review}<span class="pult-context-review">{tr('room.pult.v3.cells.review')}</span>{/if}
+    {#if title}<span class="pult-context-room"> · {title}</span>{/if}
+  </div>
   <div class="pult-rules">
     <button
       type="button"
@@ -65,6 +76,13 @@
       {/each}
     </p>
   </div>
+  <!--
+    Ссылка на этот пульт с преподавательским входом — тем же поповером, что у
+    пульта лекции (lecture/ConsoleLink.svelte), и не копией его: ключ, отказы,
+    «Поделиться» и слова про один раз в десять минут обязаны быть одними на оба
+    пульта. Значок с подписью, а не длинная кнопка: бюджет шапки — 56 px.
+  -->
+  <ConsoleLink class="pult-button pult-link" {cellId} />
   <button type="button" class="pult-button pult-exit" aria-label={tr('room.pult.v3.exit')} onclick={onexit}>
     <span class="pult-exit-word">{tr('room.ui.1271')}</span> <span aria-hidden="true">↗</span>
   </button>
@@ -72,7 +90,9 @@
 <style>
   .pult-header { display:flex; align-items:center; gap:10px; flex-shrink:0; min-height:48px; padding:6px var(--pult-pad); border-bottom:1px solid rgb(var(--line)); }
   h1 { flex-shrink:0; font-size:18px; line-height:24px; font-weight:700; margin:0; }
-  .pult-context { min-width:0; flex:1; margin:0; color:rgb(var(--muted)); font-size:13px; line-height:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pult-context { display:flex; align-items:baseline; gap:6px; min-width:0; flex:1; margin:0; color:rgb(var(--muted)); font-size:13px; line-height:18px; white-space:nowrap; overflow:hidden; }
+  .pult-context-review { flex-shrink:0; padding:0 5px; border:1px solid rgb(var(--line)); color:rgb(var(--muted)); font-size:11px; line-height:16px; }
+  .pult-context-room { min-width:0; overflow:hidden; text-overflow:ellipsis; }
   .pult-rules { display:flex; align-items:baseline; gap:8px; min-width:0; flex-shrink:1; }
   .pult-rules-label { flex-shrink:0; color:rgb(var(--faint)); font-size:11px; line-height:14px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; cursor:pointer; }
   /* Одна строка и только одна: регламент, переехавший во вторую, перестаёт быть

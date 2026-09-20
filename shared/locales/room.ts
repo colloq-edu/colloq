@@ -220,9 +220,7 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.oracle.ask.answerMeta": {"ru": "по состоянию на {time} · сдали {submitted} · пишут {drafts}", "en": "as of {time} · {submitted} submitted · {drafts} writing"},
   "room.pult.v2.oracle.ask.openWork": {"ru": "Открыть работу: {who}", "en": "Open this work: {who}"},
   "room.pult.v2.oracle.ask.empty": {"ru": "Спросите оракула о классе", "en": "Ask the Oracle about the class"},
-  "room.pult.v2.oracle.ask.emptyHint": {"ru": "Он видит все листы: и сданные работы, и черновики с запусками. Спрашивать можно, не дожидаясь сдач.", "en": "It sees every sheet: submitted work as well as drafts and their runs. You need not wait for submissions."},
-  "room.pult.v2.oracle.ask.noSheets": {"ru": "В этой ячейке ещё нет ни одного листа", "en": "No sheets in this cell yet"},
-  "room.pult.v2.oracle.ask.noSheetsHint": {"ru": "Как только кто-нибудь начнёт писать, оракула можно будет спросить о классе.", "en": "Once somebody starts writing, you can ask the Oracle about the class."},
+  "room.pult.v2.oracle.ask.emptyHint": {"ru": "Он видит задание и все листы: сданные работы, черновики и запуски. Спрашивать можно всегда — хоть до того, как кто-нибудь написал первую строку.", "en": "It sees the task and every sheet: submitted work, drafts and runs. You can ask at any time — even before anybody has written a line."},
   "room.pult.v2.oracle.ask.history": {"ru": "Вопросы о классе", "en": "Questions about the class"},
   "room.pult.v2.oracle.ask.privacy": {"ru": "Видите только вы · модель не видит имён", "en": "Only you see this · the model never sees names"},
 

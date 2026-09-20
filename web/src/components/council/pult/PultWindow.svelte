@@ -9,7 +9,6 @@
     allBooks,
     allCellArrays,
     cellId as idOf,
-    findCell,
     rootOfCell,
     type CouncilSettings,
   } from '@shared/notebook'
@@ -18,14 +17,13 @@
   import { api } from '@/lib/api'
   import { askToBan, banTargetOf } from '@/lib/bans'
   import { OFFLINE_REASON } from '@/lib/controls'
-  import { groupAttempts } from '@/lib/council-board'
   import {
     heldArrivals,
     holdsArrivals,
     kernelView,
     listRows,
     moveCursor,
-    neighbourInGroup,
+    pultCells,
     pultKeyAction,
     pultShortcutAllowed,
     type PultView,
@@ -35,11 +33,12 @@
     selectable,
     unreadIds,
     variantNumbers,
+    type PultCellRow,
     type PultFilter,
     type PultFocus,
     type PultRule,
   } from '@/lib/council-pult'
-  import { announcePult, savePultPlace } from '@/lib/council-pult-window'
+  import { announcePult, availScreen, savePultPlace, savesPlace } from '@/lib/council-pult-window'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn, spell } from '@/lib/utils'
   import PultFilters from './PultFilters.svelte'
@@ -55,11 +54,20 @@
 
   interface Props {
     cellId: string
+    /**
+     * Перейти на другую ячейку консилиума — В ЭТОМ ЖЕ ОКНЕ.
+     *
+     * Адресом, а не присваиванием: окно одно на комнату (`pultWindowName`), и
+     * его адрес обязан называть ту ячейку, которую видно, — иначе ссылка «на
+     * телефон» уведёт в другую, а перезагрузка окна вернёт не туда, где были.
+     * Заодно «назад» возвращает к прошлой ячейке, ничего для этого не зная.
+     */
+    onpick: (cellId: string) => void
     /** Возврат в тетрадь: закрыть отдельное окно или перейти по адресу комнаты. */
     onexit: () => void
   }
 
-  let { cellId, onexit }: Props = $props()
+  let { cellId, onpick, onexit }: Props = $props()
 
   const session = getSessionState()
   const host = $derived(session.me.role === 'host')
@@ -84,16 +92,37 @@
    * События «окно передвинули» у браузера нет; `resize` ловит только размер, а
    * переезд на второй монитор — ничего. Раз в секунду — достаточно точно для
    * того, чтобы второй раз открыться туда же, и дёшево: четыре чтения.
+   *
+   * НО ТОЛЬКО ИЗ СВОЕГО ОКНА. Пульт открывают не только кнопкой: ссылку на него
+   * вставляют в адресную строку, шлют себе на телефон, оставляют во вкладке. В
+   * таком пульте `outerWidth/Height` — это размер ЧУЖОГО окна целиком, и
+   * записанный однажды, он просил у следующего `window.open` попап во весь
+   * экран из точки 0,0 — то есть окно, не отличимое от вкладки. Один такой
+   * заход отравлял память навсегда: каждое следующее открытие её подтверждало.
+   *
+   * Признак своего окна — `window.opener`: его ставит тот же `window.open`,
+   * который просил это место. Второй заслон (место во весь экран) стоит внутри
+   * `savePultPlace` — на случай, когда окно наше, а развернули его руками.
    */
+  const ownWindow = (): boolean => {
+    try {
+      return Boolean(window.opener)
+    } catch {
+      // Opener с другого происхождения читать нельзя — но он есть.
+      return true
+    }
+  }
   $effect(() => {
     const id = session.session.id
+    if (!ownWindow()) return
     const timer = setInterval(() => {
-      savePultPlace(id, {
+      const place = {
         left: window.screenX,
         top: window.screenY,
         width: window.outerWidth,
         height: window.outerHeight,
-      })
+      }
+      if (savesPlace(place, availScreen(), ownWindow())) savePultPlace(id, place)
     }, 1000)
     return () => clearInterval(timer)
   })
@@ -164,8 +193,6 @@
   const settings = $derived<CouncilSettings>(board?.settings ?? DEFAULT_COUNCIL)
   const names = $derived(settings.namesOnProjector)
   const attempts = $derived(board?.attempts ?? [])
-  const groups = $derived(groupAttempts(attempts, board?.oracle?.groupLabels ?? {}))
-  const sizes = $derived(new Map(groups.map((group) => [group.key, group.count])))
   const variants = $derived(variantNumbers(attempts))
   // Стопка отвечает про ЭТУ ячейку, кадр ядра — про очередь всей тетради: без
   // второго пульт писал «здесь ничего не выполняется» рядом с «в очереди: 12».
@@ -174,19 +201,72 @@
   const offline = $derived(!session.connected)
   const disabled = $derived(offline || !host)
 
-  /** Номер ячейки обновляется при перестановке и удалении ячеек. */
-  let cellIndex = $state<number | null>(null)
+  /**
+   * Где ячейки стоят в документе: номер и тетрадь, по id.
+   *
+   * Номер живой — ячейки переставляют и удаляют прямо во время консилиума, — а
+   * тетрадь нужна списку выбора: номера уникальны ВНУТРИ тетради, и две «ячейки
+   * 03» из разных файлов иначе не различить.
+   *
+   * Обход коалесцируется: `afterTransaction` приходит на каждое нажатие клавиши
+   * в комнате, а обойти все тетради — это все их ячейки. Задержка в треть
+   * секунды в номере ячейки не видна никому, а тридцати обходов в секунду на
+   * полном классе не случается.
+   */
+  let places = $state.raw<ReadonlyMap<string, { index: number; book: string }>>(new Map())
   $effect(() => {
     const doc = session.doc
-    const id = cellId
-    const refresh = (): void => {
-      const found = findCell(doc, id)
-      cellIndex = found ? found.index + 1 : null
+    const build = (): void => {
+      const next = new Map<string, { index: number; book: string }>()
+      const books = allBooks(doc)
+      const lists =
+        books.length > 0
+          ? books.map(({ book, cells }) => ({ name: baseOf(book.path), cells }))
+          : allCellArrays(doc).map((cells) => ({ name: '', cells }))
+      for (const { name, cells } of lists) {
+        const all = cells.toArray()
+        for (let at = 0; at < all.length; at += 1) next.set(idOf(all[at]), { index: at + 1, book: name })
+      }
+      places = next
     }
-    refresh()
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const refresh = (): void => {
+      if (timer !== null) return
+      timer = setTimeout(() => {
+        timer = null
+        build()
+      }, 300)
+    }
+    build()
     doc.on('afterTransaction', refresh)
-    return () => doc.off('afterTransaction', refresh)
+    return () => {
+      if (timer !== null) clearTimeout(timer)
+      doc.off('afterTransaction', refresh)
+    }
   })
+  /**
+   * Ячейки консилиума комнаты — список за номером в шапке.
+   *
+   * Источник — стопки (`session.council.boards`): сервер везёт преподавателю
+   * стопку по КАЖДОЙ ячейке, где консилиум идёт или где остались попытки
+   * (control.ts · councilWelcome), и всё, что нужно строке меню, уже здесь.
+   * Ячейка, с которой консилиум сняли, из списка не уходит — у неё пометка
+   * «просмотр»: сданное смотрят до конца занятия.
+   */
+  const cells = $derived<PultCellRow[]>(
+    pultCells(
+      Object.entries(session.council.boards).map(([id, one]) => ({
+        cellId: id,
+        index: places.get(id)?.index ?? null,
+        book: places.get(id)?.book ?? '',
+        lock: one.lock,
+        counts: one.counts,
+        room: session.council.counts[id] ?? null,
+        attempts: one.attempts,
+        onScreen: (session.council.shown[id] ?? null) !== null,
+      })),
+    ),
+  )
 
   /* -------------------------------------------------- состояние экрана */
 
@@ -196,7 +276,6 @@
   let cursor = $state<string | null>(null)
   /** Пришли с клавиатуры: только тогда у строки кольцо фокуса. */
   let keyboard = $state(false)
-  let expanded = $state.raw<ReadonlySet<string>>(new Set())
   /** Чьи строки уже открывали: точка непрочитанного гаснет и не возвращается. */
   let seen = $state.raw<ReadonlySet<string>>(new Set())
   let tab = $state<PultView>('work')
@@ -228,7 +307,7 @@
   /** Высота шапки: от её низа падает лист. Меняется от ширины окна и длины имени. */
   let headHeight = $state(0)
   let focus = $state<PultFocus>('list')
-  type ReplyDraft = { text: string; toGroup: boolean; fromOracle: boolean; groupKey: string }
+  type ReplyDraft = { text: string; fromOracle: boolean }
   // A draft belongs to its recipient, even when filters or live arrivals move the cursor.
   let oracleError = $state('')
   let replyDrafts = $state<Record<string, ReplyDraft>>({})
@@ -237,10 +316,7 @@
 
   function updateReply(patch: Partial<ReplyDraft>): void {
     if (!cursor || !current) return
-    replyDrafts[cursor] = {
-      text: reply, toGroup: replyToGroup, fromOracle: replyFromOracle,
-      groupKey: current.groupKey, ...patch,
-    }
+    replyDrafts[cursor] = { text: reply, fromOracle: replyFromOracle, ...patch }
   }
   /** Момент открытия пульта: всё, что сдано раньше, непрочитанным не считается. */
   const openedAt = Date.now()
@@ -286,11 +362,9 @@
   const rows = $derived(
     listRows({
       attempts,
-      groups,
       filter,
       search: names ? search : '',
       unread: filter === 'new' ? newPool : unread,
-      expanded,
       held,
     }),
   )
@@ -298,25 +372,7 @@
   const current = $derived<CouncilAttempt | null>(
     attempts.find((attempt) => attempt.participantId === cursor) ?? null,
   )
-  const replyToGroup = $derived(Boolean(cursor && replyDrafts[cursor]?.toGroup &&
-    replyDrafts[cursor]?.groupKey === current?.groupKey))
-  const group = $derived(current ? groups.find((one) => one.key === current.groupKey) : undefined)
-  const groupIndex = $derived(
-    current && current.submittedAt !== null
-      ? groups.findIndex((one) => one.key === current.groupKey) + 1
-      : 0,
-  )
   const place = $derived(cursor === null ? 0 : ids.indexOf(cursor) + 1)
-  /**
-   * Черновик письма этой группе — от оракула (CouncilOracle.drafts).
-   *
-   * Он есть не всегда и только у сданных: у черновика автора группы нет.
-   */
-  const groupDraft = $derived(
-    group && current?.submittedAt !== null ? (board?.oracle?.drafts[group.key] ?? '') : '',
-  )
-  const neighbour = $derived(neighbourInGroup(attempts, cursor, 1))
-  const shownNeighbour = $derived(neighbourInGroup(attempts, shown?.participantId ?? null, 1))
 
   /**
    * Курсор всегда стоит на живой строке.
@@ -511,30 +567,18 @@
     )
   }
 
+  /**
+   * Письмо — АВТОРУ ОТКРЫТОЙ РАБОТЫ, и адресата у него больше нет другого.
+   *
+   * Рядом стояла кнопка «Всем N»: то же письмо уходило всей группе одинаковых
+   * ответов, и к ней прилагался черновик от оракула. Группировка ушла из пульта
+   * целиком (20.09), а с ней и письмо группе: замены ему не придумывали.
+   */
   function sendReply(): void {
     const text = reply.trim()
     if (disabled || !text || text.length > 3000 || !current) return
-    session.council.reply(
-      cellId,
-      replyToGroup && current.submittedAt !== null
-        ? { groupKey: current.groupKey }
-        : { participantId: current.participantId },
-      text,
-    )
-    updateReply({ text: '', fromOracle: false, toGroup: false })
-  }
-
-  /**
-   * «Всем N» — и черновик оракула, если он для этой группы есть.
-   *
-   * Черновик не подтверждают кнопкой «отправить как есть»: письмо уйдёт от
-   * имени преподавателя, поэтому текст встаёт В ПОЛЕ и правится. Своё
-   * написанное он не затирает никогда — только пустое поле.
-   */
-  function toggleReplyToGroup(): void {
-    const toGroup = !replyToGroup
-    updateReply({ toGroup, ...(toGroup && reply.trim() === '' && groupDraft
-      ? { text: groupDraft, fromOracle: true } : {}) })
+    session.council.reply(cellId, { participantId: current.participantId }, text)
+    updateReply({ text: '', fromOracle: false })
   }
 
   /**
@@ -563,13 +607,6 @@
     } catch (error) {
       oracleError = error instanceof Error ? error.message : tr('room.pult.oracleError')
     }
-  }
-
-  function toggleGroup(groupKey: string): void {
-    const next = new Set(expanded)
-    if (next.has(groupKey)) next.delete(groupKey)
-    else next.add(groupKey)
-    expanded = next
   }
 
   /* ---------------------------------------------------------- клавиши */
@@ -634,11 +671,6 @@
         tab = 'work'
         void scrollToCursor(at !== 'search')
         return
-      case 'toggleGroup': {
-        const key = current?.groupKey
-        if (key && (sizes.get(key) ?? 0) >= 3) toggleGroup(key)
-        return
-      }
       case 'search':
         tab = 'work'
         searching = true
@@ -659,16 +691,6 @@
       case 'clearShown':
         clearShown()
         return
-      case 'neighbourNext':
-      case 'neighbourPrev': {
-        const to = neighbourInGroup(attempts, cursor, action === 'neighbourNext' ? 1 : -1)
-        if (to) {
-          cursor = to
-          keyboard = true
-          void scrollToCursor(at !== 'search')
-        }
-        return
-      }
       case 'help':
         helpOpen = !helpOpen
         return
@@ -718,11 +740,13 @@
   <div class="pult-root relative flex h-full min-h-0 w-full flex-col bg-canvas text-ink" data-council-pult={cellId} data-pult-pane={pane}>
     <div class="pult-head" bind:clientHeight={headHeight}>
       <PultHeader
-        {cellIndex}
+        {cellId}
+        {cells}
         title={session.session.name}
         rules={sentence}
         openRule={rulesOpen ? rulesRule : null}
         onrules={openRules}
+        {onpick}
         {onexit}
       />
     </div>
@@ -747,7 +771,7 @@
     </nav>
 
     {#if shown}
-      <PultOnScreen {shown} {now} hasNeighbour={shownNeighbour !== null} {disabled} onneighbour={() => show(shownNeighbour)} onclear={clearShown} />
+      <PultOnScreen {shown} {now} {disabled} onclear={clearShown} />
     {/if}
 
     <section class="pult-work-layout" hidden={tab !== 'work'} aria-label={tr('room.pult.v2.workTab')}>
@@ -759,7 +783,6 @@
       {names}
       {counts}
       {phone}
-      groups={groups.length}
       onfilter={(next) => (filter = next)}
       onsearch={(text) => (search = text)}
       onclose={() => { searching = false; search = '' }}
@@ -774,14 +797,12 @@
         keyboard={keyboard && focus !== 'reply'}
         {names}
         shown={shown?.participantId ?? null}
-        {sizes}
         {now}
         onscroll={(at) => (scrolled = at > 0)}
         held={held.size}
         decisionsOff={disabled || settings.studentRun !== 'request'}
         onopen={open}
         onlet={letThrough}
-        ontoggle={toggleGroup}
         onrelease={release}
       />
       </aside>
@@ -808,9 +829,6 @@
             attempt={current}
             phone={phone && phonePane === 'work'}
             presence={current ? pultPresence(presenceKnown, session.peersById, current.participantId) : 'unknown'}
-            {group}
-            {groupIndex}
-            groups={groups.length}
             index={place}
             total={ids.length}
             variant={current ? (variants.get(current.participantId) ?? 0) : 0}
@@ -819,26 +837,19 @@
             onScreen={shown?.participantId === current?.participantId && shown !== null}
             shownAt={shown?.shownAt ?? null}
             {disabled}
-            hasNeighbour={neighbour !== null}
             limit={settings.runLimitSec}
             onrules={openRules}
             {reply}
-            {replyToGroup}
-            replyDraft={groupDraft !== ''}
             {replyFromOracle}
             onshow={() => show()}
             onclear={clearShown}
             onrun={() => run()}
             oninterrupt={interrupt}
-            onneighbour={() => {
-              if (neighbour) show(neighbour)
-            }}
             onmark={mark}
             onremove={remove}
             onreplychange={(text) => {
               updateReply({ text, ...(text.trim() === '' ? { fromOracle: false } : {}) })
             }}
-            onreplytoggle={toggleReplyToGroup}
             onreplysend={sendReply}
             onreplyfocus={() => (focus = 'reply')}
             onreplyblur={() => (focus = 'list')}

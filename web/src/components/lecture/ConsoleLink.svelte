@@ -14,6 +14,12 @@
   Кнопка «Поделиться» — не украшение: с макбука это ровно тот системный лист,
   из которого ссылка уезжает на планшет по AirDrop одним касанием. Где листа
   нет, остаётся буфер обмена, и она молча становится «скопировать».
+
+  ОДНА НА ДВА ПУЛЬТА. Пульт консилиума отдают телефону тем же движением и с тем
+  же ключом — разного в них ровно три вещи: хвост адреса (ячейка вместо
+  лекции), слово на кнопке и то, ЧЕМ эта ссылка опасна. Поэтому здесь не проп
+  «куда вести», а проп «какой пульт»: слова про чужие работы обязаны стоять
+  рядом со ссылкой, которая их открывает, и оторваться от неё не должны.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -26,13 +32,47 @@
   interface Props {
     /** Как выглядит кнопка в своей полосе — классы у полос разные. */
     class?: string
+    /**
+     * Ячейка пульта консилиума. `null` — пульт лекции, один на комнату.
+     *
+     * Он же решает и слова: за ссылкой консилиума лежат чужие работы целиком, и
+     * сказать об этом обязано то же место, что выдаёт ссылку.
+     */
+    cellId?: string | null
+    /** Подпись у кнопки; значок стоит всегда. `false` — только значок. */
+    caption?: boolean
   }
 
-  let { class: className = '' }: Props = $props()
+  let { class: className = '', cellId = null, caption = true }: Props = $props()
 
   const session = getSessionState()
+  const council = $derived(cellId !== null)
+  /** Хвост за `/s/:id` — тот же разбор, что в lib/routes.ts. */
+  const tail = $derived(council ? `/council/${cellId}` : '/pult')
 
   let open = $state(false)
+  let anchor = $state<HTMLButtonElement | null>(null)
+  /**
+   * Где стоит панель — считается от кнопки и зажимается в окно.
+   *
+   * Была `absolute right-0`, то есть «правым краем по правому краю кнопки», и
+   * на 390 px это уводило её за ЛЕВУЮ кромку экрана: панель шире 360, а кнопка
+   * стоит в середине полосы. С телефона тогда не прочитать ни предупреждения,
+   * ни самой ссылки — ровно того, ради чего панель и открывают. `fixed` ещё и
+   * не режется прокручиваемой полосой, в которой кнопка живёт.
+   */
+  let at = $state<{ left: number; top: number; width: number } | null>(null)
+  const GAP = 12
+  function place(): void {
+    const box = anchor?.getBoundingClientRect()
+    if (!box) return
+    const width = Math.min(384, window.innerWidth - GAP * 2)
+    at = {
+      width,
+      left: Math.max(GAP, Math.min(box.right - width, window.innerWidth - width - GAP)),
+      top: Math.min(box.bottom + 1, Math.max(GAP, window.innerHeight - GAP)),
+    }
+  }
   let busy = $state(false)
   let link = $state<string | null>(null)
   let minutes = $state(10)
@@ -50,16 +90,18 @@
       const res = await api.handoff(session.session.id, session.token)
       // Не от адресной строки: комнату чаще всего ведут с localhost, и такую
       // ссылку планшет не откроет вовсе. Из двух адресов выбирает то же
-      // правило, что и в панели (seminar-link.ts), а хвост `/t/<ключ>`
-      // дописывается к готовому `<origin>/s/<id>`.
-      link = `${seminarLink(res.origin, location.origin, session.session.id)}/t/${res.key}`
+      // правило, что и в панели (seminar-link.ts), а хвост экрана и `/t/<ключ>`
+      // дописываются к готовому `<origin>/s/<id>`.
+      link = `${seminarLink(res.origin, location.origin, session.session.id)}${tail}/t/${res.key}`
       minutes = Math.max(1, Math.round(res.livesMs / 60_000))
+      place()
       open = true
     } catch (cause: unknown) {
       // И прежний ключ с экрана убираем: он уже мог быть потрачен, а отказ над
       // живой на вид ссылкой — это два противоположных утверждения разом.
       link = null
       failureRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.142'))
+      place()
       open = true
     } finally {
       busy = false
@@ -84,7 +126,7 @@
   async function share(): Promise<void> {
     if (!link) return
     try {
-      await navigator.share({ get title() { return tr('room.ui.144') }, url: link })
+      await navigator.share({ get title() { return tr(council ? 'room.pult.v3.shareTitle' : 'room.ui.144') }, url: link })
     } catch {
       // Лист закрыли, ничего не выбрав, — это не ошибка и говорить о ней нечего.
     }
@@ -94,19 +136,23 @@
 <span class="relative flex items-stretch">
   <button
     type="button"
+    bind:this={anchor}
     class={className}
     aria-expanded={open}
-    title={tr('room.ui.132')}
+    aria-label={tr(council ? 'room.pult.v3.toPhone' : 'room.ui.133')}
+    data-console-link={council ? 'council' : 'lecture'}
+    title={tr(council ? 'room.pult.v3.toPhoneHint' : 'room.ui.132')}
     onclick={() => (open ? (open = false) : void ask())}
   >
-    <Icon name={busy ? 'spinner' : 'link'} size={12} class={busy ? 'animate-spin' : ''} /> {tr('room.ui.133')} </button>
+    <Icon name={busy ? 'spinner' : 'link'} size={12} class={busy ? 'animate-spin' : ''} />{#if caption} {tr(council ? 'room.pult.v3.toPhone' : 'room.ui.133')} {/if}</button>
 
-  {#if open}
-    <!-- Ниже полосы и от правого края: полоса узкая, а панель шире её кнопки. -->
+  {#if open && at}
+    <!-- Под кнопкой и в пределах окна: см. `place`. -->
     <div
-      class="absolute right-0 top-full z-40 mt-px w-[min(24rem,calc(100vw-1.5rem))] border border-line bg-raised p-3 text-left shadow-pop"
+      class="fixed z-40 border border-line bg-raised p-3 text-left shadow-pop"
+      style={`left:${at.left}px; top:${at.top}px; width:${at.width}px`}
       role="dialog"
-      aria-label={tr('room.ui.134')}
+      aria-label={tr(council ? 'room.pult.v3.shareTitle' : 'room.ui.134')}
     >
       <!--
         Отказ и ссылка — два независимых блока, а не ветки одного. Отказ
@@ -126,6 +172,18 @@
           не было правдой.
         -->
         <p class="pb-2 text-2xs leading-snug text-muted"> {tr('room.ui.135')} {minutes} {tr('room.ui.136')} </p>
+        <!--
+          И чем эта ссылка опасна — своими словами, а не общим «не отправляйте
+          другим». Пульт консилиума за одним адресом держит весь класс целиком:
+          имена, черновики, ошибки и отметки. Тот же довод уже стоит на отказе
+          не-преподавателю внутри пульта (PultWindow · room.ui.1358), и говорить
+          его в двух местах по-разному нельзя.
+        -->
+        {#if council}
+          <p class="pb-2 text-2xs leading-snug text-warning" data-console-link-danger>
+            {tr('room.pult.v3.shareDanger')}
+          </p>
+        {/if}
         <p
           class="select-all break-all border border-line bg-canvas px-2 py-1.5 font-mono text-2xs text-ink"
         >
