@@ -28,6 +28,7 @@
     EntrantSubmissions,
   } from '@shared/competitions-entrant'
   import Splash from '@/components/ui/Splash.svelte'
+  import DependenciesView from '@/components/competitions/DependenciesView.svelte'
   import BoardView from '@/components/competitions/BoardView.svelte'
   import CompetitionsList from '@/components/competitions/CompetitionsList.svelte'
   import KeyPanel from '@/components/competitions/KeyPanel.svelte'
@@ -345,16 +346,18 @@
     await loadList()
   }
 
-  async function send(file: File): Promise<void> {
+  async function send(file: File, bundleId?: string | null): Promise<boolean> {
     const slug = route.slug
-    if (!slug) return
+    if (!slug) return false
     sending = true
     sendRefusal = null
     try {
-      await entrantApi.send(slug, file)
+      await entrantApi.send(slug, file, bundleId)
       await loadMine(slug)
+      return true
     } catch (error: unknown) {
       sendRefusal = say(error)
+      return false
     } finally {
       sending = false
     }
@@ -396,7 +399,7 @@
         ? `/k/${slug}`
         : next === 'submissions'
           ? `/k/${slug}/submissions`
-          : `/k/${slug}/leaderboard`,
+          : next === 'dependencies' ? `/k/${slug}/dependencies` : `/k/${slug}/leaderboard`,
     )
   }
 
@@ -433,7 +436,7 @@
 {#if route.view === 'screen' && page && board}
   <!-- Проектор: тот же лидерборд без шапки и вкладок. Его показывают классу с
        заднего ряда, и всё, что не строка таблицы, отсюда убрано. -->
-  <main class="flex h-full flex-col gap-6 overflow-auto bg-canvas p-10">
+  <main class="competition-ui flex h-full flex-col gap-6 overflow-auto bg-canvas p-10">
     <h1 class="text-gauge-lg font-black text-ink">{page.competition.title}</h1>
     <BoardView
       competition={page.competition}
@@ -444,7 +447,7 @@
     />
   </main>
 {:else}
-  <div class="flex h-full flex-col overflow-auto bg-canvas">
+  <div class="competition-ui flex h-full flex-col overflow-auto bg-canvas">
     <!--
       На телефоне внутри соревнования полосы нет: её место занимает шапка
       страницы, где уже есть и «‹ Соревнования», и имя (P4). Две полосы подряд
@@ -457,7 +460,7 @@
     {#if claiming || (!ready && !failure)}
       <Splash size="screen" />
     {:else if route.slug === null}
-      <main class="flex flex-col gap-10 px-4 py-8 sm:px-10 sm:py-12 lg:flex-row lg:gap-16">
+      <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-8 px-4 py-8 sm:px-10 sm:py-10 xl:flex-row xl:gap-10">
         <div class="min-w-0 grow">
           {#if failure}
             <p class="mb-6 text-ui text-danger">{failure}</p>
@@ -477,7 +480,7 @@
             }}
           />
         </div>
-        <aside class="w-full shrink-0 pt-3 lg:w-[320px]">
+        <aside class="w-full shrink-0 self-start border border-line bg-surface p-5 xl:w-[360px]">
           <KeyPanel {me} busy={signInBusy} refusal={signInRefusal} onsignin={signIn} onsignout={signOut} />
         </aside>
       </main>
@@ -507,6 +510,13 @@
             {phone}
             fileUrl={(file) => entrantApi.fileUrl(page!.competition.slug, file)}
           />
+        {:else if tab === 'dependencies'}
+          {#key `${page.competition.slug}:${me?.entrant?.id ?? ''}`}
+            <DependenciesView slug={page.competition.slug} signedIn={!!me?.entrant} onjoin={() => {
+              onnavigate(COMPETITIONS_LANDING)
+              joining = page!.competition.slug
+            }} />
+          {/key}
         {:else if tab === 'submissions'}
           {#if mine}
             <SubmissionsView

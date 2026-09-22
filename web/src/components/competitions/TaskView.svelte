@@ -49,7 +49,7 @@
     {/if}
 
     <section class="flex max-w-[720px] flex-col gap-3">
-      <h2 class="text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+      <h2 class="text-micro font-black uppercase leading-5 tracking-label text-muted">
         {tr('competitions.p.dataTitle')}
       </h2>
       {#if view.files.length === 0}
@@ -82,9 +82,7 @@
     </section>
   </div>
 
-  {#if !phone}
-    <aside class="w-full shrink-0 xl:w-[300px]">
-      <Conditions competition={view.competition} />
-    </aside>
-  {/if}
+  <aside class="w-full shrink-0 xl:w-[300px]">
+    <Conditions competition={view.competition} />
+  </aside>
 </div>

@@ -331,7 +331,7 @@
           class={cn('h-2 w-2 shrink-0', list.queue.paused ? 'bg-faint' : 'bg-accent')}
           aria-hidden="true"
         ></span>
-        <span class="shrink-0 text-micro font-bold uppercase tracking-caps text-brand">
+        <span class="shrink-0 text-micro font-bold uppercase tracking-caps text-primary">
           {tr('admin.competitions.runner')}
         </span>
         <span class="text-2xs text-ink">{line.head}</span>
@@ -628,7 +628,7 @@
         </button>
         <button
           type="button"
-          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          class="btn bg-danger text-white dark:text-canvas hover:brightness-110 disabled:opacity-40"
           disabled={busy}
           onclick={() => void destroy()}
         >

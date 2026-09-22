@@ -525,7 +525,7 @@
           <span class="w-[64px] shrink-0 {HEAD}">{tr('admin.competitions.col.place')}</span>
           <span class="min-w-0 flex-1 {HEAD}">{tr('admin.competitions.col.entrant')}</span>
           <span class="w-[104px] shrink-0 text-right {HEAD}">{tr('admin.competitions.col.public')}</span>
-          <span class="w-[112px] shrink-0 text-right text-micro font-bold uppercase tracking-caps text-brand">
+          <span class="w-[112px] shrink-0 text-right text-micro font-bold uppercase tracking-caps text-primary">
             {tr('admin.competitions.col.private')}
           </span>
           <span class="feed-shift w-[88px] shrink-0 text-right {HEAD}">
@@ -543,7 +543,7 @@
             <span class="w-[104px] shrink-0 text-right font-mono text-2xs text-ink">
               {@render caption(tr('admin.competitions.col.public'))}{metricNumber(row.score)}
             </span>
-            <span class="w-[112px] shrink-0 text-right font-mono text-2xs text-brand">
+            <span class="w-[112px] shrink-0 text-right font-mono text-2xs text-primary">
               {@render caption(tr('admin.competitions.col.private'))}{metricNumber(
                 mirror?.score ?? null,
               )}
@@ -593,7 +593,7 @@
               class={cn('h-2 w-2 shrink-0', running.length > 0 ? 'bg-accent' : 'bg-faint')}
               aria-hidden="true"
             ></span>
-            <span class="text-micro font-bold uppercase tracking-caps text-brand">
+            <span class="text-micro font-bold uppercase tracking-caps text-primary">
               {tr('admin.competitions.runningNow')}
             </span>
           </div>
@@ -653,7 +653,7 @@
                  max-[900px]:border-l-0 max-[900px]:border-t"
         >
           <div class="flex items-center gap-3">
-            <span class="text-micro font-bold uppercase tracking-caps text-brand">
+            <span class="text-micro font-bold uppercase tracking-caps text-primary">
               {tr('admin.competitions.waitingHead', { count: waiting.length })}
             </span>
             <button
@@ -727,7 +727,7 @@
             <span class="w-[180px] shrink-0 {HEAD}">{tr('admin.competitions.col.outcome')}</span>
             <span class="min-w-0 flex-1 {HEAD}">{tr('admin.competitions.col.happened')}</span>
             <span class="w-[96px] shrink-0 text-right {HEAD}">{tr('admin.competitions.col.public')}</span>
-            <span class="w-[104px] shrink-0 text-right text-micro font-bold uppercase tracking-caps text-brand">
+            <span class="w-[104px] shrink-0 text-right text-micro font-bold uppercase tracking-caps text-primary">
               {tr('admin.competitions.col.private')}
             </span>
             <span class="w-[72px] shrink-0 text-right {HEAD}">{tr('admin.competitions.col.took')}</span>
@@ -774,7 +774,7 @@
                     {/if}
                     <button
                       type="button"
-                      class="btn-outline h-8 shrink-0 border-brand px-3 text-micro font-bold text-brand"
+                      class="btn-outline h-8 shrink-0 border-primary px-3 text-micro font-bold text-primary"
                       disabled={busy}
                       onclick={() => void rescoreAll()}
                     >
@@ -789,7 +789,7 @@
               <span class="w-[96px] shrink-0 text-right font-mono text-2xs {row.best ? 'font-bold text-ink' : 'text-ink'}">
                 {@render caption(tr('admin.competitions.col.public'))}{metricNumber(s.publicScore)}
               </span>
-              <span class="w-[104px] shrink-0 text-right font-mono text-2xs text-brand">
+              <span class="w-[104px] shrink-0 text-right font-mono text-2xs text-primary">
                 {@render caption(tr('admin.competitions.col.private'))}{metricNumber(s.privateScore)}
               </span>
               <span class="w-[72px] shrink-0 text-right font-mono text-micro text-muted">
@@ -1010,7 +1010,7 @@
         </button>
         <button
           type="button"
-          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          class="btn bg-danger text-white dark:text-canvas hover:brightness-110 disabled:opacity-40"
           disabled={busy}
           onclick={() => void finish()}
         >

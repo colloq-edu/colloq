@@ -43,6 +43,8 @@ import {
 import { roleFor } from './routes/sessions.js'
 import { app } from './app.js'
 import { COLLOQ_VERSION } from './version.js'
+import { startDependencyPump, stopDependencyPump } from './dependencies/service.js'
+import { pinLegacySubmissions } from './dependencies/revisions.js'
 
 /** A whole notebook's state travels in one sync frame; images make it big. */
 const MAX_WS_PAYLOAD = 16 * 1024 * 1024
@@ -329,7 +331,9 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
    */
   void reclaimCompetitionQueue()
     .catch((err) => console.error('[competitions] не удалось поднять очередь', err))
+    .then(() => pinLegacySubmissions().catch((err) => console.error('[dependencies] legacy pinning failed', err)))
     .then(() => startCompetitionPump())
+  void startDependencyPump().catch((err) => console.error('[dependencies] preparation queue startup failed', err))
 })
 
 /**
@@ -448,6 +452,7 @@ async function shutdown(signal: string): Promise<void> {
    * следующая жизнь сервера.
    */
   try {
+    await stopDependencyPump()
     await stopCompetitionPump()
   } catch (err) {
     console.error('colloq: could not stop the competition queue:', err instanceof Error ? err.message : err)

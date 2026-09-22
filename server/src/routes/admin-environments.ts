@@ -1,4 +1,5 @@
 import { tr } from '@shared/i18n'
+import { readEnvironmentInventory } from '../environment-inventory.js'
 import {
   usingRuntimeBroker,
   kernelRuntimeClient,
@@ -118,6 +119,18 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
       gpus: await gpuState(),
     }
     res.json(body)
+  })
+
+  router.get('/api/admin/environments/:name/inventory', requireStaff, async (req, res) => {
+    const name = String(req.params.name)
+    if (!ENVIRONMENT_NAME.test(name) || !exists(name)) {
+      return fail(res, 404, 'not_found', tr('server.noSuchEnvironment.7ca461'))
+    }
+    try {
+      res.json(await readEnvironmentInventory(name))
+    } catch {
+      fail(res, 503, 'failed', tr('common.environmentUnavailable'))
+    }
   })
 
   /** The file itself, for the editor. Kept separate: the list does not need it. */

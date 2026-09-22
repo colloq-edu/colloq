@@ -62,7 +62,7 @@
 
 <div class="flex flex-col gap-9">
   <div class="flex flex-col gap-3">
-    <h1 class="text-[44px] font-black leading-[46px] tracking-[-0.03em] text-ink sm:text-[72px] sm:leading-[72px] sm:tracking-[-0.04em]">
+    <h1 class="break-words text-[36px] font-black leading-[40px] tracking-[-0.03em] text-ink sm:text-[48px] sm:leading-[52px]">
       {tr('competitions.title')}
     </h1>
     <p class="max-w-[680px] whitespace-pre-line text-[16px] leading-6 text-muted">
@@ -71,12 +71,12 @@
   </div>
 
   {#if rows.length === 0}
-    <p class="text-ui text-muted">{tr('competitions.p.emptyAll')}</p>
+    <p class="border-y border-line bg-surface px-5 py-6 text-ui text-ink">{tr('competitions.p.emptyAll')}</p>
   {/if}
 
   {#if rows.length > 0}
     <section class="flex flex-col">
-      <h2 class="border-b-2 border-ink pb-2.5 text-[11px] font-black uppercase leading-[14px] tracking-section text-ink">
+      <h2 class="border-b-2 border-ink pb-2.5 text-micro font-black uppercase leading-5 tracking-section text-ink">
         {tr('competitions.p.sectionRunning')}
       </h2>
       {#if running.length === 0}
@@ -86,9 +86,11 @@
         {@const urgent = deadlineUrgent(row.competition.deadlineAt, now)}
         {@const closed = row.competition.deadlineAt !== null && row.competition.deadlineAt <= now}
         {@const mine = row.mine}
-        <article class="flex flex-col gap-4 border-b border-line py-6 lg:flex-row lg:items-center lg:gap-8">
+        <article class="flex flex-col gap-5 border-b border-line py-6">
           <div class="flex min-w-0 grow flex-col gap-2">
-            <h3 class="text-display font-black text-ink">{row.competition.title}</h3>
+            <h3 class="text-display font-black text-ink">
+              <a class="break-words hover:text-accent-text hover:underline underline-offset-4" href={`/k/${encodeURIComponent(row.competition.slug)}`}>{row.competition.title}</a>
+            </h3>
             {#if row.competition.blurb}
               <p class="text-ui text-muted">{row.competition.blurb}</p>
             {/if}
@@ -114,71 +116,73 @@
             </div>
           </div>
 
-          <div class="flex w-[150px] shrink-0 flex-col gap-0.5">
-            <span
-              class="text-[11px] font-black uppercase leading-[14px] tracking-label {urgent
-                ? 'text-warning'
-                : 'text-muted'}"
-            >
-              {tr('competitions.p.left')}
-            </span>
-            <span
-              class="font-mono text-title font-bold {urgent ? 'text-warning' : 'text-ink'}"
-            >
-              {row.competition.deadlineAt === null
-                ? '—'
-                : remainingWords(row.competition.deadlineAt - now)}
-            </span>
-            <!-- Подпись под числом объясняет ЧИСЛО: «6 дн 3 ч» — «до 27.09,
-                 02:39». Когда срок прошёл, обе строки говорят «приём закрыт», и
-                 подпись остаётся только повтором; вместо неё — дата, когда он
-                 закрылся, потому что на неё и смотрят. -->
-            <span class="text-micro text-muted">
-              {closed
-                ? tr('competitions.p.finishedAt', { date: dateOf(row.competition.deadlineAt!) })
-                : deadlineNote(row.competition.deadlineAt, now)}
-            </span>
-          </div>
-
-          <div class="flex w-[150px] shrink-0 flex-col gap-0.5">
-            <span class="text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
-              {tr('competitions.p.you')}
-            </span>
-            {#if mine?.joined}
-              <span class="font-mono text-title font-bold text-ink">
-                {mine.place === null ? '—' : placeWithScore(mine.place, mine.score)}
+          <div class="flex flex-wrap items-start gap-x-8 gap-y-4">
+            <div class="flex min-w-[140px] flex-1 basis-[150px] flex-col gap-0.5">
+              <span
+                class="text-micro font-black uppercase leading-5 tracking-label {urgent
+                  ? 'text-warning'
+                  : 'text-muted'}"
+              >
+                {tr('competitions.p.left')}
               </span>
+              <span
+                class="font-mono text-title font-bold {urgent ? 'text-warning' : 'text-ink'}"
+              >
+                {row.competition.deadlineAt === null
+                  ? '—'
+                  : remainingWords(row.competition.deadlineAt - now)}
+              </span>
+              <!-- Подпись под числом объясняет ЧИСЛО: «6 дн 3 ч» — «до 27.09,
+                   02:39». Когда срок прошёл, обе строки говорят «приём закрыт», и
+                   подпись остаётся только повтором; вместо неё — дата, когда он
+                   закрылся, потому что на неё и смотрят. -->
               <span class="text-micro text-muted">
-                {[
-                  tr('competitions.p.submissionsCount', { count: mine.submissions }),
-                  mine.inFlight > 0 ? tr('competitions.p.inFlight', { count: mine.inFlight }) : '',
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
+                {closed
+                  ? tr('competitions.p.finishedAt', { date: dateOf(row.competition.deadlineAt!) })
+                  : deadlineNote(row.competition.deadlineAt, now)}
               </span>
-            {:else}
-              <span class="text-ui leading-6 text-muted">{tr('competitions.p.notJoined')}</span>
-            {/if}
-          </div>
+            </div>
 
-          <div class="flex shrink-0 items-center lg:w-[132px]">
-            {#if mine?.joined}
-              <button
-                class="h-[38px] w-full border border-brand px-4 text-micro font-black uppercase tracking-label text-brand hover:bg-surface"
-                type="button"
-                onclick={() => onopen(row.competition.slug)}
-              >
-                {tr('competitions.p.openCompetition')}
-              </button>
-            {:else}
-              <button
-                class="h-[38px] w-full bg-brand px-4 text-micro font-black uppercase tracking-label text-white hover:bg-brand-2"
-                type="button"
-                onclick={() => onjoinstart(row.competition.slug)}
-              >
-                {tr('competitions.p.join')}
-              </button>
-            {/if}
+            <div class="flex min-w-[140px] flex-1 basis-[150px] flex-col gap-0.5">
+              <span class="text-micro font-black uppercase leading-5 tracking-label text-muted">
+                {tr('competitions.p.you')}
+              </span>
+              {#if mine?.joined}
+                <span class="font-mono text-title font-bold text-ink">
+                  {mine.place === null ? '—' : placeWithScore(mine.place, mine.score)}
+                </span>
+                <span class="text-micro text-muted">
+                  {[
+                    tr('competitions.p.submissionsCount', { count: mine.submissions }),
+                    mine.inFlight > 0 ? tr('competitions.p.inFlight', { count: mine.inFlight }) : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </span>
+              {:else}
+                <span class="text-ui leading-6 text-muted">{tr('competitions.p.notJoined')}</span>
+              {/if}
+            </div>
+
+            <div class="flex w-full shrink-0 items-center self-center sm:ml-auto sm:w-auto">
+              {#if mine?.joined}
+                <button
+                  class="min-h-11 w-full whitespace-nowrap border border-primary px-5 py-2 text-micro font-bold uppercase tracking-caps text-primary hover:bg-surface"
+                  type="button"
+                  onclick={() => onopen(row.competition.slug)}
+                >
+                  {tr('competitions.p.openCompetition')}
+                </button>
+              {:else}
+                <button
+                  class="min-h-11 w-full whitespace-nowrap bg-brand px-5 py-2 text-micro font-bold uppercase tracking-caps text-white hover:bg-brand-2"
+                  type="button"
+                  onclick={() => onjoinstart(row.competition.slug)}
+                >
+                  {tr('competitions.p.join')}
+                </button>
+              {/if}
+            </div>
           </div>
         </article>
 
@@ -199,6 +203,7 @@
               <input
                 class="h-9 min-w-0 grow border border-line bg-canvas px-3 text-2xs text-ink placeholder:text-faint focus:border-accent focus:outline-none"
                 placeholder={tr('competitions.p.namePlaceholder')}
+                aria-label={tr('competitions.p.namePlaceholder')}
                 bind:value={name}
                 oninput={() => (typed = true)}
                 maxlength="80"
@@ -227,7 +232,7 @@
     </section>
 
     <section class="flex flex-col">
-      <h2 class="border-b-2 border-ink pb-2.5 text-[11px] font-black uppercase leading-[14px] tracking-section text-ink">
+      <h2 class="border-b-2 border-ink pb-2.5 text-micro font-black uppercase leading-5 tracking-section text-ink">
         {tr('competitions.p.sectionFinished')}
       </h2>
       {#if finished.length === 0}
@@ -236,9 +241,11 @@
         </p>
       {/if}
       {#each finished as row (row.competition.id)}
-        <article class="flex flex-col gap-2 border-b border-line py-4 lg:flex-row lg:items-center lg:gap-8">
-          <div class="flex min-w-0 grow flex-col gap-1">
-            <h3 class="text-title font-bold leading-[22px] text-ink">{row.competition.title}</h3>
+        <article class="flex flex-wrap items-center gap-x-8 gap-y-3 border-b border-line py-4">
+          <div class="flex min-w-0 flex-[1_1_280px] flex-col gap-1">
+            <h3 class="text-title font-bold leading-[22px] text-ink">
+              <a class="break-words hover:text-accent-text hover:underline underline-offset-4" href={`/k/${encodeURIComponent(row.competition.slug)}`}>{row.competition.title}</a>
+            </h3>
             <p class="text-micro text-muted">
               {[
                 metricArrow(row.competition.metric.name, row.competition.metric.direction),
@@ -258,7 +265,7 @@
             {row.mine?.place ? placeWithScore(row.mine.place, row.mine.score) : '—'}
           </span>
           <button
-            class="shrink-0 text-left text-2xs text-accent-text hover:underline lg:w-[132px] lg:text-right"
+            class="shrink-0 whitespace-nowrap text-left text-2xs text-accent-text hover:underline sm:ml-auto"
             type="button"
             onclick={() => onopen(row.competition.slug)}
           >

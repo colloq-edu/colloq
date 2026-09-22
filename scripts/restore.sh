@@ -334,4 +334,5 @@ else
 fi
 say "${DIM}Kernel environments are not restored here —${OFF}"
 say "${DIM}the image is built on the next start of a class.${OFF}"
+say "${DIM}Pinned competition images must be restored separately with their exact image IDs (see backup/restore docs).${OFF}"
 say "${DIM}The Oracle key, RELAY_* and PUBLIC_URL live in .env, not in the backup.${OFF}"

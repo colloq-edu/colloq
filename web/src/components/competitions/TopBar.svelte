@@ -37,8 +37,8 @@
       onnavigate(COMPETITIONS_LANDING)
     }}
   >
-    <Icon name="logo" size={16} class="shrink-0 text-brand" />
-    <span class="shrink-0 text-2xs font-black uppercase tracking-section text-brand">Colloq</span>
+    <Icon name="logo" size={16} class="shrink-0 text-primary" />
+    <span class="shrink-0 text-2xs font-black uppercase tracking-section text-primary">Colloq</span>
     <span class="hidden h-[18px] w-px shrink-0 bg-line sm:block" aria-hidden="true"></span>
     <span class="hidden truncate text-2xs text-muted sm:block">{tr('competitions.title')}</span>
   </a>

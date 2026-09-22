@@ -51,6 +51,7 @@ import {
 } from '../server/src/competitions/storage.js'
 import {
   runArgs,
+  useDockerForCompetitions,
   scoreArgs,
   verdictOfRun,
   DEFAULT_ID_COLUMN,
@@ -65,6 +66,8 @@ import {
 } from '../server/src/competitions/fake-runner.js'
 import {
   competitionBackend,
+  competitionRunner,
+  forgetCompetitionRunner,
   limitsFor,
   useCompetitionRunner,
   METRIC_WALL_SECONDS,
@@ -185,7 +188,7 @@ test('команда тетради: без сети, только на чтен
   assert.ok(args.includes('--cpus=2'))
   assert.ok(args.includes(`--ulimit=fsize=${64 * 1024 * 1024 * 4}:${64 * 1024 * 1024 * 4}`))
   // /out — tmpfs: диск контейнера не ограничен ничем, и это главная дыра шага.
-  assert.ok(line.includes('--mount=type=tmpfs,destination=/out'))
+  assert.ok(line.includes('--tmpfs=/out:rw,exec,nosuid,nodev,size=512m,mode=1777'))
   assert.ok(line.includes('--tmpfs=/tmp:rw,nosuid,nodev,size=512m'))
   // `--rm` нет намеренно: контейнер нужен мёртвым — прочитать OOMKilled.
   assert.ok(!args.includes('--rm'))
@@ -288,6 +291,69 @@ test('обвязка раскладывается по хэшу содержим
     assert.ok(fs.existsSync(path.join(dir, name)), name)
   }
   assert.equal(harnessDir(), dir, 'второй вызов не заводит новый каталог')
+})
+
+test('рабочая папка тетради открывает данные по относительному пути data/', () => {
+  const script = `
+import ast, os, tempfile
+from pathlib import Path
+source = Path(${JSON.stringify(path.join(harnessDir(), 'run_notebook.py'))}).read_text()
+tree = ast.parse(source)
+prepare = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'prepare_workspace')
+with tempfile.TemporaryDirectory() as root:
+    root = Path(root)
+    data = root / 'readonly-data'
+    data.mkdir()
+    (data / 'train.csv').write_text('id,target\\n1,42\\n')
+    scope = {'OUT': root / 'out', 'RESULT': root / 'result', 'DATA': data}
+    exec(compile(ast.Module(body=[prepare], type_ignores=[]), '<workspace>', 'exec'), scope)
+    scope['prepare_workspace']()
+    scope['prepare_workspace']()
+    os.chdir(scope['OUT'])
+    assert Path('data/train.csv').read_text() == 'id,target\\n1,42\\n'
+    assert Path('data').resolve() == data.resolve()
+    Path('submission.csv').write_text('id,prediction\\n1,41\\n')
+    assert scope['RESULT'].is_dir()
+    assert not (data / 'submission.csv').exists()
+`
+  const result = spawnSync('python3', ['-c', script], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+})
+
+test('прогресс считает кодовые ячейки, а ошибка сохраняет причину без ANSI', () => {
+  const script = `
+import ast, re, time
+from pathlib import Path
+from types import SimpleNamespace
+source = Path(${JSON.stringify(path.join(harnessDir(), 'run_notebook.py'))}).read_text()
+tree = ast.parse(source)
+nodes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'Runner'
+         or isinstance(node, ast.FunctionDef) and node.name == 'cell_error_detail']
+class Cell(dict):
+    __getattr__ = dict.__getitem__
+class Client:
+    def __init__(self, nb, **kwargs): pass
+scope = {'NotebookClient': Client, 'time': time, 're': re}
+exec(compile(ast.Module(body=nodes, type_ignores=[]), '<runner>', 'exec'), scope)
+cells = [Cell(cell_type=kind) for kind in ['markdown', 'code', 'markdown', 'code']]
+runner = scope['Runner'](SimpleNamespace(cells=cells))
+runner.beat = lambda phase: None
+runner.on_cell_start(cells[0], 0)
+assert runner.cell_index == -1
+runner.on_cell_start(cells[1], 1)
+assert runner.cell_index == 0
+runner.on_cell_start(cells[2], 2)
+assert runner.cell_index == 0
+runner.on_cell_start(cells[3], 3)
+assert runner.cell_index == 1 and runner.cells_total == 2
+message = '\\x1b[31m' + 'long frame ' * 1000 + '\\nValueError: missing column\\x1b[0m'
+detail = scope['cell_error_detail'](Exception(message))
+assert '\\x1b' not in detail
+assert len(detail) <= 4000
+assert detail.endswith('ValueError: missing column')
+`
+  const result = spawnSync('python3', ['-c', script], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
 })
 
 /* ------------------------------------------------------------ разбор следов */
@@ -762,4 +828,134 @@ test('сводка исполнителя отвечает тем, что вид
   assert.equal(DEFAULT_ID_COLUMN, 'id')
   assert.ok(openDir('x').includes('competitions'))
   assert.ok(secretDir('x').includes('secret'))
+})
+
+/* ------------------------------------------------ pinned dependency runtime */
+
+test('dependency bundle is mounted read-only and /out permits venv execution within its quota', () => {
+  const args = runArgs({ container: 'deps-run', image: 'sha256:pinned', dataDir: '/data/open', inputDir: '/data/input', resultDir: '/data/result', dependenciesDir: '/data/bundle', limits: LIMITS_SAMPLE, target: SUBMISSION_FILE })
+  assert.ok(args.includes('/data/bundle:/deps:ro'))
+  assert.ok(args.includes('COMP_DEPENDENCIES=/deps'))
+  assert.ok(args.includes('--tmpfs=/out:rw,exec,nosuid,nodev,size=512m,mode=1777'))
+  assert.ok(args.includes('--network') && args.includes('none'))
+  assert.ok(args.includes('sha256:pinned'))
+  assert.equal(verdictOfRun({ oom: false, killedBy: null, status: 'dependency_error', produced: false }), 'dependency_error')
+})
+
+test('offline dependency installation uses hashed local wheels and binds the kernel to venv Python', () => {
+  const script = `
+import ast, hashlib, json, os, re, subprocess, sys, tempfile, venv, zipfile
+from pathlib import Path
+source = Path(${JSON.stringify(path.join(harnessDir(), 'run_notebook.py'))}).read_text()
+tree = ast.parse(source)
+names = {'prepare_dependencies', 'dependency_command', 'cell_error_detail'}
+nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+assert any(node.name == 'prepare_dependencies' for node in nodes), 'dependency runtime missing'
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    out = root / 'out'
+    out.mkdir()
+    deps = root / 'deps'
+    wheels = deps / 'wheels'
+    wheels.mkdir(parents=True)
+    wheel = wheels / 'colloq_runtime_probe-1.0-py3-none-any.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr('colloq_runtime_probe/__init__.py', 'VALUE = 73\\n')
+        archive.writestr('colloq_runtime_probe-1.0.dist-info/METADATA', 'Metadata-Version: 2.1\\nName: colloq-runtime-probe\\nVersion: 1.0\\n')
+        archive.writestr('colloq_runtime_probe-1.0.dist-info/WHEEL', 'Wheel-Version: 1.0\\nGenerator: colloq-test\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n')
+        archive.writestr('colloq_runtime_probe-1.0.dist-info/RECORD', '')
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    lock = deps / 'requirements.lock'
+    lock.write_text('colloq-runtime-probe==1.0 --hash=sha256:' + digest + '\\n')
+    os.environ['COMP_DEPENDENCIES'] = str(deps)
+    os.environ['JUPYTER_DATA_DIR'] = str(root / 'jupyter')
+    scope = dict(Path=Path, os=os, sys=sys, json=json, subprocess=subprocess, tempfile=tempfile, venv=venv, re=re, OUT=out)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), '<dependencies>', 'exec'), scope)
+    kernel = scope['prepare_dependencies']()
+    spec = json.loads((Path(os.environ['JUPYTER_DATA_DIR']) / 'kernels' / kernel / 'kernel.json').read_text())
+    interpreter = Path(spec['argv'][0])
+    assert interpreter == out / '.colloq-venv' / 'bin' / 'python', spec
+    assert spec['argv'][1:] == ['-m', 'ipykernel_launcher', '-f', '{connection_file}']
+    probe = subprocess.run([str(interpreter), '-c', 'import colloq_runtime_probe, sys; print(colloq_runtime_probe.VALUE); print(sys.prefix)'], capture_output=True, text=True, check=True)
+    assert probe.stdout.splitlines()[0] == '73', probe.stdout
+    assert Path(probe.stdout.splitlines()[1]).resolve() == (out / '.colloq-venv').resolve(), probe.stdout
+    assert 'include-system-site-packages = true' in (out / '.colloq-venv' / 'pyvenv.cfg').read_text()
+    # An altered hash cannot become a runnable environment.
+    import shutil
+    shutil.rmtree(out / '.colloq-venv')
+    lock.write_text('colloq-runtime-probe==1.0 --hash=sha256:' + '0' * 64 + '\\n')
+    try:
+        scope['prepare_dependencies']()
+        raise AssertionError('bad hash was accepted')
+    except RuntimeError as error:
+        assert 'hash' in str(error).lower(), str(error)
+        assert len(str(error)) <= 4000
+    del os.environ['COMP_DEPENDENCIES']
+    assert scope['prepare_dependencies']() == 'python3'
+`
+  const result = spawnSync('python3', ['-c', script], { encoding: 'utf8', timeout: 60_000 })
+  assert.equal(result.status, 0, result.stderr || result.error?.message)
+})
+
+test('dependency installation failure is reported before constructing or executing a notebook client', () => {
+  const script = `
+import ast, json, os, re, tempfile, time
+from pathlib import Path
+from types import SimpleNamespace
+source = Path(${JSON.stringify(path.join(harnessDir(), 'run_notebook.py'))}).read_text()
+tree = ast.parse(source)
+names = {'main', 'write_json', 'cell_error_detail'}
+nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    for key in ['HOME', 'JUPYTER_RUNTIME_DIR', 'JUPYTER_DATA_DIR', 'MPLCONFIGDIR']:
+        os.environ[key] = str(root / key)
+    os.environ['COMP_DEPENDENCIES'] = str(root / 'deps')
+    def broken():
+        raise RuntimeError('bad hash ' + 'x' * 5000)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('notebook execution must not start')
+    scope = dict(Path=Path, os=os, json=json, re=re, time=time, OUT=root, RESULT=root,
+                 PROGRESS=root / 'progress.json', RUN_JSON=root / 'run.json',
+                 NOTEBOOK=root / 'notebook.ipynb', prepare_workspace=lambda: None,
+                 nbformat=SimpleNamespace(read=lambda *args, **kwargs: object()),
+                 prepare_dependencies=broken, Runner=forbidden, read_peak=lambda: None)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), '<main>', 'exec'), scope)
+    assert scope['main']() == 1
+    beat = json.loads((root / 'progress.json').read_text())
+    report = json.loads((root / 'run.json').read_text())
+    assert beat['phase'] == 'dependencies' and beat['cell'] == -1
+    assert report['status'] == 'dependency_error' and report['cell'] == -1 and report['cells'] == 0
+    assert len(report['detail']) <= 4000
+    assert not (root / 'executed.ipynb').exists()
+`
+  const result = spawnSync('python3', ['-c', script], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+})
+
+
+test('Docker launches both steps with their immutable image binding and excludes bundles from scorer', async () => {
+  const before = process.env.COMPETITION_BACKEND
+  const commands: string[][] = []
+  process.env.COMPETITION_BACKEND = 'docker'
+  useCompetitionRunner(null)
+  forgetCompetitionRunner()
+  useDockerForCompetitions(async (args) => { commands.push(args); return { code: 1, out: 'launch stopped by test' } })
+  try {
+    const actual = competitionRunner()
+    const competition = { environment: 'mutable-tag', publicPercent: 30, splitSeed: 's' } as Competition
+    await actual.run({ competition, imageDigest: 'sha256:notebook-base', dependenciesDir: '/data/bundle', submissionId: 's', container: 'c-run', dataDir: '/data/open', inputDir: '/data/input', resultDir: '/data/result', limits: LIMITS_SAMPLE })
+    await actual.score({ competition, imageDigest: 'sha256:scorer-base', submissionId: 's', container: 'c-score', secretDir: '/data/secret', submissionDir: '/data/answer', outDir: '/data/score', limits: LIMITS_SAMPLE })
+    assert.ok(commands[0].includes('sha256:notebook-base'))
+    assert.ok(commands[0].includes('/data/bundle:/deps:ro'))
+    assert.ok(commands[1].includes('sha256:scorer-base'))
+    assert.ok(!commands[1].some((arg) => arg.includes('/deps') || arg.includes('COMP_DEPENDENCIES')))
+    assert.ok(!commands.flat().some((arg) => arg.includes('mutable-tag')))
+  } finally {
+    useDockerForCompetitions(null)
+    useCompetitionRunner(runner)
+    forgetCompetitionRunner()
+    if (before === undefined) delete process.env.COMPETITION_BACKEND
+    else process.env.COMPETITION_BACKEND = before
+  }
 })

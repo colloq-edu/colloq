@@ -1,4 +1,5 @@
 import type { MessageCatalog } from '../i18n-types.js'
+import { dependencyMessages } from './dependencies.js'
 
 /**
  * Слова соревнований — одни на панель преподавателя и на страницы участника.
@@ -14,6 +15,7 @@ import type { MessageCatalog } from '../i18n-types.js'
  * вместо «NOTEBOOK FAILED» стоит «UPALA TETRAD», хуже отсутствия перевода.
  */
 export const competitionsMessages: MessageCatalog = {
+  ...dependencyMessages,
   /* Состояние соревнования — плашка в списке (A1) и в шапке участника (P2, P3). */
   'competitions.state.draft': { ru: 'ЧЕРНОВИК', en: 'DRAFT' },
   'competitions.state.live': { ru: 'ИДЁТ', en: 'LIVE' },

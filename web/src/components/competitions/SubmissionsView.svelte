@@ -31,7 +31,7 @@
     busy: boolean
     refusal: string | null
     notebookUrl: (id: string) => string
-    onsend: (file: File) => void
+    onsend: (file: File, bundleId?: string | null) => Promise<boolean>
     onrefuse: (message: string) => void
     oncancel: (id: string) => void
     onchoose: (id: string) => void
@@ -151,6 +151,7 @@
         {#if phone}
           <SubmissionCard
             {submission}
+            dependenciesSlug={view.competition.slug}
             live={liveFor(submission.id)}
             best={submission.id === best}
             paused={mine.paused}
@@ -165,6 +166,7 @@
         {:else}
           <SubmissionRow
             {submission}
+            dependenciesSlug={view.competition.slug}
             live={liveFor(submission.id)}
             best={submission.id === best}
             paused={mine.paused}
@@ -193,10 +195,10 @@
     </section>
   </div>
 
-  {#if !phone}
-    <aside class="flex w-full shrink-0 flex-col gap-6 xl:w-[300px]">
-      <Conditions competition={view.competition} />
+  <aside class="flex w-full shrink-0 flex-col gap-6 xl:w-[300px]">
+    <Conditions competition={view.competition} />
+    {#if !phone}
       <MiniBoard lines={board} onopen={onboard} />
-    </aside>
-  {/if}
+    {/if}
+  </aside>
 </div>

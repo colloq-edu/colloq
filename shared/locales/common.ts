@@ -1,5 +1,17 @@
 import type { MessageCatalog } from '../i18n-types.js'
 export const commonMessages: MessageCatalog = {
+  'common.environmentDetails': { ru: 'Состав окружения', en: 'Environment details' },
+  'common.environmentOpen': { ru: 'Показать состав окружения {name}', en: 'Show installed packages in {name}' },
+  'common.environmentLoading': { ru: 'Читаем состав окружения…', en: 'Reading the environment…' },
+  'common.environmentUnavailable': { ru: 'Не удалось прочитать состав собранного окружения. Попробуйте ещё раз или обратитесь к преподавателю.', en: 'Could not read the built environment. Try again or contact your teacher.' },
+  'common.environmentInstalled': { ru: 'Фактически установленные Python-пакеты, включая зависимости и пакеты базового образа.', en: 'Installed Python packages, including dependencies and packages inherited from the base image.' },
+  'common.environmentPackageCount': { ru: 'Пакетов: {count}', en: 'Packages: {count}' },
+  'common.environmentSearch': { ru: 'Найти пакет…', en: 'Find a package…' },
+  'common.environmentPackage': { ru: 'Пакет', en: 'Package' },
+  'common.environmentVersion': { ru: 'Версия', en: 'Version' },
+  'common.environmentNoMatches': { ru: 'Таких пакетов нет в окружении.', en: 'No matching packages in this environment.' },
+  'common.environmentRetry': { ru: 'Повторить', en: 'Try again' },
+  'common.environmentClose': { ru: 'Закрыть сведения об окружении', en: 'Close environment details' },
   'common.loadingApp': { ru: 'Загрузка Colloq', en: 'Loading Colloq' },
   'common.loading': { ru: 'Загрузка…', en: 'Loading…' },
   'common.agentSteps': { ru: 'Действий на запрос', en: 'Actions per request' },

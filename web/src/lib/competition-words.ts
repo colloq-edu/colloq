@@ -350,6 +350,9 @@ export function rowWords(input: RowInput): RowWords {
   switch (submission.state) {
     case 'running': {
       const lines: string[] = []
+      if ((live?.stage ?? submission.stage) === 'dependencies') {
+        return { title: file, lines: [tr('dependencies.installing')] }
+      }
       if (input.phone) {
         lines.push(
           submission.cellsTotal > 0

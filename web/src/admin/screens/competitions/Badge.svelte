@@ -30,29 +30,29 @@
       outline: 'border border-accent-text text-accent-text',
     },
     positive: {
-      filled: 'bg-positive/15 text-positive',
-      strong: 'bg-positive text-white',
+      filled: 'bg-positive/5 text-positive dark:bg-positive/15',
+      strong: 'bg-positive text-white dark:text-canvas',
       outline: 'border border-positive text-positive',
     },
     danger: {
-      filled: 'bg-danger/10 text-danger',
-      strong: 'bg-danger text-white',
+      filled: 'bg-danger/5 text-danger dark:bg-danger/10',
+      strong: 'bg-danger text-white dark:text-canvas',
       outline: 'border border-danger text-danger',
     },
     warning: {
-      filled: 'bg-warning/15 text-warning',
-      strong: 'bg-warning text-white',
+      filled: 'bg-warning/5 text-warning dark:bg-warning/15',
+      strong: 'bg-warning text-white dark:text-canvas',
       outline: 'border border-warning text-warning',
     },
     neutral: {
-      filled: 'bg-raised text-brand',
-      strong: 'bg-muted text-white',
+      filled: 'bg-raised text-primary',
+      strong: 'bg-muted text-white dark:text-canvas',
       outline: 'border border-line text-muted',
     },
     brand: {
       filled: 'bg-brand text-white',
       strong: 'bg-brand text-white',
-      outline: 'border border-brand text-brand',
+      outline: 'border border-primary text-primary',
     },
   }
 </script>

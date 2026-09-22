@@ -28,6 +28,7 @@
   --line-soft: 233 238 247;
   --ink: 16 26 51;
   --muted: 93 107 138;
+  --competition-muted: 65 80 105;
   /* Lifted from 138 147 168, which scored 2.84 on surface and 2.64 on raised —
      below even the 3:1 large-text floor. Faint now clears 3:1 on every ground,
      and the rule that goes with it: faint never carries information. Anything
@@ -240,6 +241,7 @@
     --line-soft: 16 25 58;
     --ink: 230 231 232;
     --muted: 155 166 190;
+    --competition-muted: 184 195 214;
     --faint: 94 107 133;
 
     --primary: 15 160 215;
@@ -295,6 +297,7 @@
   --line-soft: 16 25 58;
   --ink: 230 231 232;
   --muted: 155 166 190;
+  --competition-muted: 184 195 214;
   --faint: 94 107 133;
 
   --primary: 15 160 215;
@@ -425,6 +428,54 @@
 }
 
 @layer components {
+  /* Competition pages carry instructions, scores and dense forms. Keep their
+     reading scale local: the notebook's compact toolbars use the defaults. */
+  .competition-ui {
+    --type-micro: 14px;
+    --leading-micro: 20px;
+    --type-small: 15px;
+    --leading-small: 22px;
+    --type-ui: 16px;
+    --leading-ui: 24px;
+    --muted: var(--competition-muted);
+    --faint: var(--competition-muted);
+  }
+
+  .competition-ui .text-micro {
+    font-size: var(--type-micro);
+    line-height: var(--leading-micro);
+  }
+
+  .competition-ui .text-2xs {
+    font-size: var(--type-small);
+    line-height: var(--leading-small);
+  }
+
+  .competition-ui .text-ui {
+    font-size: var(--type-ui);
+    line-height: var(--leading-ui);
+  }
+
+  .competition-ui h1 {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+  }
+
+  .competition-ui :is(input:not([type='checkbox']):not([type='radio']), textarea, select, .btn-outline) {
+    border-color: rgb(var(--muted) / 0.8);
+  }
+
+  .competition-ui :is(input, textarea, select)::placeholder {
+    color: rgb(var(--muted));
+    opacity: 1;
+  }
+
+  .competition-ui :is(button, a, input, textarea, select):focus-visible {
+    outline: 2px solid rgb(var(--accent-text));
+    outline-offset: 3px;
+  }
+
   /*
    * Two jobs in one control, so the three lists below are positional rather
    * than one blanket value: colour answers the POINTER and takes the built-in
@@ -969,7 +1020,10 @@
  * сложилась бы в кашу.
  */
 .prose-note .katex-display {
-  @apply max-w-full overflow-x-auto overscroll-x-contain;
+  /* overflow-x:auto otherwise turns the vertical axis into auto as well.
+     KaTeX's baseline rounding can protrude a few pixels; padding keeps the
+     formula intact without adding a vertical scrollbar. */
+  @apply max-w-full overflow-x-auto overflow-y-hidden overscroll-x-contain py-1;
 }
 .prose-note::after {
   content: '';

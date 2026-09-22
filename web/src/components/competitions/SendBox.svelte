@@ -11,6 +11,9 @@
    * интернету ради ответа «принимается только .ipynb» — это не проверка, это
    * наказание.
    */
+  import { onMount } from 'svelte'
+  import type { DependencyOverview } from '@shared/dependencies'
+  import { entrantApi } from '@/lib/entrantApi'
   import { tr } from '@shared/i18n'
   import type { EntrantCompetitionView, EntrantSubmissions } from '@shared/competitions-entrant'
 
@@ -21,11 +24,34 @@
     busy: boolean
     /** Отказ отправки — словами сервера или своими про расширение. */
     refusal: string | null
-    onsend: (file: File) => void
+    onsend: (file: File, bundleId?: string | null) => Promise<boolean>
     onrefuse: (message: string) => void
   }
 
   const { view, mine, phone, busy, refusal, onsend, onrefuse }: Props = $props()
+
+  let chosenFile = $state<File | null>(null)
+  let dependencies = $state<DependencyOverview | null>(null)
+  let bundleId = $state('')
+  let packageError = $state('')
+  let loadingPackages = $state(true)
+  const readyBundles = $derived(dependencies?.bundles.filter((bundle) => bundle.state === 'ready' && bundle.revisionId === dependencies?.revision?.id) ?? [])
+  const selectionReset = $derived(!!dependencies?.draft.selectedBundleId && !readyBundles.some((bundle) => bundle.id === dependencies?.draft.selectedBundleId))
+  async function loadPackages(): Promise<void> {
+    loadingPackages = true
+    try {
+      const next = await entrantApi.dependencies(view.competition.slug)
+      dependencies = next
+      bundleId = next.bundles.some((bundle) => bundle.id === next.draft.selectedBundleId && bundle.state === 'ready' && bundle.revisionId === next.revision?.id) ? next.draft.selectedBundleId ?? '' : ''
+      packageError = ''
+    } catch (cause) { packageError = cause instanceof Error ? cause.message : tr('common.networkError') }
+    finally { loadingPackages = false }
+  }
+  onMount(() => { void loadPackages() })
+  async function confirmSend(): Promise<void> {
+    if (!chosenFile || blocked || loadingPackages || packageError) return
+    if (await onsend(chosenFile, bundleId || null)) chosenFile = null
+  }
 
   let dragging = $state(false)
   let input = $state<HTMLInputElement | null>(null)
@@ -61,7 +87,8 @@
       onrefuse(tr('competitions.refusal.notIpynb'))
       return
     }
-    onsend(file)
+    chosenFile = file
+    onrefuse('')
   }
 </script>
 
@@ -100,9 +127,9 @@
       }}
     >
       <div class="flex min-w-0 grow items-center gap-[18px] px-6 py-[22px]">
-        <svg width="28" height="32" viewBox="0 0 28 32" class="shrink-0" aria-hidden="true">
-          <path d="M2 2h15l9 9v19H2V2Z" fill="none" stroke="rgb(var(--brand))" stroke-width="2" />
-          <path d="M17 2v9h9" fill="none" stroke="rgb(var(--brand))" stroke-width="2" />
+        <svg width="28" height="32" viewBox="0 0 28 32" class="shrink-0 text-primary" aria-hidden="true">
+          <path d="M2 2h15l9 9v19H2V2Z" fill="none" stroke="currentColor" stroke-width="2" />
+          <path d="M17 2v9h9" fill="none" stroke="currentColor" stroke-width="2" />
           <path d="M14 25V15m0 0-4 4m4-4 4 4" fill="none" stroke="rgb(var(--accent))" stroke-width="2" />
         </svg>
         <div class="flex min-w-0 flex-col gap-1">
@@ -127,8 +154,25 @@
     </div>
   {/if}
 
+  {#if chosenFile}
+    <div class="space-y-3 border border-line bg-surface p-4 text-[15px]">
+      <div class="flex flex-wrap items-center justify-between gap-2"><strong class="break-all text-ink">{chosenFile.name}</strong><button type="button" class="min-h-10 text-[14px] text-accent-text underline" disabled={busy} onclick={() => (chosenFile = null)}>{tr('dependencies.removeFile')}</button></div>
+      <label class="block text-[14px] font-bold text-ink" for="submission-packages">{tr('dependencies.sendWith')}</label>
+      <select id="submission-packages" class="min-h-11 w-full max-w-full border border-line bg-canvas px-3 text-[15px] text-ink" bind:value={bundleId} disabled={busy || loadingPackages}>
+        <option value="">{tr('dependencies.base')}</option>
+        {#each readyBundles as bundle (bundle.id)}<option value={bundle.id}>{tr('dependencies.set', { number: bundle.number })}</option>{/each}
+      </select>
+      {#if dependencies?.revision}<p class="break-words text-[14px] text-muted">{dependencies.revision.environmentName} · Python {dependencies.revision.pythonVersion}</p>{/if}
+      {#if selectionReset && !bundleId}<p class="text-[14px] text-warning" role="status">{tr('dependencies.selectionReset')}</p>{/if}
+      {#if loadingPackages}<p class="text-[14px] text-muted" role="status">{tr('dependencies.loading')}</p>{/if}
+      {#if packageError}<p class="text-[14px] text-danger" role="alert">{packageError}</p><button type="button" class="min-h-10 text-accent-text underline" onclick={loadPackages}>{tr('dependencies.reload')}</button>{/if}
+      <p class="text-[14px] text-muted">{tr('dependencies.sendHint')}</p>
+      <div class="flex flex-wrap items-center gap-4"><button type="button" class="min-h-11 bg-brand px-5 font-bold text-white disabled:opacity-50" disabled={blocked || loadingPackages || !!packageError} onclick={confirmSend}>{tr(busy ? 'competitions.p.sending' : 'dependencies.send')}</button><a class="text-[14px] text-accent-text underline" href={`/k/${view.competition.slug}/dependencies`}>{tr('dependencies.manage')}</a></div>
+    </div>
+  {/if}
+
   {#if refusal}
-    <p class="text-2xs leading-[18px] text-danger">{refusal}</p>
+    <p class="text-2xs leading-[18px] text-danger" role="alert">{refusal}</p>
   {:else if mine.inFlight > 0}
     <p class="text-2xs leading-[18px] text-muted">{tr('competitions.refusal.inFlight')}</p>
   {:else if mine.accepting === 'closed'}

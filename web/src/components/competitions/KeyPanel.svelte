@@ -50,7 +50,7 @@
   {#if me?.entrant && me.key}
     <section class="flex flex-col border border-brand" data-key-card>
       <header class="bg-brand px-3.5 py-2.5">
-        <h2 class="text-[11px] font-black uppercase leading-[14px] tracking-label text-white">
+        <h2 class="text-micro font-black uppercase leading-5 tracking-label text-white">
           {tr('competitions.p.keyTitle')}
         </h2>
       </header>
@@ -63,7 +63,7 @@
         <p class="text-2xs leading-[19px] text-ink">{tr('competitions.p.keyExplain')}</p>
         <div class="flex gap-2">
           <button
-            class="h-[34px] grow border border-brand text-micro font-bold text-brand hover:bg-surface"
+            class="h-[34px] grow border border-primary text-micro font-bold text-primary hover:bg-surface"
             type="button"
             onclick={() => copy('key', me.key ?? '')}
           >
@@ -102,19 +102,20 @@
       if (canSignIn && clean) onsignin(clean)
     }}
   >
-    <h2 class="text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+    <h2 id="competition-signin-title" class="text-ui font-bold text-ink">
       {tr('competitions.p.signInTitle')}
     </h2>
     <div class="flex gap-2">
       <input
-        class="h-9 min-w-0 grow border border-line bg-canvas px-3 font-mono text-2xs uppercase text-ink placeholder:font-sans placeholder:normal-case placeholder:text-faint focus:border-accent focus:outline-none"
+        class="h-11 min-w-0 w-full grow border border-line bg-canvas px-3 font-mono text-ui uppercase text-ink placeholder:font-sans placeholder:normal-case placeholder:text-muted focus:border-accent focus:outline-none"
+        aria-labelledby="competition-signin-title"
         placeholder={tr('competitions.p.keyPlaceholder')}
         bind:value={typed}
         autocomplete="off"
         spellcheck="false"
       />
       <button
-        class="h-9 shrink-0 border border-line px-3.5 text-2xs text-ink hover:bg-surface disabled:text-faint"
+        class="h-11 shrink-0 bg-primary px-3.5 text-ui font-semibold text-primary-ink hover:brightness-110 disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted"
         type="submit"
         disabled={!canSignIn || busy}
       >

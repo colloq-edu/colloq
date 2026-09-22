@@ -1,0 +1,6 @@
+# Геопрогноз спроса ПВЗ: CPU, квантильный бустинг и spatial CV.
+# colloq: from base
+lightgbm==4.6.0
+h3>=4.2,<5
+nbclient>=0.10,<1
+nbformat>=5.10,<6

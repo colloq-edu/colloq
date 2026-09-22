@@ -8,6 +8,8 @@
  * приватную часть опирается ровно на это число.
  */
 
+import { splitByUsage } from '@shared/competitions'
+
 /** Что видно про CSV в карточке файла. */
 export interface CsvShape {
   /** Строк ДАННЫХ, без шапки. Именно это число делится на две части. */
@@ -83,6 +85,38 @@ export function csvShape(bytes: Uint8Array): CsvShape | null {
 /** Шапка одной строкой: `id, orders` — ровно так она подписана в макете. */
 export function columnsLine(columns: readonly string[]): string {
   return columns.join(', ')
+}
+
+/** Count the same Usage values that the Python scoring harness accepts.
+ * Records may contain quoted commas and newlines; splitting on lines loses
+ * alignment as soon as a descriptive column contains a paragraph. */
+export function csvUsageSplit(bytes: Uint8Array): { publicRows: number; privateRows: number } | null {
+  const text = Buffer.from(bytes).toString('utf8').replace(/^\uFEFF/, '')
+  let column: number | null = null
+  let start = 0
+  let quoted = false
+  const usage: string[] = []
+  for (let i = 0; i <= text.length; i++) {
+    if (text[i] === '"') {
+      if (quoted && text[i + 1] === '"') i += 1
+      else quoted = !quoted
+    }
+    if (i !== text.length && (text[i] !== '\n' || quoted)) continue
+    const record = text.slice(start, i)
+    start = i + 1
+    if (!record.trim()) continue
+    const fields = splitRecord(record)
+    if (column === null) {
+      column = fields.indexOf('Usage')
+      if (column < 0) return null
+    } else {
+      usage.push(fields[column] ?? '')
+    }
+  }
+  const parts = splitByUsage(usage)
+  if (!parts) return null
+  const publicRows = parts.filter((part) => part === 'public').length
+  return { publicRows, privateRows: parts.length - publicRows }
 }
 
 /**

@@ -12,6 +12,7 @@
  */
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readCompetitionRoute } from '../web/src/lib/routes.js'
 import { setLocaleResolver } from '../shared/i18n.js'
 import type { EntrantSubmission } from '../shared/competitions.js'
 import type { SubmissionLive } from '../shared/competitions-entrant.js'
@@ -203,11 +204,12 @@ test('полоса этапов красит пройденное, текуще�
   const running = stageStrip('running', 'notebook')
   assert.deepEqual(
     running.map((cell) => cell.position),
-    ['done', 'done', 'current', 'ahead', 'ahead'],
+    ['done', 'done', 'done', 'current', 'ahead', 'ahead'],
   )
   assert.deepEqual(running.map((cell) => cell.word), [
     'ПРИНЯТА',
     'ОЧЕРЕДЬ',
+    'Установка пакетов',
     'ЗАПУСК ТЕТРАДИ',
     'ПРОВЕРКА CSV',
     'ОЦЕНКА',
@@ -215,12 +217,12 @@ test('полоса этапов красит пройденное, текуще�
   // Дошедшая до числа зелена целиком: «ОЦЕНКА» у неё пройдена, а не идёт.
   assert.deepEqual(
     stageStrip('scored', 'score').map((cell) => cell.position),
-    ['done', 'done', 'done', 'done', 'done'],
+    ['done', 'done', 'done', 'done', 'done', 'done'],
   )
   // Упавшая оставляет текущим тот этап, на котором умерла: там и причина.
   assert.deepEqual(
     stageStrip('notebookFailed', 'notebook').map((cell) => cell.position),
-    ['done', 'done', 'current', 'ahead', 'ahead'],
+    ['done', 'done', 'done', 'current', 'ahead', 'ahead'],
   )
 })
 
@@ -230,7 +232,7 @@ test('полоса прогресса считает ячейками, а без
   assert.equal(runProgress(live({ cellsDone: 14, cellsTotal: 14 })), 95)
   // Число ячеек ещё неизвестно — полоса показывает этап, а не ноль: ноль под
   // словом «ВЫПОЛНЯЕТСЯ» читается как «висит».
-  assert.equal(runProgress(live({ stage: 'queue', cellsTotal: 0 })), 40)
+  assert.equal(runProgress(live({ stage: 'queue', cellsTotal: 0 })), 33)
   assert.equal(runProgress(live({ stage: 'score', cellsTotal: 0 })), 100)
 })
 
@@ -453,4 +455,23 @@ test('кружок участника: цвет из имени, буква из
   assert.equal(avatarLetter('  '), '?')
   assert.equal(shortName('Тимур Ахметов'), 'Тимур А.')
   assert.equal(shortName('Платон'), 'Платон')
+})
+
+
+test('dependency installation has its own current stage and phone wording', () => {
+  const cells = stageStrip('running', 'dependencies')
+  assert.equal(cells.find((cell) => cell.position === 'current')?.stage, 'dependencies')
+  const result = rowWords({ submission: submission({ state: 'running', stage: 'dependencies', cellsTotal: 0 }), live: live({ stage: 'dependencies' }), best: false, paused: false, now: NOW, phone: true })
+  assert.deepEqual(result.lines, ['Установка пакетов'])
+  setLocaleResolver(() => 'en')
+  assert.deepEqual(rowWords({ submission: submission({ state: 'running', stage: 'dependencies' }), live: null, best: false, paused: false, now: NOW, phone: true }).lines, ['Installing packages'])
+})
+
+
+test('package manager has a distinct route with an optional trailing slash', () => {
+  assert.deepEqual(readCompetitionRoute('/k/rohlik/dependencies'), { slug: 'rohlik', view: 'dependencies', signInKey: null })
+  assert.deepEqual(readCompetitionRoute('/k/rohlik/dependencies/'), { slug: 'rohlik', view: 'dependencies', signInKey: null })
+  assert.equal(readCompetitionRoute('/k/rohlik/dependencies/screen'), null)
+  assert.equal(readCompetitionRoute('/k/rohlik/leaderboard/screen')?.view, 'screen')
+  assert.equal(readCompetitionRoute('/k/rohlik/submissions')?.view, 'submissions')
 })

@@ -1,0 +1,9 @@
+{
+  "name": "kaggle-base",
+  "imageId": "sha256:30616313b791059fd79fa4bce4fe27b1ce033afdf143164819093575c3d2c356",
+  "architecture": "arm64",
+  "os": "linux",
+  "createdAt": "2026-09-21T01:40:41.685056595+03:00",
+  "bytes": 1007141754,
+  "officialKaggleImage": false
+}

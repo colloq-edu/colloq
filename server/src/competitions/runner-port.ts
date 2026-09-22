@@ -53,6 +53,7 @@ export interface StepLimits {
 
 /** Докуда дошла идущая тетрадь — то, из чего складывается «ячейка 9 из 14». */
 export interface RunProgress {
+  phase?: 'dependencies' | 'notebook'
   cell: number
   cells: number
   outputBytes: number
@@ -60,6 +61,10 @@ export interface RunProgress {
 
 /** Заказ на исполнение тетради. Пути — уже разложенные каталоги (storage.ts). */
 export interface RunRequest {
+  /** Immutable base binding; absent only for legacy callers. */
+  imageDigest?: string
+  /** Published bundle directory: requirements.lock and wheels/. */
+  dependenciesDir?: string
   competition: Competition
   submissionId: string
   /** Имя контейнера; по нему же его убивают. Даётся снаружи, до запуска. */
@@ -110,6 +115,8 @@ export interface RunDiagnostics {
 
 /** Заказ на подсчёт метрики. Участника в этом контейнере нет. */
 export interface ScoreRequest {
+  /** The scorer's pinned base, without participant packages. */
+  imageDigest?: string
   competition: Competition
   submissionId: string
   container: string

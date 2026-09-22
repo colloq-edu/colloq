@@ -24,6 +24,8 @@ import path from 'node:path'
 import { tr } from '@shared/i18n'
 import '../admin/settings.js'
 import { db } from '../db.js'
+import { getBinding, lockOf } from '../dependencies/store.js'
+import { verifyBundleFiles } from '../dependencies/files.js'
 import {
   BOOT,
   enqueue,
@@ -419,6 +421,7 @@ async function runJob(row: QueueRow): Promise<void> {
 /** Шаг первый и, если он удался, шаг второй. */
 async function runNotebookThenScore(competition: Competition, submission: Submission): Promise<void> {
   const runner = competitionRunner()
+  const binding = getBinding(submission.id)
   const limits = limitsFor(competition, 'notebook')
   const container = containerName(submission.id, 'notebook', newToken())
   const run = startRun({ submissionId: submission.id, kind: 'notebook', container })
@@ -427,7 +430,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
   noteQueueContainer(submission.id, container)
   updateSubmission(submission.id, {
     state: 'running',
-    stage: 'notebook',
+    stage: binding?.bundle ? 'dependencies' : 'notebook',
     cellsDone: 0,
     participantError: null,
     teacherError: null,
@@ -442,7 +445,31 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     letContainerWrite(result)
   }
 
-  const outcome = await runner.run({
+  let dependenciesDir: string | undefined
+  let preflightError: unknown = null
+  if (runner.backend === 'docker') {
+    try {
+      if (!binding?.revision) throw new Error('This legacy submission has no available pinned environment. Submit the notebook again.')
+      if (binding.bundle) {
+        const lock = lockOf(binding.bundle.id)
+        if (lock === null) throw new Error('Dependency set is no longer ready')
+        dependenciesDir = await verifyBundleFiles(binding.bundle, lock)
+      }
+    } catch (error) { preflightError = error }
+  }
+  // Hashing a large set yields to cancellation before any container exists.
+  if (takeCancellation(submission.id, 0)) {
+    finishRun(run.id, { finishedAt: Date.now(), verdict: 'exit', cellsDone: 0, cellsTotal: 0,
+      teacherError: 'Cancelled before container start' })
+    return
+  }
+  const outcome: RunOutcome = preflightError ? {
+    status: 'dependency_error', cell: -1, cells: 0, wall: 0, submission: null,
+    detail: preflightError instanceof Error ? preflightError.message : String(preflightError), log: '',
+    diagnostics: { exit: null, oomKilled: false, backend: runner.backend },
+  } : await runner.run({
+    imageDigest: binding?.revision?.imageDigest,
+    dependenciesDir,
     competition,
     submissionId: submission.id,
     container,
@@ -452,6 +479,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     limits,
     onProgress: (progress) => {
       updateSubmission(submission.id, {
+        stage: progress.phase === 'dependencies' ? 'dependencies' : 'notebook',
         cellsDone: progress.cell + 1,
         cellsTotal: progress.cells,
       })
@@ -472,7 +500,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
   if (outcome.status !== 'ok') {
     updateSubmission(submission.id, {
       state: stateOfVerdict('notebook', outcome.status),
-      stage: outcome.status === 'no-submission' ? 'check' : 'notebook',
+      stage: outcome.status === 'dependency_error' ? 'dependencies' : outcome.status === 'no-submission' ? 'check' : 'notebook',
       durationMs: outcome.wall,
       cellsDone: outcome.cell + 1,
       cellsTotal: outcome.cells,
@@ -568,6 +596,15 @@ async function scoreStep(
   const runner = competitionRunner()
   updateSubmission(submission.id, { stage: 'score' })
 
+  const imageDigest = getBinding(submission.id)?.revision?.imageDigest
+  if (runner.backend === 'docker' && !imageDigest) {
+    updateSubmission(submission.id, {
+      state: 'metricFailed', stage: 'score', durationMs: notebookWall,
+      teacherError: 'This legacy submission has no pinned environment. Submit the notebook again before scoring.',
+    })
+    return
+  }
+
   const missing = prepareSecrets(competition)
   if (missing) {
     updateSubmission(submission.id, {
@@ -598,6 +635,7 @@ async function scoreStep(
   let outcome: ScoreOutcome
   try {
     outcome = await runner.score({
+      imageDigest,
       competition,
       submissionId: submission.id,
       container,
@@ -698,6 +736,8 @@ export function notebookNote(outcome: RunOutcome, competition: Competition): str
   switch (outcome.status) {
     case 'ok':
       return null
+    case 'dependency_error':
+      return tr('dependencies.error.install')
     case 'cell_error':
       if (outcome.diagnostics.killedBy === 'output') {
         return tr('competitions.answer.tooMuchOutput', {
@@ -748,7 +788,8 @@ export function teacherNote(outcome: RunOutcome): string | null {
   const head = `${outcome.status} · exit ${outcome.diagnostics.exit ?? '—'}${
     outcome.diagnostics.oomKilled ? ' · OOMKilled' : ''
   }${outcome.diagnostics.killedBy ? ` · killed by ${outcome.diagnostics.killedBy}` : ''}`
-  return outcome.log ? `${head}\n${outcome.log}` : head
+  const detail = outcome.status === 'dependency_error' ? outcome.detail : ''
+  return [head, detail, outcome.log].filter(Boolean).join('\n')
 }
 
 /**
@@ -903,4 +944,3 @@ export function runnerStatus(): RunnerStatus {
     })),
   }
 }
-

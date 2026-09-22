@@ -105,10 +105,10 @@ const PUBLIC_PATH = /^\/p\/([A-Za-z0-9_-]{1,64})(?:\/(\d+))?\/?$/
  * приводит к виду сам сервер, поэтому здесь они тоже проходят.
  */
 const COMPETITIONS_PATH =
-  /^\/k(?:\/t\/([A-Za-z0-9 -]{9,16})|\/([a-z0-9-]{1,64})(?:\/(submissions|leaderboard)(\/screen)?)?)?\/?$/
+  /^\/k(?:\/t\/([A-Za-z0-9 -]{9,16})|\/([a-z0-9-]{1,64})(?:\/(submissions|leaderboard|dependencies)(\/screen)?)?)?\/?$/
 
 /** Какая из страниц соревнований открыта. */
-export type CompetitionView = 'list' | 'task' | 'submissions' | 'leaderboard' | 'screen'
+export type CompetitionView = 'list' | 'task' | 'submissions' | 'leaderboard' | 'dependencies' | 'screen'
 
 export interface CompetitionRoute {
   /** Адрес соревнования; `null` — общий список `/k`. */
@@ -178,15 +178,18 @@ export function readCompetitionRoute(path: string): CompetitionRoute | null {
   const slug = match[2] ?? null
   const tail = match[3]
   const screen = match[4] !== undefined
+  if (screen && tail === 'dependencies') return null
   const view: CompetitionView = slug === null
     ? 'list'
     : screen
       ? 'screen'
       : tail === 'submissions'
         ? 'submissions'
-        : tail === 'leaderboard'
-          ? 'leaderboard'
-          : 'task'
+        : tail === 'dependencies'
+          ? 'dependencies'
+          : tail === 'leaderboard'
+            ? 'leaderboard'
+            : 'task'
   return { slug, view, signInKey: key }
 }
 

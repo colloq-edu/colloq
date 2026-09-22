@@ -57,7 +57,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import subprocess
+import tempfile
+import venv
 import sys
 import time
 import traceback
@@ -81,6 +85,7 @@ NOTEBOOK = Path(os.environ.get("COMP_NOTEBOOK", "/submission/notebook.ipynb"))
 # Рабочая папка тетради: tmpfs с ЖЁСТКИМ потолком. Диска хоста в ней нет ни
 # байта, и «пишу терабайт» кончается на ENOSPC в ячейке участника.
 OUT = Path(os.environ.get("COMP_OUT", "/out"))
+DATA = Path(os.environ.get("COMP_DATA", "/data"))
 # Крошечная папка на диске ХОСТА: маячок, итог, исполненная тетрадь и копия
 # ответа, которую обвязка кладёт сюда сама, проверив размер.
 RESULT = Path(os.environ.get("COMP_RESULT", "/result"))
@@ -111,6 +116,11 @@ class Runner(NotebookClient):
     def __init__(self, nb, **kwargs):
         super().__init__(nb, **kwargs)
         self.cells_total = sum(1 for c in nb.cells if c.cell_type == "code")
+        self.code_indices = {
+            index: order for order, index in enumerate(
+                i for i, cell in enumerate(nb.cells) if cell.cell_type == "code"
+            )
+        }
         self.cell_index = -1
         self.output_bytes = 0
         self.output_truncated = False
@@ -133,7 +143,9 @@ class Runner(NotebookClient):
         )
 
     def on_cell_start(self, cell=None, cell_index=None, **kwargs):  # noqa: ARG002
-        self.cell_index = cell_index
+        if cell_index not in self.code_indices:
+            return
+        self.cell_index = self.code_indices[cell_index]
         self._cell_started = time.monotonic()
         self.beat("cell")
 
@@ -178,9 +190,65 @@ def read_peak() -> int | None:
     return None
 
 
-def main() -> int:
+def prepare_workspace() -> None:
+    """Expose the read-only dataset at the documented relative path data/."""
     OUT.mkdir(parents=True, exist_ok=True)
     RESULT.mkdir(parents=True, exist_ok=True)
+    link = OUT / "data"
+    if not link.is_symlink():
+        link.symlink_to(DATA, target_is_directory=True)
+
+
+def cell_error_detail(exc: Exception) -> str:
+    """Plain text for the UI, keeping the final exception even in a long trace."""
+    text = re.sub(r"\\x1b\\[[0-?]*[ -/]*[@-~]", "", str(exc))
+    return "\\n".join(text.splitlines()[-25:])[-4000:]
+
+
+def dependency_command(args: list[str]) -> None:
+    """Bound installation output on disk and retain only its useful tail."""
+    with tempfile.TemporaryFile() as log:
+        completed = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+        if completed.returncode:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - 6000))
+            detail = log.read().decode("utf-8", "replace")
+            raise RuntimeError(cell_error_detail(RuntimeError(detail)) or f"Installer exited with {completed.returncode}")
+
+
+def prepare_dependencies() -> str:
+    """Install a published bundle offline and return its exact kernel name."""
+    directory = os.environ.get("COMP_DEPENDENCIES")
+    if not directory:
+        return "python3"
+    dependencies = Path(directory)
+    environment = OUT / ".colloq-venv"
+    # Reuse base pip to avoid copying its wheels into every temporary venv.
+    venv.EnvBuilder(system_site_packages=True, with_pip=False).create(environment)
+    python = environment / "bin" / "python"
+    dependency_command([
+        sys.executable, "-I", "-m", "pip", "--isolated", "--disable-pip-version-check",
+        "--python", str(python), "install", "--no-index", "--no-deps", "--no-cache-dir",
+        "--no-compile", "--only-binary=:all:", "--require-hashes", "--find-links", str(dependencies / "wheels"),
+        "-r", str(dependencies / "requirements.lock"),
+    ])
+    # An existing base python3 kernelspec may contain an absolute base Python.
+    # Use a distinct spec with an absolute venv interpreter; PATH is insufficient.
+    kernel_name = "colloq-dependencies"
+    jupyter_data = Path(os.environ.get("JUPYTER_DATA_DIR") or str(OUT / ".jupyter"))
+    os.environ["JUPYTER_DATA_DIR"] = str(jupyter_data)
+    kernel_dir = jupyter_data / "kernels" / kernel_name
+    kernel_dir.mkdir(parents=True, exist_ok=True)
+    (kernel_dir / "kernel.json").write_text(json.dumps({
+        "argv": [str(python), "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+        "display_name": "Colloq dependency environment",
+        "language": "python",
+    }), encoding="utf-8")
+    return kernel_name
+
+
+def main() -> int:
+    prepare_workspace()
     # HOME указывает в пустую tmpfs, и папки там ещё нет: --tmpfs создаёт только
     # точку монтирования. IPython, не найдя HOME, уходит во временный каталог и
     # печатает об этом предупреждение в КАЖДУЮ посылку.
@@ -210,10 +278,25 @@ def main() -> int:
         )
         return 1
 
+    if os.environ.get("COMP_DEPENDENCIES"):
+        write_json(PROGRESS, {"phase": "dependencies", "cell": -1, "cells": 0, "outputBytes": 0})
+    try:
+        kernel_name = prepare_dependencies()
+    except Exception as exc:  # noqa: BLE001
+        write_json(RUN_JSON, {
+            "status": "dependency_error",
+            "detail": cell_error_detail(exc),
+            "cell": -1,
+            "cells": 0,
+            "wall": round(time.time() - started_wall, 3),
+            "peakBytes": read_peak(),
+        })
+        return 1
+
     runner = Runner(
         nb,
         timeout=CELL_TIMEOUT,
-        kernel_name="python3",
+        kernel_name=kernel_name,
         allow_errors=False,
         force_raise_errors=True,
         # Рабочая папка тетради — записываемая /out: участник пишет ответ
@@ -236,7 +319,7 @@ def main() -> int:
     except CellExecutionError as exc:
         status = "cell_error"
         # Участнику это показывают дословно: его собственная ошибка.
-        detail = "\\n".join(str(exc).splitlines()[-25:])[:4000]
+        detail = cell_error_detail(exc)
     except Exception as exc:  # noqa: BLE001
         status = "harness_error"
         detail = f"{type(exc).__name__}: {exc}\\n{traceback.format_exc()[-2000:]}"

@@ -36,7 +36,7 @@
 
 <section class="flex flex-col gap-2.5">
   <div class="flex items-baseline justify-between gap-2">
-    <h2 class="text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+    <h2 class="text-micro font-black uppercase leading-5 tracking-label text-muted">
       {tr('competitions.p.publicBoard')}
     </h2>
     <button class="text-micro text-accent-text hover:underline" type="button" onclick={onopen}>

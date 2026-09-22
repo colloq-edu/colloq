@@ -30,7 +30,7 @@
       <span class="h-px w-5 shrink-0 bg-line" aria-hidden="true"></span>
     {/if}
     <span
-      class="text-[11px] font-black uppercase leading-[14px] tracking-label {cell.position ===
+      class="text-micro font-black uppercase leading-5 tracking-label {cell.position ===
       'done'
         ? 'text-positive'
         : cell.position === 'current'

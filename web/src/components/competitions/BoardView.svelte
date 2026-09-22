@@ -81,7 +81,7 @@
     </p>
   </div>
 
-  {#if people.length === 0}
+  {#if people.length === 0 && baseline === null}
     <p class="border-t border-line py-6 text-ui text-muted">{tr('competitions.p.boardEmpty')}</p>
   {:else if phone}
     <!-- Телефон: те же строки без колонок «сдвиг» и «в зачёт» — в 390 px они
@@ -103,23 +103,31 @@
           <span class="shrink-0 font-mono text-ui font-bold text-ink">{formatScore(line.score)}</span>
         </div>
       {/each}
+      {#if baseline}
+        <div class="flex items-center gap-3 border-b border-line border-t border-dashed border-t-brand-2 py-3">
+          <span class="w-8 shrink-0 font-mono text-ui text-muted">{baseline.place ?? '—'}</span>
+          <span class="size-7 shrink-0 border border-dashed border-brand-2" aria-hidden="true"></span>
+          <span class="min-w-0 grow text-2xs text-muted">{tr('competitions.p.baselineRow')}</span>
+          <span class="shrink-0 font-mono text-ui text-muted">{formatScore(baseline.score)}</span>
+        </div>
+      {/if}
     </div>
   {:else}
     <div class="w-full overflow-x-auto">
       <table class="w-full min-w-[900px] border-collapse text-left">
         <thead>
           <tr class="border-b-2 border-ink">
-            <th class="w-16 py-3 text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+            <th class="w-16 py-3 text-micro font-black uppercase leading-5 tracking-label text-muted">
               {tr('competitions.p.colPlace')}
             </th>
-            <th class="w-20 text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+            <th class="w-20 text-micro font-black uppercase leading-5 tracking-label text-muted">
               {final ? tr('competitions.p.colShift') : ''}
             </th>
-            <th class="text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+            <th class="text-micro font-black uppercase leading-5 tracking-label text-muted">
               {tr('competitions.p.colEntrant')}
             </th>
             <th
-              class="w-[140px] text-right text-[11px] font-black uppercase leading-[14px] tracking-[0.06em] text-ink"
+              class="w-[140px] text-right text-micro font-black uppercase leading-5 tracking-[0.06em] text-ink"
             >
               {tr(final ? 'competitions.p.colFinalMetric' : 'competitions.p.colPublicMetric', {
                 metric: competition.metric.name,
@@ -127,15 +135,15 @@
             </th>
             {#if final}
               <th
-                class="w-[140px] text-right text-[11px] font-black uppercase leading-[14px] tracking-[0.06em] text-muted"
+                class="w-[140px] text-right text-micro font-black uppercase leading-5 tracking-[0.06em] text-muted"
               >
                 {tr('competitions.p.colPublicMetric', { metric: competition.metric.name })}
               </th>
             {/if}
-            <th class="w-[110px] text-right text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+            <th class="w-[110px] text-right text-micro font-black uppercase leading-5 tracking-label text-muted">
               {tr('competitions.p.colSubmissions')}
             </th>
-            <th class="w-[250px] pl-10 text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+            <th class="w-[250px] pl-10 text-micro font-black uppercase leading-5 tracking-label text-muted">
               {tr('competitions.p.colCounted')}
             </th>
           </tr>
@@ -166,7 +174,7 @@
                   <span class="min-w-0 truncate text-ui-lg font-bold text-ink">{line.name}</span>
                   {#if line.you}
                     <span
-                      class="shrink-0 bg-brand px-2 py-[3px] text-[11px] font-black uppercase leading-[14px] tracking-label text-white"
+                      class="shrink-0 bg-brand px-2 py-[3px] text-micro font-black uppercase leading-5 tracking-label text-white"
                     >
                       {tr('competitions.p.you')}
                     </span>

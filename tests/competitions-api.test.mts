@@ -362,6 +362,21 @@ test('без печенья панель не отвечает ничем', asyn
   }
 })
 
+test('панель считает реальные строки Usage, а не процент от размера файла', async () => {
+  const c = createCompetition({ slug: 'usage-counts', title: 'Разметка строк', publicPercent: 30 })
+  for (const [usage, expected] of [
+    ['Public,Private,Public,Public', { total: 4, publicRows: 3, privateRows: 1, byUsage: true }],
+    ['Public,Private,unknown,Public', { total: 4, publicRows: 1, privateRows: 3, byUsage: false }],
+  ] as const) {
+    const rows = usage.split(',').map((part, i) => `${i},"строка, с\\nпереносом",${part}`.replace('\\n', '\n'))
+    const response = await upload(`/api/admin/competitions/${c.id}/solution`, teacher, [
+      { name: 'solution.csv', body: bytes(`id,target,Usage\n${rows.join('\n')}\n`) },
+    ])
+    assert.equal(response.status, 200)
+    assert.deepEqual(((await response.json()) as CompetitionView).split, expected)
+  }
+})
+
 test('соревнование заводит любой преподаватель, а адрес занимает один', async () => {
   const made = await call('POST', '/api/admin/competitions', {
     cookie: teacher,

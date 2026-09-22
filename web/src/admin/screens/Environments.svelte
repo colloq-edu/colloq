@@ -19,6 +19,7 @@
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import EnvironmentLink from '@/components/ui/EnvironmentLink.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { builtAgo, cn, imageSize } from '@/lib/utils'
   import {
@@ -651,7 +652,7 @@
                   class="font-mono text-ui-lg font-semibold text-ink max-[640px]:min-w-0
                          max-[640px]:line-clamp-2 min-[641px]:truncate"
                 >
-                  {env.name}
+                  <EnvironmentLink name={env.name} endpoint={`/api/admin/environments/${encodeURIComponent(env.name)}/inventory`} />
                 </span>
                 <!-- У имени, а не среди состояний справа: это про то, чем
                      окружение является, а не про то, что с ним сейчас

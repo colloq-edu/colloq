@@ -1,3 +1,4 @@
+import type { AdminDependencyOverview, DependencyBundle } from '@shared/dependencies'
 import {tr} from '@shared/i18n'
 /**
  * The /api/admin client.
@@ -325,6 +326,14 @@ export const adminApi = {
       method: 'POST',
       ...json({ submissionId }),
     }),
+
+  competitionDependencies: (id: string) => request<AdminDependencyOverview>(`/competitions/${encodeURIComponent(id)}/dependencies`),
+  updateDependencyPolicy: (id: string, policy: { enabled: boolean; maxDownloadBytes: number }) =>
+    request<AdminDependencyOverview>(`/competitions/${encodeURIComponent(id)}/dependencies/policy`, { method: 'PATCH', ...json(policy) }),
+  refreshDependencyBase: (id: string) =>
+    request<AdminDependencyOverview>(`/competitions/${encodeURIComponent(id)}/dependencies/refresh-base`, { method: 'POST' }),
+  cancelCompetitionDependencies: (id: string, bundleId: string) =>
+    request<DependencyBundle>(`/competitions/${encodeURIComponent(id)}/dependencies/${encodeURIComponent(bundleId)}/cancel`, { method: 'POST' }),
 
   competition: (id: string) => request<CompetitionView>(`/competitions/${encodeURIComponent(id)}`),
 

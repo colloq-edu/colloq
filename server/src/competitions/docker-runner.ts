@@ -177,6 +177,7 @@ export function runArgs(opts: {
   dataDir: string
   inputDir: string
   resultDir: string
+  dependenciesDir?: string
   limits: StepLimits
   target: string
 }): string[] {
@@ -197,7 +198,7 @@ export function runArgs(opts: {
     `--tmpfs=/tmp:rw,nosuid,nodev,size=${limits.tmpfsMb}m,mode=1777`,
     // Рабочая папка тетради — tmpfs с жёстким потолком: диска хоста в ней нет
     // ни байта.
-    `--mount=type=tmpfs,destination=/out,tmpfs-size=${limits.tmpfsMb * 1024 * 1024},tmpfs-mode=1777`,
+    `--tmpfs=/out:rw,exec,nosuid,nodev,size=${limits.tmpfsMb}m,mode=1777`,
     // HOME внутри tmpfs, и папки в нём заводит обвязка: `--tmpfs` создаёт
     // только точку монтирования, а IPython, не найдя HOME, печатает
     // предупреждение в КАЖДУЮ посылку.
@@ -247,6 +248,7 @@ export function runArgs(opts: {
     ...mount(harnessDir(), '/harness', true),
     // Единственное место, где посылка касается диска хоста.
     ...mount(opts.resultDir, '/result'),
+    ...(opts.dependenciesDir ? [...mount(opts.dependenciesDir, '/deps', true), '-e', 'COMP_DEPENDENCIES=/deps'] : []),
     `--memory=${memory}`,
     // Swap ровно по памяти — иначе упёршийся контейнер не умирает, а уходит на
     // диск и стоит минутами (та же причина, что в pool.ts).
@@ -400,12 +402,14 @@ async function watch(
     const beat = readJson(path.join(resultDir, PROGRESS_FILE))
     if (beat) {
       const progress: RunProgress = {
+        phase: beat.phase === 'dependencies' ? 'dependencies' : 'notebook',
         cell: num(beat.cell) ?? -1,
         cells: num(beat.cells) ?? 0,
         outputBytes: num(beat.outputBytes) ?? 0,
       }
       if (
         !last ||
+        last.phase !== progress.phase ||
         last.cell !== progress.cell ||
         last.cells !== progress.cells ||
         last.outputBytes !== progress.outputBytes
@@ -520,6 +524,7 @@ const VERDICTS = new Set<string>([
   'target_too_large',
   'target_unreadable',
   'harness_error',
+  'dependency_error',
   'no-submission',
   'out-of-memory',
   'timeout',
@@ -541,13 +546,14 @@ class DockerCompetitionRunner implements CompetitionRunner {
 
   async run(request: RunRequest): Promise<RunOutcome> {
     const started = Date.now()
-    const image = `${IMAGE_PREFIX}:${request.competition.environment || 'base'}`
+    const image = request.imageDigest ?? `${IMAGE_PREFIX}:${request.competition.environment || 'base'}`
     const args = runArgs({
       container: request.container,
       image,
       dataDir: request.dataDir,
       inputDir: request.inputDir,
       resultDir: request.resultDir,
+      dependenciesDir: request.dependenciesDir,
       limits: request.limits,
       target: SUBMISSION_NAME,
     })
@@ -601,7 +607,7 @@ class DockerCompetitionRunner implements CompetitionRunner {
 
   async score(request: ScoreRequest): Promise<ScoreOutcome> {
     const started = Date.now()
-    const image = `${IMAGE_PREFIX}:${request.competition.environment || 'base'}`
+    const image = request.imageDigest ?? `${IMAGE_PREFIX}:${request.competition.environment || 'base'}`
     const args = scoreArgs({
       container: request.container,
       image,

@@ -22,6 +22,7 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -75,14 +76,14 @@ function machine(): Machine {
     make: (target) =>
       execFileSync('make', ['--no-print-directory', '-C', dir, target === 'backup' ? 'backup-legacy' : target], {
         encoding: 'utf8',
-        env: { ...process.env },
+        env: { ...process.env, COLLOQ_HOME: '', ENV_FILE: path.join(dir, '.env') },
       }),
     restore: (args, env = {}) => {
       const r = spawnSync('bash', [path.join(dir, 'scripts/restore.sh'), ...args], {
         cwd: dir,
         encoding: 'utf8',
         timeout: 60_000,
-        env: { ...process.env, ...env },
+        env: { ...process.env, COLLOQ_HOME: '', ENV_FILE: path.join(dir, '.env'), ...env },
       })
       return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` }
     },
@@ -104,10 +105,25 @@ function markOf(file: string): string {
   return execFileSync('sqlite3', [file, 'select name from seminars']).toString().trim()
 }
 
+const wheelBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0xff, 0x0a])
+const wheelHash = createHash('sha256').update(wheelBytes).digest('hex')
+const lockText = `demo==1.0 --hash=sha256:${wheelHash}\n`
+const bundlePath = 'data/dependencies/bundles/bundle-one'
+
 function seedFiles(dir: string): void {
   fs.writeFileSync(path.join(dir, 'workspace/s-one/notes.csv'), 'a,b\n1,2\n')
   fs.writeFileSync(path.join(dir, 'data/session-secret'), 'signing-key\n', { mode: 0o600 })
   fs.writeFileSync(path.join(dir, 'data/setup-token'), 'setup\n', { mode: 0o600 })
+  // Competition inputs and immutable bundle files live outside workspace/.
+  for (const folder of ['data/competitions/c-one/open', 'data/competitions/c-one/secret', `${bundlePath}/wheels`, 'data/dependencies/artifacts']) {
+    fs.mkdirSync(path.join(dir, folder), { recursive: true, mode: 0o700 })
+  }
+  fs.writeFileSync(path.join(dir, 'data/competitions/c-one/open/train.csv'), 'feature\n42\n')
+  fs.writeFileSync(path.join(dir, 'data/competitions/c-one/secret/solution.csv'), 'target\n1\n', { mode: 0o600 })
+  fs.writeFileSync(path.join(dir, 'data/dependencies/artifacts', wheelHash), wheelBytes, { mode: 0o444 })
+  fs.linkSync(path.join(dir, 'data/dependencies/artifacts', wheelHash), path.join(dir, bundlePath, 'wheels/demo-1.0-py3-none-any.whl'))
+  fs.writeFileSync(path.join(dir, bundlePath, 'requirements.lock'), lockText, { mode: 0o444 })
+  fs.writeFileSync(path.join(dir, bundlePath, 'manifest.json'), JSON.stringify({ packages: [{ sha256: wheelHash }] }), { mode: 0o444 })
   // Список пакетов, заведённый на этой машине из панели: в репозитории его нет.
   fs.writeFileSync(path.join(dir, 'kernel/environments/nlp.txt'), '# из панели\nspacy\n')
 }
@@ -122,7 +138,7 @@ function backupPair(dir: string): { db: string; files: string } {
   return { db: `backups/${db}`, files: `backups/${files}` }
 }
 
-test('make backup кладёт в архив файлы семинаров, ключи и списки пакетов', () => {
+test('make backup сохраняет файлы занятий и соревнований, ключи и готовые wheel-наборы', () => {
   const m = machine()
   seedDb(m.dir, 'первая пара')
   seedFiles(m.dir)
@@ -134,6 +150,11 @@ test('make backup кладёт в архив файлы семинаров, кл
   assert.match(listed, /workspace\/s-one\/notes\.csv/)
   assert.match(listed, /data\/session-secret/)
   assert.match(listed, /data\/setup-token/)
+  assert.match(listed, /data\/competitions\/c-one\/secret\/solution\.csv/)
+  assert.ok(listed.includes(`data/dependencies/artifacts/${wheelHash}`))
+  assert.ok(listed.includes(`${bundlePath}/requirements.lock`))
+  assert.ok(listed.includes(`${bundlePath}/manifest.json`))
+  assert.ok(listed.includes(`${bundlePath}/wheels/demo-1.0-py3-none-any.whl`))
   // Ради этой строки правка и делалась: окружение, заведённое из панели на
   // арендованной машине, живёт только в этом файле.
   assert.match(listed, /kernel\/environments\/nlp\.txt/)
@@ -156,11 +177,21 @@ test('на пустой машине копия разворачивается �
   fs.rmSync(path.join(m.dir, 'data/session-secret'))
   fs.rmSync(path.join(m.dir, 'workspace/s-one'), { recursive: true })
   fs.rmSync(path.join(m.dir, 'kernel/environments/nlp.txt'))
+  fs.rmSync(path.join(m.dir, 'data/competitions'), { recursive: true })
+  fs.rmSync(path.join(m.dir, 'data/dependencies'), { recursive: true })
 
   const r = m.restore([pair.db, pair.files])
   assert.equal(r.status, 0, r.out)
 
   assert.equal(markOf(path.join(m.dir, 'data/colloq.db')), 'первая пара')
+  assert.equal(fs.readFileSync(path.join(m.dir, 'data/competitions/c-one/open/train.csv'), 'utf8'), 'feature\n42\n')
+  assert.equal(fs.readFileSync(path.join(m.dir, 'data/competitions/c-one/secret/solution.csv'), 'utf8'), 'target\n1\n')
+  assert.equal(fs.statSync(path.join(m.dir, 'data/competitions/c-one/secret/solution.csv')).mode & 0o777, 0o600)
+  assert.deepEqual(fs.readFileSync(path.join(m.dir, 'data/dependencies/artifacts', wheelHash)), wheelBytes)
+  assert.deepEqual(fs.readFileSync(path.join(m.dir, bundlePath, 'wheels/demo-1.0-py3-none-any.whl')), wheelBytes)
+  assert.equal(fs.readFileSync(path.join(m.dir, bundlePath, 'requirements.lock'), 'utf8'), lockText)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(m.dir, bundlePath, 'manifest.json'), 'utf8')).packages[0].sha256, wheelHash)
+  assert.equal(fs.statSync(path.join(m.dir, bundlePath, 'requirements.lock')).mode & 0o777, 0o444)
   assert.equal(fs.readFileSync(path.join(m.dir, 'workspace/s-one/notes.csv'), 'utf8'), 'a,b\n1,2\n')
   assert.equal(fs.readFileSync(path.join(m.dir, 'kernel/environments/nlp.txt'), 'utf8'), '# из панели\nspacy\n')
   assert.equal(fs.statSync(path.join(m.dir, 'data/session-secret')).mode & 0o777, 0o600)

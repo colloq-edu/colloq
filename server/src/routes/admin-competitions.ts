@@ -25,6 +25,9 @@ import path from 'node:path'
 import busboy from 'busboy'
 import { Router, type Request, type Response } from 'express'
 import { tr } from '@shared/i18n'
+import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
+import { DependencyStoreError } from '../dependencies/store.js'
+import { dependencyMessage } from '../dependencies/messages.js'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
 import {
   acceptSubmission,
@@ -93,7 +96,7 @@ import {
   type DoneEntry,
   type InputRefusal,
 } from '../competitions/panel.js'
-import { baseName, csvShape, notebookCells } from '../competitions/intake.js'
+import { baseName, csvShape, csvUsageSplit, notebookCells } from '../competitions/intake.js'
 import {
   cancelSubmission,
   pauseCompetitionQueue,
@@ -303,20 +306,24 @@ function viewOf(competition: Competition): CompetitionView {
    * — а показать некуда и нельзя.
    */
   const total = solution?.rows ?? null
-  const byUsage = (solution?.columns ?? []).some((name) => name.toLowerCase() === 'usage')
+  const solutionBytes = solution
+    ? readSecretFile(competition.id, solution.name, HEADER_READ_LIMIT)
+    : null
+  const usage = solutionBytes ? csvUsageSplit(solutionBytes) : null
+  const publicRows = usage?.publicRows ?? publicRowCount(total ?? 0, competition.publicPercent)
   return {
     competition,
     openFiles: open.map((file) => fileView(competition.id, file)),
     hiddenFiles: hiddenViews,
     baseline: baselineView(competition),
     split:
-      total === null
+      total === null || solutionBytes === null
         ? null
         : {
             total,
-            publicRows: publicRowCount(total, competition.publicPercent),
-            privateRows: total - publicRowCount(total, competition.publicPercent),
-            byUsage,
+            publicRows,
+            privateRows: total - publicRows,
+            byUsage: usage !== null,
           },
     counts: countsOf(competition),
     ready: readinessOf(competition),
@@ -935,7 +942,7 @@ export function adminCompetitionRoutes(): Router {
    * участника и кладётся в ту же очередь. Отдельный «режим проверки» доказывал
    * бы только то, что работает режим проверки.
    */
-  router.post('/api/admin/competitions/:id/baseline/check', requireStaff, (req, res) => {
+  router.post('/api/admin/competitions/:id/baseline/check', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
     const notebook = readBaseline(competition.id, LIMITS.notebookBytes)
@@ -943,13 +950,22 @@ export function adminCompetitionRoutes(): Router {
       return fail(res, 409, 'not_ready', tr('competitions.refusal.noBaselineFile'))
     }
     const entrantId = baselineEntrantOf(competition) ?? newBaselineEntrant()
-    const submission = acceptSubmission({
-      competitionId: competition.id,
-      entrantId,
-      fileName: NOTEBOOK_FILE,
-      bytes: notebook.length,
-    })
-    putSubmissionNotebook(competition.id, submission.id, notebook)
+    let revision
+    try { revision = await executionRevision(competition) } catch {
+      return fail(res, 503, 'failed', tr('dependencies.error.base'))
+    }
+    let submission
+    try {
+      submission = acceptPinnedSubmission(competition, entrantId, NOTEBOOK_FILE, notebook.length, revision, null, true)
+      putSubmissionNotebook(competition.id, submission.id, notebook)
+    } catch (error) {
+      if (submission) {
+        leaveQueue(submission.id)
+        updateSubmission(submission.id, { state: 'cancelled', stage: 'accepted' })
+      }
+      return fail(res, error instanceof DependencyStoreError ? error.status : 503, 'failed',
+        dependencyMessage(error instanceof DependencyStoreError ? error.code : 'dependency_image'))
+    }
     updateCompetition(competition.id, { baselineSubmissionId: submission.id })
     wakeCompetitionPump()
     res.status(202).json({ submissionId: submission.id })
@@ -1102,7 +1118,7 @@ export function adminCompetitionRoutes(): Router {
     const body: SubmissionFeed = {
       total: all.length,
       rows: all.slice(offset, offset + limit).map((submission): SubmissionRow => ({
-        submission,
+        submission: publicExecution(submission, competition.environment),
         entrantName: names.get(submission.entrantId) ?? getEntrant(submission.entrantId)?.name ?? '',
         baseline: submission.entrantId === baselineEntrant,
         best: best?.submissionId === submission.id,
@@ -1119,7 +1135,7 @@ export function adminCompetitionRoutes(): Router {
     if (!submission) return
     const entrant = getEntrant(submission.entrantId)
     const body: SubmissionDetail = {
-      submission,
+      submission: publicExecution(submission, competition.environment),
       entrant: { id: submission.entrantId, name: entrant?.name ?? '' },
       runs: listRuns(submission.id),
       artifacts: resultFiles(competition.id, submission.id),

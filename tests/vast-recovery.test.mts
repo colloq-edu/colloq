@@ -23,9 +23,22 @@ function seed() {
   return { root, release, archive: path.join(temp(), 'colloq-test.tar.gz') }
 }
 test('portable live backup roundtrips data, secret, catalog and declares non-atomic files', () => {
-  const s = seed(); const b = run('backup', '--root', s.root, '--release', s.release, '--output', s.archive, '--mode', 'live', '--name', 'class-a'); assert.equal(b.status, 0, b.out)
+  const s = seed()
+  const preserved = {
+    'data/competitions/c-one/secret/solution.csv': Buffer.from('target\n1\n'),
+    'data/dependencies/artifacts/test-sha256': Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff]),
+    'data/dependencies/bundles/bundle-one/wheels/demo-1.0-py3-none-any.whl': Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff]),
+    'data/dependencies/bundles/bundle-one/requirements.lock': Buffer.from('demo==1.0 --hash=sha256:test-sha256\n'),
+    'data/dependencies/bundles/bundle-one/manifest.json': Buffer.from('{"packages":[{"sha256":"test-sha256"}]}'),
+  }
+  for (const [file, content] of Object.entries(preserved)) {
+    fs.mkdirSync(path.dirname(path.join(s.root, file)), { recursive: true })
+    fs.writeFileSync(path.join(s.root, file), content)
+  }
+  const b = run('backup', '--root', s.root, '--release', s.release, '--output', s.archive, '--mode', 'live', '--name', 'class-a'); assert.equal(b.status, 0, b.out)
   const v = run('validate', '--archive', s.archive, '--name', 'class-a'); assert.equal(v.status, 0, v.out); assert.match(v.out, /live/)
   const dest = temp(); const r = run('restore', '--root', dest, '--release', s.release, '--archive', s.archive, '--name', 'class-a'); assert.equal(r.status, 0, r.out)
+  for (const [file, content] of Object.entries(preserved)) assert.deepEqual(fs.readFileSync(path.join(dest, file)), content, file)
   assert.equal(fs.readFileSync(path.join(dest, 'workspace/room-a/file.txt'), 'utf8'), 'room data')
   assert.equal(fs.statSync(path.join(dest, 'workspace/room-a/run.sh')).mode & 0o700, 0o700)
   assert.equal(fs.readFileSync(path.join(dest, 'data/session-secret'), 'utf8'), 'test-key')

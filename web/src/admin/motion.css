@@ -157,13 +157,13 @@
  * and settings columns retain their layout while the smaller text is readable.
  */
 .admin .text-micro {
-  font-size: 12px;
-  line-height: 16px;
+  font-size: var(--type-micro, 12px);
+  line-height: var(--leading-micro, 16px);
 }
 
 .admin .text-2xs {
-  font-size: 13px;
-  line-height: 19px;
+  font-size: var(--type-small, 13px);
+  line-height: var(--leading-small, 19px);
 }
 
 .admin .text-code {
@@ -172,8 +172,8 @@
 }
 
 .admin .text-ui {
-  font-size: 14px;
-  line-height: 20px;
+  font-size: var(--type-ui, 14px);
+  line-height: var(--leading-ui, 20px);
 }
 
 .admin .text-ui-lg {
@@ -205,11 +205,11 @@
 .admin .btn-ghost,
 .admin .btn-outline,
 .admin .btn-danger {
-  font-size: 14px;
-  line-height: 20px;
+  font-size: var(--type-ui, 14px);
+  line-height: var(--leading-ui, 20px);
 }
 
 .admin .field {
-  font-size: 14px;
-  line-height: 20px;
+  font-size: var(--type-ui, 14px);
+  line-height: var(--leading-ui, 20px);
 }

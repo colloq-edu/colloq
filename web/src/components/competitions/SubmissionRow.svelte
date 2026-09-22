@@ -13,6 +13,7 @@
   import { tr } from '@shared/i18n'
   import { entrantBadge, isTerminal, type EntrantSubmission } from '@shared/competitions'
   import type { SubmissionLive } from '@shared/competitions-entrant'
+  import SubmissionEnvironment from './SubmissionEnvironment.svelte'
   import Badge from './Badge.svelte'
   import StageStrip from './StageStrip.svelte'
   import {
@@ -32,6 +33,7 @@
     busy: boolean
     /** Потолок прогона соревнования — правая половина «01:12 из 10:00». */
     limitMs: number
+    dependenciesSlug?: string
     notebookUrl: string
     /** Приём закрыт: зачётную посылку больше не переставить. */
     frozen: boolean
@@ -39,7 +41,7 @@
     onchoose: (id: string) => void
   }
 
-  const { submission, live, best, paused, now, busy, limitMs, notebookUrl, frozen, oncancel, onchoose }: Props =
+  const { submission, live, best, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
     $props()
 
   let open = $state(false)
@@ -101,7 +103,7 @@
 >
   <div class="flex items-start gap-0">
     <span class="w-12 shrink-0 font-mono text-2xs leading-4 text-muted">#{submission.number}</span>
-    <span class="flex w-[150px] shrink-0 xl:w-[184px]">
+    <span class="flex w-[184px] shrink-0">
       {#if badge}
         <Badge word={badge.word} tone={badge.tone} form={badge.form} />
       {/if}
@@ -110,6 +112,7 @@
       <span class="truncate text-ui font-bold leading-[18px] text-ink" title={submission.fileName}>
         {words.title}
       </span>
+      <SubmissionEnvironment execution={submission.execution} slug={dependenciesSlug} />
       {#each words.lines as line, index (index)}
         <span class="text-micro leading-[18px] text-muted">{line}</span>
       {/each}
@@ -139,7 +142,7 @@
           {tr('competitions.p.cancelRun')}
         </button>
       {:else if submission.chosen}
-        <span class="flex items-center gap-1.5 bg-positive px-[9px] py-1 text-white">
+        <span class="flex items-center gap-1.5 bg-positive px-[9px] py-1 text-white dark:text-canvas">
           <svg width="10" height="8" viewBox="0 0 10 8" aria-hidden="true">
             <path d="M1 4l2.75 2.75L9 1.25" fill="none" stroke="currentColor" stroke-width="1.6" />
           </svg>

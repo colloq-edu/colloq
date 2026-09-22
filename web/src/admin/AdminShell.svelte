@@ -311,7 +311,7 @@
     {/if}
   </nav>
 
-  <main class="flex min-w-0 flex-1 flex-col overflow-hidden">
+  <main class="flex min-w-0 flex-1 flex-col overflow-hidden" class:competition-ui={tab === 'competitions'}>
     {@render children()}
   </main>
 </div>

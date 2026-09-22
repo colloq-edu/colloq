@@ -9,6 +9,7 @@
    */
   import { tr } from '@shared/i18n'
   import type { CompetitionPublic } from '@shared/competitions'
+  import EnvironmentLink from '@/components/ui/EnvironmentLink.svelte'
 
   interface Props {
     competition: CompetitionPublic
@@ -33,14 +34,14 @@
       }),
     },
     { label: tr('competitions.p.condInternet'), value: tr('competitions.p.condNo') },
-    { label: tr('competitions.p.condEnvironment'), value: competition.environment },
+    { label: tr('competitions.p.condEnvironment'), value: competition.environment, environment: true },
     { label: tr('competitions.p.condData'), value: tr('competitions.p.condDataValue') },
     { label: tr('competitions.p.condAnswer'), value: 'submission.csv' },
   ])
 </script>
 
 <section class="flex flex-col gap-3">
-  <h2 class="text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+  <h2 class="text-micro font-black uppercase leading-5 tracking-label text-muted">
     {tr('competitions.p.conditions')}
   </h2>
   <dl class="flex flex-col border-t border-line">
@@ -48,7 +49,11 @@
       <div class="flex justify-between gap-3 border-b border-line py-[9px]">
         <dt class="text-2xs leading-4 text-muted">{row.label}</dt>
         <dd class="min-w-0 truncate text-right font-mono text-micro leading-4 text-ink">
-          {row.value}
+          {#if row.environment}
+            <EnvironmentLink name={competition.environment} endpoint={`/api/k/competitions/${encodeURIComponent(competition.slug)}/environment`} />
+          {:else}
+            {row.value}
+          {/if}
         </dd>
       </div>
     {/each}

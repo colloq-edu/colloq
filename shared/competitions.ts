@@ -205,6 +205,7 @@ export type CompetitionRefusal =
   | 'forbidden'
   | 'not_found'
   | 'invalid'
+  | 'unavailable'
   /** Имя занято тёзкой в этом соревновании. */
   | 'name_taken'
   | 'key_unknown'
@@ -338,11 +339,12 @@ export const SUBMISSION_STATES: readonly SubmissionState[] = [
 ]
 
 /** Этапы прогона, в порядке полосы под идущей посылкой (P2). */
-export type SubmissionStage = 'accepted' | 'queue' | 'notebook' | 'check' | 'score'
+export type SubmissionStage = 'accepted' | 'queue' | 'dependencies' | 'notebook' | 'check' | 'score'
 
 export const SUBMISSION_STAGES: readonly SubmissionStage[] = [
   'accepted',
   'queue',
+  'dependencies',
   'notebook',
   'check',
   'score',
@@ -352,6 +354,7 @@ export const SUBMISSION_STAGES: readonly SubmissionStage[] = [
 export type StagePosition = 'done' | 'current' | 'ahead'
 
 export interface Submission {
+  execution?: import('./dependencies.js').SubmissionEnvironment
   id: string
   competitionId: string
   entrantId: string
@@ -460,6 +463,7 @@ export type RunVerdict =
   | 'target_too_large'
   | 'target_unreadable'
   | 'harness_error'
+  | 'dependency_error'
   | 'no-submission'
   | 'out-of-memory'
   | 'timeout'
@@ -511,6 +515,7 @@ export function stateOfVerdict(kind: RunKind, verdict: RunVerdict): SubmissionSt
     case 'no-submission':
     case 'target_too_large':
     case 'target_unreadable':
+    case 'dependency_error':
       // Тетрадь отработала, а ответа нет или он нечитаем — это отказ участнику,
       // а не падение тетради: ячейка с ошибкой тут ни при чём.
       return 'rejected'
@@ -623,6 +628,7 @@ export function competitionWord(state: CompetitionState): string {
 
 /** Подпись этапа прогона. */
 export function stageWord(stage: SubmissionStage): string {
+  if (stage === 'dependencies') return tr('dependencies.installing')
   return tr(`competitions.stage.${stage}`)
 }
 

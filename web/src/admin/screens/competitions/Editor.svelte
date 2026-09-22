@@ -13,6 +13,7 @@
 <script lang="ts">
   import { tr, formatNumber } from '@shared/i18n'
   import { onMount, untrack } from 'svelte'
+  import DependencySettings from './DependencySettings.svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Section from '@/admin/ui/Section.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
@@ -411,7 +412,7 @@
         <div class="flex items-center gap-4 border-b border-line px-3 py-2">
           <button
             type="button"
-            class={cn('text-micro font-bold uppercase tracking-caps', previewing ? 'text-faint' : 'text-brand')}
+            class={cn('text-micro font-bold uppercase tracking-caps', previewing ? 'text-faint' : 'text-primary')}
             aria-pressed={!previewing}
             onclick={() => (previewing = false)}
           >
@@ -419,7 +420,7 @@
           </button>
           <button
             type="button"
-            class={cn('text-micro font-bold uppercase tracking-caps', previewing ? 'text-brand' : 'text-faint')}
+            class={cn('text-micro font-bold uppercase tracking-caps', previewing ? 'text-primary' : 'text-faint')}
             aria-pressed={previewing}
             onclick={() => (previewing = true)}
           >
@@ -511,7 +512,7 @@
         открытые файлы. Разный цвет дороже любой подписи.
       -->
       <div class="min-w-0 flex-[1_1_300px] border border-brand">
-        <div class="flex items-center gap-2 border-b border-brand bg-brand px-3 py-2">
+        <div class="flex items-center gap-2 border-b border-primary bg-brand px-3 py-2">
           <Icon name="lock" size={12} class="shrink-0 text-white" />
           <span class="text-micro font-bold uppercase tracking-caps text-white">
             {tr('admin.competitions.hiddenHead')}
@@ -601,7 +602,7 @@
       {#if view.baseline}
         {@const b = view.baseline}
         <div class="flex flex-wrap items-center gap-3.5 border border-line px-3.5 py-3">
-          <Icon name="notebook" size={16} class="shrink-0 text-brand" />
+          <Icon name="notebook" size={16} class="shrink-0 text-primary" />
           <div class="min-w-0 flex-1">
             <p class="truncate font-mono text-2xs text-ink">{b.fileName}</p>
             <p class="mt-0.5 text-micro text-muted">
@@ -647,10 +648,10 @@
             class={cn(
               'flex w-[150px] shrink-0 flex-col justify-center gap-1 px-3.5 py-3 max-[640px]:w-full',
               b.state === 'scored'
-                ? 'bg-positive text-white'
+                ? 'bg-positive text-white dark:text-canvas'
                 : b.state === null || b.state === 'queued' || b.state === 'running'
                   ? 'bg-surface text-ink'
-                  : 'bg-danger text-white',
+                  : 'bg-danger text-white dark:text-canvas',
             )}
           >
             <span class="text-micro font-bold uppercase tracking-caps">
@@ -802,7 +803,7 @@
       <div class="flex flex-wrap items-center gap-3.5">
         <button
           type="button"
-          class="btn-outline h-[30px] border-brand px-3 text-micro font-bold text-brand"
+          class="btn-outline h-[30px] border-primary px-3 text-micro font-bold text-primary"
           disabled={busy || !view.baseline}
           onclick={() => void checkMetric()}
         >
@@ -934,6 +935,8 @@
       </p>
     </div>
   </Section>
+
+  {#key c.id}<DependencySettings competitionId={c.id} />{/key}
 
   <!-- 6 · Сроки и зачёт -->
   <Section title={tr('admin.competitions.section.terms')} description={tr('admin.competitions.termsHint')}>

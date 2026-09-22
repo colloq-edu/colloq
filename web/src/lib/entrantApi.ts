@@ -21,6 +21,8 @@ import type {
   SubmissionAccepted,
 } from '@shared/competitions-entrant'
 
+import type { DependencyOverview, DependencyBundle } from '@shared/dependencies'
+
 const BASE = '/api/k'
 
 export class EntrantApiError extends Error {
@@ -111,9 +113,10 @@ export const entrantApi = {
    * `application/json` превратило бы загрузку в запрос, который сервер
    * разобрать не может (та же причина, что у `sendForm` в adminApi).
    */
-  send: (slug: string, file: File) => {
+  send: (slug: string, file: File, bundleId?: string | null) => {
     const form = new FormData()
     form.append('file', file, file.name)
+    if (bundleId) form.append('bundleId', bundleId)
     return request<SubmissionAccepted>(`/competitions/${encodeURIComponent(slug)}/submissions`, {
       method: 'POST',
       body: form,
@@ -131,6 +134,20 @@ export const entrantApi = {
       `/competitions/${encodeURIComponent(slug)}/submissions/${encodeURIComponent(id)}/cancel`,
       { method: 'POST' },
     ),
+
+  dependencies: (slug: string) => request<DependencyOverview>(`/competitions/${encodeURIComponent(slug)}/dependencies`),
+  dependencyDraft: (slug: string, requirementsText: string, selectedBundleId?: string | null) =>
+    request<DependencyOverview>(`/competitions/${encodeURIComponent(slug)}/dependencies/draft`, {
+      method: 'PUT', body: JSON.stringify({ requirementsText, selectedBundleId }),
+    }),
+  prepareDependencies: (slug: string, requirementsText: string) =>
+    request<{ bundle: DependencyBundle }>(`/competitions/${encodeURIComponent(slug)}/dependencies/prepare`, json({ requirementsText })),
+  dependencyBundle: (slug: string, id: string) =>
+    request<DependencyBundle>(`/competitions/${encodeURIComponent(slug)}/dependencies/${encodeURIComponent(id)}`),
+  cancelDependencies: (slug: string, id: string) =>
+    request<DependencyBundle>(`/competitions/${encodeURIComponent(slug)}/dependencies/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  dependencyStreamUrl: (slug: string, id: string) => `${BASE}/competitions/${encodeURIComponent(slug)}/dependencies/${encodeURIComponent(id)}/stream`,
+  dependencyLockUrl: (slug: string, id: string) => `${BASE}/competitions/${encodeURIComponent(slug)}/dependencies/${encodeURIComponent(id)}/lock`,
 
   /* ---------------------------------------------------------------- адреса */
 

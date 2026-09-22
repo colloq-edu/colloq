@@ -92,6 +92,7 @@
           ? `${tr('competitions.p.tabSubmissions')} ${submissions}`
           : tr('competitions.p.tabSubmissions'),
     },
+    { id: 'dependencies', label: tr('dependencies.title') },
     { id: 'leaderboard', label: tr('competitions.p.tabLeaderboard') },
   ])
 </script>
@@ -118,7 +119,7 @@
       {#if name}
         <span class="flex min-w-0 items-center gap-1.5">
           <span
-            class="flex size-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-[#7A4A12]"
+            class="flex size-5 shrink-0 items-center justify-center rounded-full text-micro font-bold text-[#7A4A12]"
             style="background: {avatarTint(name)}"
             aria-hidden="true">{avatarLetter(name)}</span
           >
@@ -131,7 +132,7 @@
       {#if !over && competition.deadlineAt !== null}
         <div class="flex flex-col gap-px">
           <span
-            class="text-[10px] font-black uppercase leading-3 tracking-label {urgent
+            class="text-micro font-black uppercase leading-5 tracking-label {urgent
               ? 'text-warning'
               : 'text-muted'}"
           >
@@ -143,7 +144,7 @@
         </div>
       {/if}
       <div class="flex flex-col gap-px">
-        <span class="text-[10px] font-black uppercase leading-3 tracking-label text-muted">
+        <span class="text-micro font-black uppercase leading-5 tracking-label text-muted">
           {tr(finalPlace === null ? 'competitions.p.placeShort' : 'competitions.p.finalPlace')}
         </span>
         <span class="font-mono text-title font-bold leading-5 text-ink">
@@ -153,7 +154,7 @@
         </span>
       </div>
       <div class="flex flex-col gap-px">
-        <span class="text-[10px] font-black uppercase leading-3 tracking-label text-muted">
+        <span class="text-micro font-black uppercase leading-5 tracking-label text-muted">
           {metricArrow(competition.metric.name, competition.metric.direction)}
         </span>
         <span class="font-mono text-title font-bold leading-5 text-ink">{formatScore(score)}</span>
@@ -183,7 +184,7 @@
         {#if !over && competition.deadlineAt !== null}
           <div class="flex flex-col items-end gap-0.5">
             <span
-              class="text-[11px] font-black uppercase leading-[14px] tracking-label {urgent
+              class="text-micro font-black uppercase leading-5 tracking-label {urgent
                 ? 'text-warning'
                 : 'text-muted'}"
             >
@@ -197,7 +198,7 @@
           </div>
         {/if}
         <div class="flex flex-col items-end gap-0.5">
-          <span class="text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+          <span class="text-micro font-black uppercase leading-5 tracking-label text-muted">
             {tr(finalPlace === null ? 'competitions.p.yourPlace' : 'competitions.p.finalPlace')}
           </span>
           <span class="font-mono text-[22px] font-bold leading-7 text-ink">
@@ -208,7 +209,7 @@
         </div>
         {#if shift !== null}
           <div class="flex flex-col items-end gap-0.5">
-            <span class="text-[11px] font-black uppercase leading-[14px] tracking-label text-muted">
+            <span class="text-micro font-black uppercase leading-5 tracking-label text-muted">
               {tr(
                 shift > 0
                   ? 'competitions.p.shiftUp'
@@ -234,7 +235,7 @@
     </div>
   {/if}
 
-  <nav class="flex gap-5 sm:gap-7">
+  <nav class="flex flex-wrap gap-x-4 gap-y-2 sm:gap-x-7">
     {#each tabs as item (item.id)}
       <button
         class="pb-2 text-ui {tab === item.id

@@ -39,6 +39,7 @@ import { adminInstanceRoutes } from './routes/admin-instance.js'
 import { aiRoutes } from './routes/ai.js'
 import { banRoutes } from './routes/bans.js'
 import { competitionRoutes } from './routes/competitions.js'
+import { dependencyRoutes } from './dependencies/routes.js'
 import { councilRoutes } from './routes/council.js'
 import { courseRoutes } from './routes/courses.js'
 import { blobRoutes } from './routes/blobs.js'
@@ -507,6 +508,7 @@ app.use(councilRoutes())
 // Соревнования — своя половина продукта и своё удостоверение: `/api/k`
 // спрашивает печенье участника, а не преподавателя (routes/competitions.ts).
 app.use(competitionRoutes())
+app.use(dependencyRoutes())
 
 app.use('/api', (_req, res) => res.status(404).json({ error: tr('common.notFound') }))
 

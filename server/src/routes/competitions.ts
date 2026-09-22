@@ -26,6 +26,10 @@ import busboy from 'busboy'
 import path from 'node:path'
 import { Router, type Request, type Response } from 'express'
 import { tr } from '@shared/i18n'
+import { readEnvironmentInventory } from '../environment-inventory.js'
+import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
+import { DependencyStoreError } from '../dependencies/store.js'
+import { dependencyMessage } from '../dependencies/messages.js'
 import { addressOf } from '../bans.js'
 import { config } from '../config.js'
 import { downloadHeldFile, type HeldFile } from '../secure-files.js'
@@ -316,7 +320,7 @@ function submissionsView(competition: Competition, me: Entrant): EntrantSubmissi
   const now = Date.now()
   const open = privateBoardOpen(competition, now)
   return {
-    submissions: listEntrantSubmissions(competition.id, me.id).map((s) => entrantSubmission(s, open)),
+    submissions: listEntrantSubmissions(competition.id, me.id).map((s) => entrantSubmission(publicExecution(s, competition.environment), open)),
     leftToday: leftToday(competition, me.id),
     perDay: competition.limits.perDay,
     inFlight: inFlightCount(competition.id, me.id),
@@ -368,7 +372,7 @@ function sendHeld(res: Response, hold: () => HeldFile, name: string): void {
 
 /* ------------------------------------------------------------------ двери */
 
-export function competitionRoutes(): Router {
+export function competitionRoutes(inventory = readEnvironmentInventory): Router {
   const router = Router()
 
   /*
@@ -470,6 +474,17 @@ export function competitionRoutes(): Router {
       accepting: submissionsOpen(competition, Date.now()),
       mine: me ? mineIn(competition, me) : null,
     })
+  })
+
+  /** Installed packages are public only through a published competition. */
+  router.get('/api/k/competitions/:slug/environment', async (req, res) => {
+    const competition = visible(req.params.slug)
+    if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
+    try {
+      res.json(await inventory(competition.environment))
+    } catch {
+      refuse(res, 503, 'unavailable', tr('common.environmentUnavailable'))
+    }
   })
 
   /**
@@ -668,13 +683,9 @@ export function competitionRoutes(): Router {
       return refuse(res, 429, 'too_often', tr('competitions.refusal.tooOften'))
     }
 
-    readNotebook(req, res, (fileName, body) => {
-      const submission = acceptSubmission({
-        competitionId: competition.id,
-        entrantId: me.id,
-        fileName,
-        bytes: body.length,
-      })
+    readNotebook(req, res, async (fileName, body, bundleId) => {
+      const revision = await executionRevision(competition)
+      const submission = acceptPinnedSubmission(competition, me.id, fileName, body.length, revision, bundleId)
       try {
         ensureCompetition(competition.id)
         putSubmissionNotebook(competition.id, submission.id, body)
@@ -701,7 +712,7 @@ export function competitionRoutes(): Router {
       wakeCompetitionPump()
       reply<SubmissionAccepted>(res, {
         submission: entrantSubmission(
-          getSubmission(submission.id)!,
+          publicExecution(getSubmission(submission.id)!, competition.environment),
           privateBoardOpen(competition, Date.now()),
         ),
         leftToday: leftToday(competition, me.id),
@@ -821,7 +832,7 @@ export function competitionRoutes(): Router {
  * `config.maxUploadBytes` (файлы комнаты) здесь не годится ни как потолок, ни
  * как ориентир: он про датасет, который студент приносит на пару.
  */
-function readNotebook(req: Request, res: Response, done: (fileName: string, body: Buffer) => void): void {
+function readNotebook(req: Request, res: Response, done: (fileName: string, body: Buffer, bundleId: string | null) => void | Promise<void>): void {
   let bb: ReturnType<typeof busboy>
   try {
     bb = busboy({
@@ -839,6 +850,8 @@ function readNotebook(req: Request, res: Response, done: (fileName: string, body
   let fileName = ''
   let answered = false
   let tooBig = false
+  let bundleId: string | null = null
+  let sawBundle = false
 
   const say = (status: number, reason: CompetitionRefusal, error: string) => {
     if (answered) return
@@ -860,6 +873,18 @@ function readNotebook(req: Request, res: Response, done: (fileName: string, body
     })
   })
 
+  bb.on('field', (field, value, info) => {
+    if (field !== 'bundleId') return
+    if (sawBundle || info.valueTruncated || (value !== '' && !/^[a-f0-9]{32}$/.test(value))) {
+      say(400, 'invalid', dependencyMessage('dependency_owner'))
+      return
+    }
+    sawBundle = true
+    bundleId = value || null
+  })
+  bb.on('fieldsLimit', () => say(400, 'invalid', dependencyMessage('dependency_limits')))
+  bb.on('filesLimit', () => say(400, 'invalid', tr('competitions.refusal.notIpynb')))
+
   bb.on('error', () => say(400, 'invalid', tr('competitions.refusal.noFile')))
 
   bb.on('close', () => {
@@ -880,7 +905,15 @@ function readNotebook(req: Request, res: Response, done: (fileName: string, body
     const refusal = whyNotebookRefused(body.toString('utf8'))
     if (refusal) return say(400, 'invalid', refusal)
     answered = true
-    done(fileName, body)
+    void Promise.resolve().then(() => done(fileName, body, bundleId)).catch((error: unknown) => {
+      if (res.headersSent) return
+      if (error instanceof DependencyStoreError) {
+        refuse(res, error.status, 'invalid', dependencyMessage(error.code))
+      } else {
+        console.error('[competitions] accepting notebook failed', error)
+        refuse(res, 503, 'unavailable', tr('common.requestFailed', { status: 503 }))
+      }
+    })
   })
 
   req.pipe(bb)

@@ -13,6 +13,7 @@
   import { tr } from '@shared/i18n'
   import { entrantBadge, type EntrantSubmission } from '@shared/competitions'
   import type { SubmissionLive } from '@shared/competitions-entrant'
+  import SubmissionEnvironment from './SubmissionEnvironment.svelte'
   import Badge from './Badge.svelte'
   import {
     elapsedClock,
@@ -30,6 +31,7 @@
     now: number
     busy: boolean
     limitMs: number
+    dependenciesSlug?: string
     notebookUrl: string
     /** Приём закрыт: зачётную посылку больше не переставить. */
     frozen: boolean
@@ -37,7 +39,7 @@
     onchoose: (id: string) => void
   }
 
-  const { submission, live, best, paused, now, busy, limitMs, notebookUrl, frozen, oncancel, onchoose }: Props =
+  const { submission, live, best, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
     $props()
 
   let open = $state(false)
@@ -76,7 +78,7 @@
     {/if}
     <span class="font-mono text-micro leading-4 text-muted">#{submission.number}</span>
     {#if submission.chosen}
-      <span class="bg-positive px-1.5 py-0.5 text-[10px] font-bold leading-3 text-white">
+      <span class="bg-positive px-1.5 py-0.5 text-micro font-bold leading-5 text-white dark:text-canvas">
         {tr('competitions.counted')}
       </span>
     {/if}
@@ -103,7 +105,8 @@
     </div>
   {/if}
 
-  {#each words.lines as line, index (index)}
+  <SubmissionEnvironment execution={submission.execution} slug={dependenciesSlug} />
+      {#each words.lines as line, index (index)}
     <span class="text-2xs leading-[18px] text-muted">{line}</span>
   {/each}
 

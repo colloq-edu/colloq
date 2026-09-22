@@ -49,7 +49,7 @@ ENV PYTHONUNBUFFERED=1 \
 # «Requirement already satisfied» и ничего не качает. Минуты стоит только то,
 # чего в родителе нет, — ради этого наследование и заведено.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl \
+ && apt-get install -y --no-install-recommends curl libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/requirements.txt
