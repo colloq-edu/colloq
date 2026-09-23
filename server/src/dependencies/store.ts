@@ -1,7 +1,8 @@
 /** Durable dependency jobs and immutable submission/environment bindings. */
 import { randomUUID } from 'node:crypto'
 import { db } from '../db.js'
-import { DEPENDENCY_LIMITS, dependencyActive, type DependencyBundle, type DependencyDraft, type DependencyPolicy, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
+import { invalidateCompetitionInputs } from '../competitions/store.js'
+import { DEPENDENCY_LIMITS, normalizeRequirements, requirementLineCount, dependencyActive, type DependencyBundle, type DependencyDraft, type DependencyPolicy, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
 import type { PreparationProgress, PreparationResult } from './preparation-contract.js'
 import { submissionsOpen, type CompetitionState } from '@shared/competitions'
 
@@ -85,11 +86,12 @@ export function policyOf(competitionId: string): DependencyPolicy {
 export function competitionRevision(competitionId: string): EnvironmentRevision|null {
  const r=policyRow(competitionId);return r.revision_id?getRevision(String(r.revision_id)):null
 }
-export function selectRevision(competitionId: string, revisionId: string): void {
- policyRow(competitionId)
+export const selectRevision = db.transaction((competitionId: string, revisionId: string): void => {
+ const before=policyRow(competitionId)
  if(!getRevision(revisionId))throw new DependencyStoreError('dependency_revision',404)
  db.prepare('UPDATE competition_dependency_policies SET revision_id=? WHERE competition_id=?').run(revisionId,competitionId)
-}
+ if(before.revision_id && before.revision_id!==revisionId)invalidateCompetitionInputs(competitionId)
+})
 export function setPolicy(competitionId: string, change: Partial<DependencyPolicy>): DependencyPolicy {
  const value={...policyOf(competitionId),...change}
  if(typeof value.enabled!=='boolean'||!Number.isInteger(value.maxDownloadBytes)||value.maxDownloadBytes<1024*1024||value.maxDownloadBytes>DEPENDENCY_LIMITS.downloadBytes||value.maxInstalledBytes!==DEPENDENCY_LIMITS.installedBytes) throw new DependencyStoreError('dependency_limits',400)
@@ -98,8 +100,8 @@ export function setPolicy(competitionId: string, change: Partial<DependencyPolic
 }
 export function checkRequirements(text: string): string {
  if(typeof text!=='string'||Buffer.byteLength(text,'utf8')>DEPENDENCY_LIMITS.requestBytes||text.includes('\0')) throw new DependencyStoreError('dependency_limits',400)
- const normalized=text.replace(/\r\n?/g,'\n').trim()
- if(normalized.split('\n').filter(s=>s.trim()&&!s.trim().startsWith('#')).length>DEPENDENCY_LIMITS.lines)throw new DependencyStoreError('dependency_limits',400)
+ const normalized=normalizeRequirements(text).trim()
+ if(requirementLineCount(normalized)>DEPENDENCY_LIMITS.lines)throw new DependencyStoreError('dependency_limits',400)
  return normalized
 }
 function ensureDraft(c: string,e: string): void {
@@ -222,3 +224,9 @@ export function removeUnusedBundle(key:string):boolean{
 export function orphanArtifacts():string[]{return (db.prepare('SELECT sha256 FROM dependency_artifacts a WHERE NOT EXISTS(SELECT 1 FROM dependency_bundle_artifacts b WHERE b.sha256=a.sha256)').all() as {sha256:string}[]).map(r=>r.sha256)}
 export function knownArtifactHashes():Set<string>{return new Set((db.prepare('SELECT sha256 FROM dependency_artifacts').all() as {sha256:string}[]).map(r=>r.sha256))}
 export function removeOrphanArtifact(hash:string):void{db.prepare('DELETE FROM dependency_artifacts WHERE sha256=? AND NOT EXISTS(SELECT 1 FROM dependency_bundle_artifacts WHERE sha256=?)').run(hash,hash)}
+
+export function knownBundleIds():Set<string>{return new Set((db.prepare('SELECT id FROM dependency_bundles').all() as {id:string}[]).map(row=>row.id))}
+
+export function deferClaim(key:string):void {
+ db.prepare("UPDATE dependency_bundles SET state='queued' WHERE id=? AND state='resolving'").run(key)
+}

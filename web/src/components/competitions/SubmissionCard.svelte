@@ -27,6 +27,8 @@
     submission: EntrantSubmission
     live: SubmissionLive | null
     best: boolean
+    counted?: boolean
+    canChoose?: boolean
     paused: boolean
     now: number
     busy: boolean
@@ -39,7 +41,7 @@
     onchoose: (id: string) => void
   }
 
-  const { submission, live, best, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
+  const { submission, live, best, counted = submission.chosen, canChoose = true, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
     $props()
 
   let open = $state(false)
@@ -66,7 +68,7 @@
 </script>
 
 <div
-  class="flex flex-col gap-1.5 border-b border-line py-3.5 {submission.chosen
+  class="flex flex-col gap-1.5 border-b border-line py-3.5 {counted
     ? 'bg-[#F2FAF7] dark:bg-positive/10'
     : ''}"
   data-submission={submission.number}
@@ -77,7 +79,7 @@
       <Badge word={badge.word} tone={badge.tone} form={badge.form} phone />
     {/if}
     <span class="font-mono text-micro leading-4 text-muted">#{submission.number}</span>
-    {#if submission.chosen}
+    {#if counted}
       <span class="bg-positive px-1.5 py-0.5 text-micro font-bold leading-5 text-white dark:text-canvas">
         {tr('competitions.counted')}
       </span>
@@ -141,7 +143,7 @@
     >
       {tr('competitions.p.cancelRun')}
     </button>
-  {:else if submission.state === 'scored' && !submission.chosen && !frozen}
+  {:else if submission.state === 'scored' && canChoose && !counted && !frozen}
     <button
       class="self-start text-2xs text-accent-text disabled:text-faint"
       type="button"

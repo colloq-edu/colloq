@@ -562,3 +562,36 @@ test('посылка, принятая мимо вступления, всё р�
     .get(competitionId, person.id) as { n: number }
   assert.equal(summary.n, 1)
 })
+
+for (const scoring of ['bestPublic', 'last'] as const) test(`API refuses manual choices under ${scoring}`, async () => {
+  const c = createCompetition({ slug: `automatic-${scoring.toLowerCase()}`, title: 'Automatic', scoring })!
+  setCompetitionState(c.id, 'live')
+  const joined = await call(`/api/k/competitions/${c.slug}/join`, { method: 'POST', body: JSON.stringify({ name: 'Automatic entrant' }) })
+  const cookie = cookieOf(joined)
+  const person = await joined.json()
+  const submission = acceptSubmission({ competitionId: c.id, entrantId: person.entrant.id, fileName: 'model.ipynb', bytes: 2 })
+  updateSubmission(submission.id, { state: 'scored', publicScore: 1 })
+  const response = await call(`/api/k/competitions/${c.slug}/submissions/${submission.id}/choose`, { method: 'POST', cookie })
+  assert.equal(response.status, 409)
+  assert.match((await response.json()).error, /автоматически|automatically/)
+})
+
+test('public page explains unsupported execution and upload refuses before parsing its body', async () => {
+  const c = createCompetition({ slug: 'no-public-runtime', title: 'No runtime' })!
+  setCompetitionState(c.id, 'live')
+  const joined = await call(`/api/k/competitions/${c.slug}/join`, { method: 'POST', body: JSON.stringify({ name: 'Waiting entrant' }) })
+  const cookie = cookieOf(joined)
+  const previous = { kernel: process.env.KERNEL_BACKEND, competition: process.env.COMPETITION_BACKEND }
+  try {
+    process.env.KERNEL_BACKEND = 'broker'
+    process.env.COMPETITION_BACKEND = 'docker'
+    const page = await (await call(`/api/k/competitions/${c.slug}`, { cookie })).json()
+    assert.equal(page.capabilities.execution.available, false)
+    const response = await call(`/api/k/competitions/${c.slug}/submissions`, { method: 'POST', cookie, body: JSON.stringify({ definitely: 'not a notebook upload' }) })
+    assert.equal(response.status, 503)
+    assert.equal((await response.json()).reason, 'unavailable')
+  } finally {
+    if (previous.kernel === undefined) delete process.env.KERNEL_BACKEND; else process.env.KERNEL_BACKEND = previous.kernel
+    if (previous.competition === undefined) delete process.env.COMPETITION_BACKEND; else process.env.COMPETITION_BACKEND = previous.competition
+  }
+})

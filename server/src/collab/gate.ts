@@ -278,7 +278,7 @@ function segment(sub: string | null): string {
  * по одному значило бы шестнадцать раз пройти дерево до корня.
  */
 class Frame {
-  private readonly byId = new Map<string, Y.Item>()
+  private readonly byClient = new Map<number, Y.Item[]>()
   private readonly placeMemo = new Map<Y.Item, Place>()
   private walked = 0
 
@@ -286,14 +286,36 @@ class Frame {
     private readonly doc: Y.Doc,
     private readonly dec: { structs: Struct[]; ds: DeleteSet },
   ) {
-    // Каждая структура покрывает столько тактов, сколько в ней длины: запись в
-    // ячейку, созданную этим же кадром, ищется именно так.
+    // Logical ranges can encode many clocks in a handful of bytes. Charge
+    // constructor work before indexing and retain intervals, never each clock.
     for (const struct of this.dec.structs) {
-      if (!isItem(struct)) continue
-      for (let i = 0; i < struct.length; i += 1) {
-        this.byId.set(`${struct.id.client}:${struct.id.clock + i}`, struct)
+      this.step('')
+      if (!Number.isSafeInteger(struct.length) || struct.length < 1 ||
+          !Number.isSafeInteger(struct.id.clock + struct.length)) {
+        throw new Refusal(tr("server.theFrameCannotBeRead.c96480"), '')
       }
+      if (!isItem(struct)) continue
+      const list = this.byClient.get(struct.id.client)
+      if (list) list.push(struct)
+      else this.byClient.set(struct.id.client, [struct])
     }
+    for (const list of this.byClient.values()) list.sort((a, b) => a.id.clock - b.id.clock)
+  }
+
+  private freshAt(id: Y.ID, path: string): Y.Item | undefined {
+    const list = this.byClient.get(id.client)
+    if (!list) return undefined
+    let lo = 0
+    let hi = list.length - 1
+    while (lo <= hi) {
+      this.step(path)
+      const mid = (lo + hi) >>> 1
+      const item = list[mid]
+      if (id.clock < item.id.clock) hi = mid - 1
+      else if (id.clock >= item.id.clock + item.length) lo = mid + 1
+      else return item
+    }
+    return undefined
   }
 
   private step(path: string): void {
@@ -326,7 +348,7 @@ class Frame {
   private resolve(id: Y.ID, path: string): Target {
     this.step(path)
     if (id.clock >= Y.getState(this.doc.store, id.client)) {
-      const fresh = this.byId.get(`${id.client}:${id.clock}`)
+      const fresh = this.freshAt(id, path)
       if (!fresh) throw new Refusal(tr("server.referenceToContentThatIsNotIn.692803"), path)
       return { kind: 'fresh', struct: fresh }
     }

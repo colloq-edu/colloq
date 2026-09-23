@@ -61,6 +61,8 @@ export interface RunProgress {
 
 /** Заказ на исполнение тетради. Пути — уже разложенные каталоги (storage.ts). */
 export interface RunRequest {
+  attemptId?: string
+  signal?: AbortSignal
   /** Immutable base binding; absent only for legacy callers. */
   imageDigest?: string
   /** Published bundle directory: requirements.lock and wheels/. */
@@ -73,7 +75,7 @@ export interface RunRequest {
   dataDir: string
   /** Каталог с одной тетрадью. Каталог, а не файл, — см. шапку storage.ts. */
   inputDir: string
-  /** Единственное место, куда посылка пишет на диск хоста. */
+  /** Host-only destination for bounded artifacts exported from the attempt. */
   resultDir: string
   limits: StepLimits
   /** Зовётся по ходу прогона; очередь кладёт это в строку посылки. */
@@ -115,6 +117,8 @@ export interface RunDiagnostics {
 
 /** Заказ на подсчёт метрики. Участника в этом контейнере нет. */
 export interface ScoreRequest {
+  attemptId?: string
+  signal?: AbortSignal
   /** The scorer's pinned base, without participant packages. */
   imageDigest?: string
   competition: Competition
@@ -154,7 +158,7 @@ export interface CompetitionRunner {
   /** Убить идущий контейнер по имени. Молча, если его уже нет. */
   kill(container: string): Promise<void>
   /** Убрать за собой всё, что осталось от прошлой жизни процесса. */
-  sweep(): Promise<number>
+  sweep(legacyContainers?: readonly string[]): Promise<number>
   capacity(): Promise<Capacity>
 }
 

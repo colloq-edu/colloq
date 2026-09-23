@@ -47,12 +47,12 @@
 
   function countedWords(line: EntrantBoardLine): string {
     if (line.number === 0) return ''
-    if (line.chosen) {
+    if (competition.scoring === 'chosen' && line.chosen) {
       return tr(line.you ? 'competitions.p.countedYours' : 'competitions.p.countedChosen', {
         number: line.number,
       })
     }
-    return tr('competitions.p.countedBest', { number: line.number })
+    return tr(competition.scoring === 'last' ? 'competitions.p.countedLast' : 'competitions.p.countedBest', { number: line.number })
   }
 </script>
 
@@ -200,23 +200,7 @@
             </tr>
           {/each}
 
-          {#if people.length > shown}
-            <tr class="h-9 border-b border-line">
-              <td class="font-mono text-micro text-faint">
-                {shown + 1}–{people.length}
-              </td>
-              <td></td>
-              <td colspan="5">
-                <button
-                  class="text-micro text-accent-text hover:underline"
-                  type="button"
-                  onclick={() => (shown = people.length)}
-                >
-                  {tr('competitions.p.showMoreEntrants', { count: people.length - shown })}
-                </button>
-              </td>
-            </tr>
-          {/if}
+
 
           {#if baseline}
             <tr class="h-12 border-b border-line border-t border-dashed border-t-brand-2">
@@ -244,6 +228,12 @@
         </tbody>
       </table>
     </div>
+  {/if}
+
+  {#if people.length > shown}
+    <button class="self-start text-2xs text-accent-text hover:underline" type="button" onclick={() => (shown += PAGE)}>
+      {tr('competitions.p.showMoreEntrants', { count: people.length - shown })}
+    </button>
   {/if}
 
   <p class="text-2xs leading-5 text-muted">{tr('competitions.p.tieNote')}</p>

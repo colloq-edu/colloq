@@ -7,11 +7,13 @@ import { dependencyActive } from '@shared/dependencies'
 import * as service from './service.js'
 import * as store from './store.js'
 import { dependencyMessage } from './messages.js'
+import { assertCompetitionCapability, RuntimeUnavailableError } from '../competitions/capabilities.js'
 import { ensureCompetitionRevision } from './revisions.js'
 
 type Handler=(req:Request,res:Response)=>unknown|Promise<unknown>
 const endpoint=(fn:Handler)=>(req:Request,res:Response):void=>{void Promise.resolve().then(()=>fn(req,res)).catch(error=>{
  if(res.headersSent)return
+ if(error instanceof RuntimeUnavailableError){res.status(error.status).json({reason:error.code,error:error.message});return}
  const code=error instanceof store.DependencyStoreError?error.code:'dependency_image'
  res.status(error instanceof store.DependencyStoreError?error.status:503).json({reason:code,error:dependencyMessage(code)})
 })}
@@ -82,7 +84,7 @@ export function dependencyRoutes():Router{
   res.json(await service.adminDependencyOverview(c))
  }))
  r.post(admin+'/refresh-base',endpoint(async(req,res)=>{
-  const c=teacherCompetition(req);await ensureCompetitionRevision(c,true);res.json(await service.adminDependencyOverview(c))
+  const c=teacherCompetition(req);await assertCompetitionCapability('preparation',c.environment);await ensureCompetitionRevision(c,true);res.json(await service.adminDependencyOverview(c))
  }))
  r.post(admin+'/:bundleId/cancel',endpoint(async(req,res)=>{
   const c=teacherCompetition(req),b=store.getBundle(String(req.params.bundleId))

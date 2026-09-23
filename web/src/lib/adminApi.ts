@@ -41,6 +41,7 @@ import type {
 import type {
   CompetitionInput,
   CompetitionLive,
+  CompetitionLeaderboard,
   CompetitionView,
   CompetitionsList,
   EntrantRow,
@@ -431,6 +432,9 @@ export const adminApi = {
     }),
 
   /** Один снимок живого состояния A3 — для экрана без потока. */
+  competitionLeaderboard: (id: string) =>
+    request<CompetitionLeaderboard>(`/competitions/${encodeURIComponent(id)}/leaderboard`),
+
   competitionLive: (id: string) =>
     request<CompetitionLive>(`/competitions/${encodeURIComponent(id)}/live`),
 

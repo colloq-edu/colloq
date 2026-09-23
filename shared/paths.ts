@@ -31,6 +31,9 @@ import { tr } from './i18n.js'
 export const MAX_DEPTH = 8
 /** Длина одного имени. Дальше начинают отказывать сами файловые системы. */
 export const MAX_SEGMENT = 120
+export const MAX_SEGMENT_BYTES = 255
+const pathEncoder = new TextEncoder()
+export const segmentBytes = (name: string): number => pathEncoder.encode(name).length
 /** Длина всего пути. С запасом под 255 у ext4 и 1024 у macOS вместе с корнем. */
 export const MAX_PATH = 400
 
@@ -53,7 +56,7 @@ const CONTROL = /[\u0000-\u001f\u007f]/
  */
 export function safeSegment(name: string): boolean {
   if (!name || name === '.' || name === '..') return false
-  if (name.length > MAX_SEGMENT) return false
+  if (name.length > MAX_SEGMENT || segmentBytes(name) > MAX_SEGMENT_BYTES) return false
   if (name.startsWith('.')) return false
   if (name.includes('/') || name.includes('\\')) return false
   if (CONTROL.test(name)) return false
@@ -152,6 +155,7 @@ export function whySegmentRefused(name: string): string {
   if (name !== name.trim()) return tr("server.startsOrEndsWithASpaceRemove.32f39c", { p0: shown })
   if (name.length > MAX_SEGMENT)
     return tr("server.theNameContainsCharactersShortenItTo.b0c9e9", { p0: name.length, p1: MAX_SEGMENT })
+  if (segmentBytes(name) > MAX_SEGMENT_BYTES) return tr("common.fileNameBytes", {count: MAX_SEGMENT_BYTES})
   return tr("server.cannotBeUsedAsAName.67c58f", { p0: shown })
 }
 

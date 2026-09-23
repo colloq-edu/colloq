@@ -1,0 +1,57 @@
+# Real Docker preparation/downloads are deliberately opt-in and nightly, outside
+# the PR test suite. Images are built locally; this workflow never pushes them.
+name: Runtime preparation and restore smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  docker-restore:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci --no-audit --no-fund
+      - name: Docker supports isolated preparation networks
+        run: |
+          docker version
+          version="$(docker version --format '{{.Server.Version}}')"
+          test "${version%%.*}" -ge 28
+      - name: Build base and CPU Kaggle environment locally
+        run: |
+          docker build --build-arg KERNEL_ENV=base -t colloq-kernel:base kernel
+          docker build --build-arg PARENT=colloq-kernel:base --build-arg KERNEL_ENV=kaggle-base -t colloq-kernel:kaggle-base kernel
+      - name: Production capability gate and Linux filename regression
+        run: node --import tsx --test --test-force-exit --test-concurrency=1 tests/competition-capabilities.test.mts tests/workspace-unicode-atomic.test.mts
+      - name: Real package preparation and offline verification
+        env:
+          COLLOQ_DEPENDENCY_DOCKER_TEST: '1'
+        run: node --import tsx --test --test-force-exit --test-concurrency=1 tests/dependency-preparation-docker.test.mts
+      - name: Prepare, execute offline, score, archive, restore and execute again
+        env:
+          COLLOQ_RESTORE_DOCKER_TEST: '1'
+        run: node --import tsx --test --test-force-exit --test-concurrency=1 tests/restore-run-docker.test.mts
+      - name: Retained image prerequisite
+        if: always()
+        run: |
+          # The portable archive contains the immutable image reference, not
+          # Docker layers. The second run intentionally retains the same image.
+          docker image ls --no-trunc colloq-kernel

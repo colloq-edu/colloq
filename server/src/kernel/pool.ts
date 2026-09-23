@@ -2,6 +2,7 @@ import { tr } from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision } from './runtime-client.js'
 import { sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionMemoryMb, sessionRowExists, storedRules } from '../db.js'
 import { blockKernelStarts, kernelRetirementInProgress } from './retirement.js'
+import { hasWorkAllocation, observedWorkMemory, releaseWorkAllocation, reserveWork, type WorkLease } from '../ops/work-budget.js'
 /** Production starts fixed, isolated Pods through the private runtime broker.
  * The direct Docker adapter is retained only for explicit local development.
  * Neither backend falls back to a shared Jupyter server. */
@@ -348,24 +349,48 @@ function warnLegacy(sessionId: string): void {
   )
 }
 
-/**
- * Есть ли вообще docker у этого процесса.
- *
- * Считается один раз: под `make up` сервер сам живёт в контейнере без сокета, и
- * шелл-аут на каждую комнату был бы двадцатью бесполезными процессами за пару.
- */
-let dockerReady: Promise<boolean> | null = null
+/** Coalesce probes and retry outages with bounded backoff. Positive results
+ * also expire, so daemon/network changes become visible without a restart. */
+class AvailabilityProbe {
+  private pending: Promise<boolean> | null = null
+  private checkedAt = 0
+  private retryAt = 0
+  private available: boolean | null = null
+  private failures = 0
+  private probes = 0
+  private recoveries = 0
+  status() {
+    return { available: this.available, retryAt: this.retryAt, failures: this.failures, probes: this.probes, recoveries: this.recoveries }
+  }
+  check(probe: () => Promise<boolean>): Promise<boolean> {
+    if (this.pending) return this.pending
+    const now = Date.now()
+    if (this.available !== null && now >= this.checkedAt && now < this.retryAt)
+      return Promise.resolve(this.available)
+    this.probes = Math.min(Number.MAX_SAFE_INTEGER, this.probes + 1)
+    this.pending = probe().catch(() => false).then((available) => {
+      if (available && this.available === false) this.recoveries = Math.min(Number.MAX_SAFE_INTEGER, this.recoveries + 1)
+      this.failures = available ? 0 : Math.min(16, this.failures + 1)
+      this.available = available
+      this.checkedAt = Date.now()
+      this.retryAt = this.checkedAt + (available ? 30000 : Math.min(30000, 1000 * 2 ** (this.failures - 1)))
+      return available
+    }).finally(() => { this.pending = null })
+    return this.pending
+  }
+}
+const dockerReady = new AvailabilityProbe()
 
 function haveDocker(): Promise<boolean> {
   if (kernelBackend() !== 'docker') return Promise.resolve(false)
-  dockerReady ??= run(['version', '--format', '{{.Server.Version}}'], 5_000).then((res) => {
+  return dockerReady.check(async () => {
+    const res = await run(['version', '--format', '{{.Server.Version}}'], 5_000)
     const ok = res.code === 0
-    if (!ok) {
+    if (!ok && dockerReady.status().available !== false) {
       console.warn('[kernel] Docker is unavailable. Isolated room execution is disabled until the development runtime is restored.')
     }
     return ok
   })
-  return dockerReady
 }
 
 /** Сказано один раз: повторять это на каждый Run незачем. */
@@ -377,14 +402,21 @@ function warnOnce(text: string): void {
   console.warn(text)
 }
 
-/** Есть ли названная сеть; спрашивается один раз, за пару она не появляется. */
-let networkReady: Promise<boolean> | null = null
+let networkName = ''
+let networkReady = new AvailabilityProbe()
 
 function networkExists(network: string): Promise<boolean> {
-  networkReady ??= run(['network', 'inspect', network, '--format', '{{.Id}}'], 5_000).then(
-    (res) => res.code === 0,
-  )
-  return networkReady
+  if (network !== networkName) {
+    networkName = network
+    networkReady = new AvailabilityProbe()
+    networkWarned = false
+  }
+  return networkReady.check(async () => (await run(['network', 'inspect', network, '--format', '{{.Id}}'], 5_000)).code === 0)
+}
+
+/** Bounded, credential-free recovery state for operational health. */
+export function kernelRecoveryDiagnostics() {
+  return { docker: dockerReady.status(), network: networkReady.status() }
 }
 
 /** Check the selected runtime; an unavailable backend disables execution. */
@@ -475,6 +507,8 @@ interface RoomContainer {
    * в уборку никогда и держал свой срез GPU до `make down`.
    */
   running: boolean
+  /** A known exited/created container, distinct from a missing census row. */
+  stopped: boolean
 }
 
 /**
@@ -488,8 +522,11 @@ interface RoomContainer {
  * оставались за комнатами, которых больше никто не откроет, и новый семинар
  * слышал «свободных срезов нет». Кто живой, а кто нет, сказано полем `running`.
  */
-async function roomContainers(): Promise<RoomContainer[]> {
-  if (!(await canIsolate())) return []
+export async function roomContainers(options: { strict?: boolean } = {}): Promise<RoomContainer[]> {
+  if (!(await canIsolate())) {
+    if (options.strict) throw new Error('Room allocation census is unavailable')
+    return []
+  }
   const res = await run([
     'ps',
     '-a',
@@ -498,7 +535,10 @@ async function roomContainers(): Promise<RoomContainer[]> {
     '--format',
     '{{.Label "colloq.session"}}\t{{.Label "colloq.gpu"}}\t{{.State}}\t{{.Label "colloq.role"}}',
   ])
-  if (res.code !== 0) return []
+  if (res.code !== 0) {
+    if (options.strict) throw new Error('Room allocation census is unavailable')
+    return []
+  }
   return res.out
     .split('\n')
     .map((line) => line.trim())
@@ -509,6 +549,7 @@ async function roomContainers(): Promise<RoomContainer[]> {
         session: (session ?? '').trim(),
         gpu: (gpu ?? '').trim(),
         running: (state ?? '').trim() === 'running',
+        stopped: ['created', 'exited', 'dead'].includes((state ?? '').trim()),
         // Пусто или `<no value>` — контейнер, поднятый до появления метки, то
         // есть комнатный. Молчание здесь и есть обратная совместимость.
         role: (role ?? '').trim() === 'own' ? 'own' : 'room',
@@ -1027,6 +1068,76 @@ let limitsInjected = false
 /** Что стало с лимитом: применён на живом контейнере, ждёт следующего пуска, не вышло. */
 export type LimitOutcome = 'applied' | 'pending' | 'failed'
 
+/** Docker has no scheduler: reserve before issuing run/start/update. The
+ * complete census credits existing allocations, leaving only positive growth.
+ * Broker admission remains Kubernetes' responsibility. */
+async function reserveKernelMemory(
+  sessionId: string, targets: Array<{ role: KernelRole; memoryMb: number }>, runningOnly = false,
+): Promise<Map<KernelRole, WorkLease>> {
+  const leases = new Map<KernelRole, WorkLease>()
+  if (kernelBackend() !== 'docker') return leases
+  const { machineResources } = await import('./resources.js')
+  const machine = await machineResources({ fresh: true, beforeReservations: true })
+  try {
+    for (const target of targets) {
+      const allocationKey = slotFor(sessionId, target.role)
+      const observed = observedWorkMemory(allocationKey)
+      if (observed === null) throw new Error('Available kernel memory cannot be verified while the allocation census is unavailable')
+      // Updating a stopped container consumes nothing; an in-flight start must
+      // finish first so the update cannot outrun its admitted memory limit.
+      if (runningOnly && !observed && !hasWorkAllocation(allocationKey)) continue
+      if (target.memoryMb <= observed && !hasWorkAllocation(allocationKey)) continue
+      const lease = reserveWork({ id: `kernel:${allocationKey}`, kind: 'kernel', allocationKey,
+        memoryMb: target.memoryMb, diskBytes: 0 }, { availableMemoryMb: machine.memory.availableMb })
+      if (!lease) throw new Error('Not enough available memory for this kernel allocation')
+      leases.set(target.role, lease)
+    }
+    return leases
+  } catch (error) { for (const lease of leases.values()) lease(); throw error }
+}
+
+async function refreshKernelAllocations(): Promise<void> {
+  const { machineResources, forgetResources } = await import('./resources.js')
+  forgetResources()
+  await machineResources({ fresh: true, beforeReservations: true })
+}
+
+async function startWithMemory(sessionId: string, role: KernelRole, memoryMb: number, start: () => Promise<RunResult>): Promise<RunResult> {
+  const leases = await reserveKernelMemory(sessionId, [{ role, memoryMb }])
+  const lease = leases.get(role)
+  let created = false
+  try {
+    assertLocalRoomRunning(sessionId)
+    const result = await start()
+    if (result.code === 0) { created = true; lease?.settle() }
+    else lease?.()
+    await refreshKernelAllocations()
+    return result
+  } catch (error) { if (!created) lease?.(); throw error }
+}
+
+async function updateWithMemory(
+  sessionId: string, shown: string, targets: Array<{ role: KernelRole; memoryMb: number }>,
+  update: (container: string, role: KernelRole) => Promise<RunResult>,
+): Promise<LimitOutcome> {
+  let leases: Map<KernelRole, WorkLease>
+  try { leases = await reserveKernelMemory(sessionId, targets, true) }
+  catch (error) { console.warn(`[kernel] ${sessionId}: ${error instanceof Error ? error.message : error}`); return 'failed' }
+  try {
+    return await bothContainers(sessionId, shown, async (container, role) => {
+      const result = await update(container, role)
+      const lease = leases.get(role)
+      if (result.code === 0) lease?.settle()
+      else lease?.()
+      leases.delete(role)
+      return result
+    }, targets.map(target => target.role))
+  } finally {
+    for (const lease of leases.values()) lease()
+    if (kernelBackend() === 'docker') await refreshKernelAllocations()
+  }
+}
+
 /**
  * Поднять (или опустить) память живой комнате, не убивая её Python.
  *
@@ -1075,7 +1186,7 @@ export async function applyMemoryLimit(sessionId: string, mb: number | null): Pr
    */
   const own = ownLimits(sessionId).memoryMb
   const ownSpec = own === null ? spec : memSpec(own)
-  return bothContainers(sessionId, `${spec} памяти`, (container, role) => {
+  return updateWithMemory(sessionId, `${spec} памяти`, [{ role: 'room', memoryMb: mb }, { role: 'own', memoryMb: own ?? mb }], (container, role) => {
     const use = role === 'own' ? ownSpec : spec
     return limitsDocker(['update', `--memory=${use}`, `--memory-swap=${use}`, container], 30_000)
   })
@@ -1100,15 +1211,15 @@ export async function applyOwnLimits(sessionId: string): Promise<LimitOutcome> {
   const { memoryMb, cpus } = ownLimits(sessionId)
   const spec = memSpec(memoryMb ?? defaultMemoryMb(false))
   const cores = cpus ?? defaultCpus()
-  return bothContainers(
+  return updateWithMemory(
     sessionId,
     `${spec} памяти и ${cores} ядер личным тетрадям`,
+    [{ role: 'own', memoryMb: memoryMb ?? defaultMemoryMb(false) }],
     (container) =>
       limitsDocker(
         ['update', `--memory=${spec}`, `--memory-swap=${spec}`, `--cpus=${cores}`, container],
         30_000,
       ),
-    ['own'],
   )
 }
 
@@ -1341,7 +1452,8 @@ async function startContainer(
       // не встал он — комната не поднимается (perimeter.ts · RoomPerimeterError).
       await ensureRoomPerimeter(run, perimeterTarget(), image)
       assertLocalRoomRunning(sessionId)
-      const started = await run(['start', container], 60_000)
+      const stoppedLimits = await containerLimits(sessionId, role)
+      const started = await startWithMemory(sessionId, role, stoppedLimits.memoryMb ?? memoryLimitMb(env), () => run(['start', container], 60_000))
       // Результат читается: не поднявшийся контейнер дальше отвечал бы «could
       // not read the published port» на каждый Run, и так до ручного docker rm.
       if (started.code !== 0) return recreate(tr("server.dockerStart.e0ac13", { p0: started.out.slice(-200) }))
@@ -1363,8 +1475,8 @@ async function startContainer(
     // первого пакета ядра; не встал — отказ, а не открытая сеть.
     await ensureRoomPerimeter(run, perimeterTarget(), image)
     assertLocalRoomRunning(sessionId)
-    const created = await run(
-      runArgs({
+    const limits = role === 'own' ? ownLimits(sessionId) : { memoryMb: sessionMemoryMb(sessionId), cpus: sessionCpus(sessionId) }
+    const args = runArgs({
         sessionId,
         env,
         role,
@@ -1376,10 +1488,9 @@ async function startContainer(
         // занятия обещает столько каждому его Python, а не столько на двоих.
         // Контейнеру личных тетрадей — его собственные числа: занятие может
         // отсыпать студентам не столько же, сколько взяло себе.
-        ...(role === 'own' ? ownLimits(sessionId) : { memoryMb: sessionMemoryMb(sessionId), cpus: sessionCpus(sessionId) }),
-      }),
-      120_000,
-    )
+        ...limits,
+      })
+    const created = await startWithMemory(sessionId, role, limits.memoryMb ?? memoryLimitMb(env), () => run(args, 120_000))
     if (created.code !== 0) {
       // Сеть могли снести между проверкой и запуском: следующая попытка
       // спросит заново, а не поверит запомненному минуту назад.
@@ -1549,7 +1660,11 @@ async function discardSlot(slot: string): Promise<void> {
   endpoints.delete(slot)
   const container = containerOfSlot(slot)
   try {
-    await run(['rm', '-f', container], 60_000)
+    const result = await run(['rm', '-f', container], 60_000)
+    if (result.code === 0 || /no such container/i.test(result.out)) {
+      releaseWorkAllocation(slot)
+      await refreshKernelAllocations()
+    }
   } catch (err) {
     console.error(`[kernel] не удалось убрать контейнер ${container}:`, err)
   }
@@ -1593,8 +1708,10 @@ export async function dropRoomKernel(sessionId: string, permanent = false): Prom
     // Подъём, идущий прямо сейчас, положил бы контейнер обратно секундой позже:
     // помечаем слот, и подъём, закончившись, снесёт его сам.
     if (starting.has(slot)) abandoned.add(slot)
-    await run(['rm', '-f', containerOfSlot(slot)], 60_000)
+    const result = await run(['rm', '-f', containerOfSlot(slot)], 60_000)
+    if (!starting.has(slot) && (result.code === 0 || /no such container/i.test(result.out))) releaseWorkAllocation(slot)
   }
+  await refreshKernelAllocations()
 }
 
 /**
@@ -1611,7 +1728,9 @@ export async function dropOwnKernel(sessionId: string): Promise<void> {
   endpoints.delete(slot)
   if (!(await canIsolate())) return
   if (starting.has(slot)) abandoned.add(slot)
-  await run(['rm', '-f', containerFor(sessionId, 'own')], 60_000)
+  const result = await run(['rm', '-f', containerFor(sessionId, 'own')], 60_000)
+  if (!starting.has(slot) && (result.code === 0 || /no such container/i.test(result.out))) releaseWorkAllocation(slot)
+  await refreshKernelAllocations()
 }
 
 /** Забыть разрешённый адрес, чтобы следующее открытие перепроверило контейнер. */
@@ -1641,6 +1760,7 @@ export async function dropLocalRoomKernel(sessionId: string): Promise<void> {
       endpoints.delete(slot)
       const result = await run(['rm', '-f', containerOfSlot(slot)], 60_000)
       if (result.code !== 0 && !/No such container/i.test(result.out)) throw new Error(result.out)
+      releaseWorkAllocation(slot)
     }
   } finally { release() }
 }

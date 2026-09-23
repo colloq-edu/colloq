@@ -109,7 +109,7 @@ def emit(value):
 def parse_requirements(text, base):
     if len(text.encode('utf-8')) > 8192: fail('requirements_limit', 'Requirements exceed 8 KiB.')
     lines = text.splitlines()
-    if len(lines) > 32: fail('requirements_limit', 'Requirements exceed 32 lines.')
+    if sum(1 for line in lines if line.strip() and not line.strip().startswith('#')) > 32: fail('requirements_limit', 'Requirements exceed 32 package lines.')
     inventory = {canonicalize_name(item['name']): Version(item['version']) for item in base}
     normalized = []
     for number, raw in enumerate(lines, 1):

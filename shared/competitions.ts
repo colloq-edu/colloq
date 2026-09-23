@@ -102,6 +102,13 @@ export interface Competition {
   privateOpenedAt: number | null
   /** Посылка сэмпл-тетради: она же строка «бейзлайн» в лидерборде. */
   baselineSubmissionId: string | null
+  /** Stable service identity, independent of the latest baseline notebook. */
+  baselineEntrantId?: string | null
+  /** Monotonic visible state and execution input revisions. */
+  revision?: number
+  inputRevision?: number
+  /** Inputs visible to the notebook; metric-only checks cannot refresh this. */
+  notebookInputRevision?: number
   createdBy: string | null
   createdAt: number
   updatedAt: number
@@ -354,6 +361,9 @@ export const SUBMISSION_STAGES: readonly SubmissionStage[] = [
 export type StagePosition = 'done' | 'current' | 'ahead'
 
 export interface Submission {
+  /** Inputs used by the execution/score; null means legacy provenance is unknown. */
+  inputRevision?: number | null
+  notebookInputRevision?: number | null
   execution?: import('./dependencies.js').SubmissionEnvironment
   id: string
   competitionId: string
@@ -472,6 +482,8 @@ export type RunVerdict =
   | 'unknown'
 
 export interface SubmissionRun {
+  attemptId?: string | null
+  inputRevision?: number | null
   id: string
   submissionId: string
   /** Номер прогона по порядку внутри посылки. */

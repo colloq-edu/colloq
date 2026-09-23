@@ -76,11 +76,13 @@
       perDay: mine.perDay,
     })
   })
+  const unavailable = $derived(view.capabilities?.execution.available === false)
   const blocked = $derived(
-    busy || mine.accepting !== 'open' || mine.inFlight > 0 || mine.leftToday === 0,
+    unavailable || busy || mine.accepting !== 'open' || mine.inFlight > 0 || mine.leftToday === 0,
   )
 
   function take(list: FileList | null | undefined): void {
+    if (blocked) return
     const file = list?.[0]
     if (!file) return
     if (!file.name.toLowerCase().endsWith('.ipynb')) {
@@ -171,6 +173,9 @@
     </div>
   {/if}
 
+  {#if unavailable}
+    <p class="text-2xs leading-[18px] text-warning" role="status">{view.capabilities?.execution.reason}</p>
+  {/if}
   {#if refusal}
     <p class="text-2xs leading-[18px] text-danger" role="alert">{refusal}</p>
   {:else if mine.inFlight > 0}
@@ -184,6 +189,7 @@
   <input
     class="hidden"
     type="file"
+    disabled={blocked}
     accept=".ipynb,application/x-ipynb+json"
     bind:this={input}
     onchange={(event) => {

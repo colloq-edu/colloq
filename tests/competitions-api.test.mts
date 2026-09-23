@@ -881,3 +881,65 @@ test('файлы данных кладутся пачкой и снимаютс�
   )
   assert.equal(missing.status, 404)
 })
+
+test('admin leaderboard uses all submissions beyond the feed page', async () => {
+  const c = createCompetition({ slug: 'authoritative-board', title: 'Board', metric: { direction: 'higher' } })!
+  const entrant = createEntrant('Winner').entrant
+  const winner = acceptSubmission({ competitionId: c.id, entrantId: entrant.id, fileName: 'best.ipynb', bytes: 2, at: 1 })
+  updateSubmission(winner.id, { state: 'scored', publicScore: 999, privateScore: 998 })
+  for (let i = 0; i < 205; i++) {
+    const s = acceptSubmission({ competitionId: c.id, entrantId: entrant.id, fileName: 'later.ipynb', bytes: 2, at: i + 2 })
+    updateSubmission(s.id, { state: 'scored', publicScore: 1, privateScore: 2 })
+  }
+  const res = await call('GET', `/api/admin/competitions/${c.id}/leaderboard`, { cookie: teacher })
+  assert.equal(res.status, 200)
+  const board = await res.json()
+  assert.equal(board.public[0].submissionId, winner.id)
+  assert.equal(board.public[0].score, 999)
+  assert.equal(board.private[0].score, 998)
+  assert.equal(board.public[0].entrantName, 'Winner')
+  assert.equal(typeof board.revision, 'number')
+})
+
+test('metric changes invalidate readiness and baseline replacement retains service identity', async () => {
+  const c = createCompetition({ slug: 'input-readiness', title: 'Inputs', metric: { code: 'def score(a,b): return 1' }, privateRelease: 'manual' })!
+  await upload(`/api/admin/competitions/${c.id}/files`, teacher, [{ name: 'test.csv', body: bytes('id\n1\n2\n') }])
+  await upload(`/api/admin/competitions/${c.id}/solution`, teacher, [{ name: 'solution.csv', body: bytes('id,target\n1,1\n2,2\n') }])
+  await upload(`/api/admin/competitions/${c.id}/baseline`, teacher, [{ name: 'base.ipynb', body: bytes(NOTEBOOK) }])
+  const baseline = createEntrant('Baseline').entrant
+  const s = acceptSubmission({ competitionId: c.id, entrantId: baseline.id, fileName: 'base.ipynb', bytes: 2 })
+  updateSubmission(s.id, { state: 'scored', publicScore: 1, privateScore: 1 })
+  updateCompetition(c.id, { baselineSubmissionId: s.id })
+  assert.equal((await (await call('GET', `/api/admin/competitions/${c.id}`, { cookie: teacher })).json()).ready, null)
+  await call('PUT', `/api/admin/competitions/${c.id}/metric`, { cookie: teacher, body: { code: 'def score(a,b): raise Exception()' } })
+  assert.equal((await (await call('GET', `/api/admin/competitions/${c.id}`, { cookie: teacher })).json()).ready, 'baselineNotChecked')
+  assert.equal((await call('POST', `/api/admin/competitions/${c.id}/open`, { cookie: teacher })).status, 409)
+  // A metric-only recheck can certify a changed metric, but cannot certify new
+  // notebook inputs that the baseline has never executed against.
+  updateSubmission(s.id, { inputRevision: getCompetition(c.id)!.inputRevision })
+  assert.equal((await (await call('GET', `/api/admin/competitions/${c.id}`, { cookie: teacher })).json()).ready, null)
+  await upload(`/api/admin/competitions/${c.id}/files`, teacher, [{ name: 'new-data.csv', body: bytes('id\n3\n4\n') }])
+  updateSubmission(s.id, { inputRevision: getCompetition(c.id)!.inputRevision })
+  assert.equal((await (await call('GET', `/api/admin/competitions/${c.id}`, { cookie: teacher })).json()).ready, 'baselineNotChecked')
+  await upload(`/api/admin/competitions/${c.id}/baseline`, teacher, [{ name: 'base.ipynb', body: bytes(NOTEBOOK) }])
+  const feed = await (await call('GET', `/api/admin/competitions/${c.id}/submissions`, { cookie: teacher })).json()
+  assert.equal(feed.rows[0].baseline, true)
+})
+
+test('unsupported execution is exposed and baseline check refuses before queueing', async () => {
+  const c = createCompetition({ slug: 'unsupported-execution', title: 'Unavailable' })!
+  const previous = { kernel: process.env.KERNEL_BACKEND, competition: process.env.COMPETITION_BACKEND }
+  try {
+    process.env.KERNEL_BACKEND = 'broker'
+    process.env.COMPETITION_BACKEND = 'docker'
+    const view = await (await call('GET', `/api/admin/competitions/${c.id}`, { cookie: teacher })).json()
+    assert.equal(view.capabilities.execution.available, false)
+    assert.equal(view.capabilities.execution.code, 'unsupported_backend')
+    const check = await call('POST', `/api/admin/competitions/${c.id}/baseline/check`, { cookie: teacher })
+    assert.equal(check.status, 503)
+    assert.match((await check.json()).error, /.+/)
+  } finally {
+    if (previous.kernel === undefined) delete process.env.KERNEL_BACKEND; else process.env.KERNEL_BACKEND = previous.kernel
+    if (previous.competition === undefined) delete process.env.COMPETITION_BACKEND; else process.env.COMPETITION_BACKEND = previous.competition
+  }
+})

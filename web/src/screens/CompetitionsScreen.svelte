@@ -92,6 +92,22 @@
   const name = $derived(me?.entrant?.name ?? null)
   const tab: CompetitionView = $derived(route.view === 'list' ? 'task' : route.view)
 
+  // Each completion belongs to the route and identity that started it.
+  // The generation also protects alpha → list → alpha transitions.
+  let generation = 0
+  let identityRequest = 0
+  function requestContext() {
+    return { generation, slug: route.slug, identity: me?.entrant?.id ?? null }
+  }
+  function currentContext(context: ReturnType<typeof requestContext>): boolean {
+    return context.generation === generation && context.slug === route.slug
+      && context.identity === (me?.entrant?.id ?? null)
+  }
+  function actionSlug(): string | null {
+    const slug = page?.competition.slug
+    return slug && slug === route.slug && carried === `${slug}:${me?.entrant?.id ?? ''}` ? slug : null
+  }
+
   /* ------------------------------------------------------------- часы */
 
   /*
@@ -131,15 +147,20 @@
     if (!key || claimed === key) return
     claimed = key
     claiming = true
+    const request = ++identityRequest
+    generation += 1
     void entrantApi
       .signIn(key)
       .then((answer) => {
+        if (request !== identityRequest) return
         me = answer
       })
       .catch((error: unknown) => {
+        if (request !== identityRequest) return
         if (error instanceof EntrantApiError) signInRefusal = error.message
       })
       .finally(() => {
+        if (request !== identityRequest || route.signInKey !== key) return
         claiming = false
         history.replaceState({}, '', COMPETITIONS_LANDING)
         onnavigate(COMPETITIONS_LANDING)
@@ -153,52 +174,62 @@
   }
 
   async function loadMe(): Promise<void> {
+    const request = ++identityRequest
     try {
-      me = await entrantApi.me()
+      const answer = await entrantApi.me()
+      if (request === identityRequest) me = answer
     } catch {
-      // Личность — не то, ради чего человек пришёл: список соревнований
-      // открыт и без неё, и падать всей страницей из-за печенья незачем.
-      me = { entrant: null, key: null, link: null }
+      if (request === identityRequest) me = { entrant: null, key: null, link: null }
     }
   }
 
   async function loadList(): Promise<void> {
+    const context = requestContext()
     try {
-      list = await entrantApi.list()
+      const fresh = await entrantApi.list()
+      if (!currentContext(context)) return
+      list = fresh
       failure = null
     } catch (error: unknown) {
-      failure = say(error)
+      if (currentContext(context)) failure = say(error)
     } finally {
-      ready = true
+      if (currentContext(context)) ready = true
     }
   }
 
   async function loadPage(slug: string): Promise<void> {
+    const context = requestContext()
     try {
-      page = await entrantApi.competition(slug)
+      const fresh = await entrantApi.competition(slug)
+      if (!currentContext(context)) return
+      page = fresh
       failure = null
     } catch (error: unknown) {
+      if (!currentContext(context)) return
       failure = say(error)
       page = null
     } finally {
-      ready = true
+      if (currentContext(context)) ready = true
     }
   }
 
   async function loadBoard(slug: string): Promise<void> {
+    const context = requestContext()
     try {
-      board = await entrantApi.leaderboard(slug)
+      const fresh = await entrantApi.leaderboard(slug)
+      if (currentContext(context)) board = fresh
     } catch (error: unknown) {
-      failure = say(error)
+      if (currentContext(context)) failure = say(error)
     }
   }
 
   async function loadMine(slug: string): Promise<void> {
+    const context = requestContext()
     try {
-      mine = await entrantApi.submissions(slug)
+      const fresh = await entrantApi.submissions(slug)
+      if (currentContext(context)) mine = fresh
     } catch (error: unknown) {
-      // «Войдите по ключу» — не поломка страницы: человек просто ещё не
-      // вступал, и вкладка посылок покажет ему кнопку, а не красную строку.
+      if (!currentContext(context)) return
       if (error instanceof EntrantApiError && error.status === 401) mine = null
       else failure = say(error)
     }
@@ -209,20 +240,30 @@
     const slug = route.slug
     const view = route.view
     const person = me?.entrant?.id ?? null
+    const key = `${slug ?? ''}:${person ?? ''}`
+    if (carried !== key) {
+      generation += 1
+      carried = key
+      page = null
+      mine = null
+      board = null
+      list = null
+      final = false
+      ready = false
+      failure = null
+      sendRefusal = null
+      busy = false
+      sending = false
+      streamLost = false
+    }
+    if (claiming || route.signInKey) return
     if (me === null) {
       void loadMe()
       return
     }
     if (slug === null) {
-      if (route.signInKey === null) void loadList()
+      void loadList()
       return
-    }
-    if (carried !== slug) {
-      carried = slug
-      page = null
-      mine = null
-      board = null
-      final = false
     }
     void loadPage(slug)
     /*
@@ -252,8 +293,10 @@
   $effect(() => {
     const slug = route.slug
     if (!slug || route.view !== 'submissions' || !running) return
+    const context = requestContext()
     const stream = new EventSource(entrantApi.streamUrl(slug))
     stream.addEventListener('state', (event) => {
+      if (!currentContext(context)) return
       streamLost = false
       try {
         const fresh = JSON.parse((event as MessageEvent<string>).data) as EntrantSubmissions
@@ -282,6 +325,7 @@
      * выглядит живой, будучи мёртвой. Числа догонит опрос ниже.
      */
     stream.addEventListener('error', () => {
+      if (!currentContext(context)) return
       streamLost = true
     })
     return () => stream.close()
@@ -312,82 +356,98 @@
   /* --------------------------------------------------------- действия */
 
   async function join(slug: string, wanted: string): Promise<void> {
+    if (joinBusy) return
+    const request = ++identityRequest
+    generation += 1
     joinBusy = true
     joinRefusal = null
     try {
-      me = await entrantApi.join(slug, wanted)
+      const answer = await entrantApi.join(slug, wanted)
+      if (request !== identityRequest) return
+      me = answer
       joining = null
-      await Promise.all([loadList(), route.slug === slug ? loadPage(slug) : Promise.resolve()])
-      if (route.slug === slug) await loadMine(slug)
     } catch (error: unknown) {
-      joinRefusal = say(error)
+      if (request === identityRequest) joinRefusal = say(error)
     } finally {
-      joinBusy = false
+      if (request === identityRequest) joinBusy = false
     }
   }
 
   async function signIn(key: string): Promise<void> {
+    if (signInBusy) return
+    const request = ++identityRequest
+    generation += 1
     signInBusy = true
     signInRefusal = null
     try {
-      me = await entrantApi.signIn(key)
-      await loadList()
+      const answer = await entrantApi.signIn(key)
+      if (request === identityRequest) me = answer
     } catch (error: unknown) {
-      signInRefusal = say(error)
+      if (request === identityRequest) signInRefusal = say(error)
     } finally {
-      signInBusy = false
+      if (request === identityRequest) signInBusy = false
     }
   }
 
   async function signOut(): Promise<void> {
+    const request = ++identityRequest
+    generation += 1
     await entrantApi.signOut().catch(() => undefined)
+    if (request !== identityRequest) return
     me = { entrant: null, key: null, link: null }
     mine = null
-    await loadList()
   }
 
   async function send(file: File, bundleId?: string | null): Promise<boolean> {
-    const slug = route.slug
-    if (!slug) return false
+    const slug = actionSlug()
+    if (!slug || sending) return false
+    const context = requestContext()
     sending = true
     sendRefusal = null
     try {
       await entrantApi.send(slug, file, bundleId)
+      if (!currentContext(context)) return false
       await loadMine(slug)
       return true
     } catch (error: unknown) {
-      sendRefusal = say(error)
+      if (currentContext(context)) sendRefusal = say(error)
       return false
     } finally {
-      sending = false
+      if (currentContext(context)) sending = false
     }
   }
 
   async function choose(id: string): Promise<void> {
-    const slug = route.slug
-    if (!slug) return
+    const slug = actionSlug()
+    if (!slug || busy || page?.competition.scoring !== 'chosen') return
+    const context = requestContext()
     busy = true
     try {
-      mine = await entrantApi.choose(slug, id)
+      const fresh = await entrantApi.choose(slug, id)
+      if (!currentContext(context)) return
+      mine = fresh
       await loadBoard(slug)
     } catch (error: unknown) {
-      sendRefusal = say(error)
+      if (currentContext(context)) sendRefusal = say(error)
     } finally {
-      busy = false
+      if (currentContext(context)) busy = false
     }
   }
 
   async function cancel(id: string): Promise<void> {
-    const slug = route.slug
-    if (!slug) return
+    const slug = actionSlug()
+    if (!slug || busy) return
+    const context = requestContext()
     busy = true
     try {
-      mine = await entrantApi.cancel(slug, id)
+      const fresh = await entrantApi.cancel(slug, id)
+      if (currentContext(context)) mine = fresh
     } catch (error: unknown) {
+      if (!currentContext(context)) return
       sendRefusal = say(error)
       await loadMine(slug)
     } finally {
-      busy = false
+      if (currentContext(context)) busy = false
     }
   }
 
@@ -519,6 +579,7 @@
           {/key}
         {:else if tab === 'submissions'}
           {#if mine}
+            {#key `${page.competition.slug}:${me?.entrant?.id ?? ''}`}
             <SubmissionsView
               view={page}
               {mine}
@@ -539,6 +600,7 @@
                 joining = page!.competition.slug
               }}
             />
+            {/key}
           {:else}
             <div class="flex flex-col items-start gap-3">
               <p class="text-ui text-muted">{tr('competitions.refusal.signIn')}</p>

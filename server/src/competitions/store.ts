@@ -324,6 +324,68 @@ function ensureColumn(table: string, column: string, definition: string): void {
  * получает настоящий номер захода.
  */
 ensureColumn('competition_queue', 'turn', 'turn INTEGER NOT NULL DEFAULT 0')
+ensureColumn('competition_queue', 'attempt_id', 'attempt_id TEXT')
+ensureColumn('competition_queue', 'pending_kind', 'pending_kind TEXT')
+
+// Revisions are durable database state, so direct runner/queue mutations cannot
+// bypass the live feed invalidation contract. Legacy scores have unknown inputs
+// and must be checked again before a draft can open.
+ensureColumn('competitions', 'revision', 'revision INTEGER NOT NULL DEFAULT 0')
+ensureColumn('competitions', 'input_revision', 'input_revision INTEGER NOT NULL DEFAULT 0')
+ensureColumn('competitions', 'baseline_entrant_id', 'baseline_entrant_id TEXT')
+ensureColumn('submissions', 'input_revision', 'input_revision INTEGER')
+ensureColumn('competitions', 'notebook_input_revision', 'notebook_input_revision INTEGER NOT NULL DEFAULT 0')
+ensureColumn('submissions', 'notebook_input_revision', 'notebook_input_revision INTEGER')
+ensureColumn('submission_runs', 'attempt_id', 'attempt_id TEXT')
+ensureColumn('submission_runs', 'input_revision', 'input_revision INTEGER')
+db.exec(`
+  UPDATE competitions SET baseline_entrant_id =
+    (SELECT entrant_id FROM submissions WHERE id = baseline_submission_id)
+    WHERE baseline_entrant_id IS NULL AND baseline_submission_id IS NOT NULL;
+  CREATE TRIGGER IF NOT EXISTS competition_baseline_identity
+  AFTER UPDATE OF baseline_submission_id ON competitions
+  WHEN NEW.baseline_submission_id IS NOT NULL
+  BEGIN
+    UPDATE competitions SET baseline_entrant_id = COALESCE(baseline_entrant_id,
+      (SELECT entrant_id FROM submissions WHERE id = NEW.baseline_submission_id)) WHERE id = NEW.id;
+  END;
+  CREATE TRIGGER IF NOT EXISTS competition_changed AFTER UPDATE ON competitions
+  WHEN NEW.revision = OLD.revision
+  BEGIN UPDATE competitions SET revision = revision + 1 WHERE id = NEW.id; END;
+  CREATE TRIGGER IF NOT EXISTS competition_notebook_inputs_changed
+  AFTER UPDATE OF environment, wall_seconds, memory_mb, cpus ON competitions
+  WHEN NEW.environment IS NOT OLD.environment OR NEW.wall_seconds IS NOT OLD.wall_seconds
+    OR NEW.memory_mb IS NOT OLD.memory_mb OR NEW.cpus IS NOT OLD.cpus
+  BEGIN UPDATE competitions SET notebook_input_revision = notebook_input_revision + 1 WHERE id = NEW.id; END;
+  CREATE TRIGGER IF NOT EXISTS competition_inputs_changed
+  AFTER UPDATE OF metric_code, metric_direction, public_percent, split_seed,
+    environment, wall_seconds, memory_mb, cpus ON competitions
+  WHEN NEW.metric_code IS NOT OLD.metric_code OR NEW.metric_direction IS NOT OLD.metric_direction
+    OR NEW.public_percent IS NOT OLD.public_percent OR NEW.split_seed IS NOT OLD.split_seed
+    OR NEW.environment IS NOT OLD.environment OR NEW.wall_seconds IS NOT OLD.wall_seconds
+    OR NEW.memory_mb IS NOT OLD.memory_mb OR NEW.cpus IS NOT OLD.cpus
+  BEGIN UPDATE competitions SET input_revision = input_revision + 1 WHERE id = NEW.id; END;
+`)
+for (const table of ['submissions', 'competition_queue', 'competition_entrants', 'competition_files']) {
+  for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+    const row = operation === 'DELETE' ? 'OLD' : 'NEW'
+    if (table === 'competition_files') db.exec(`CREATE TRIGGER IF NOT EXISTS competition_files_${operation.toLowerCase()}_notebook_revision
+      AFTER ${operation} ON competition_files
+      WHEN ${operation === 'UPDATE' ? "OLD.visibility = 'open' OR NEW.visibility = 'open'" : `${row}.visibility = 'open'`}
+      BEGIN UPDATE competitions SET notebook_input_revision = notebook_input_revision + 1 WHERE id = ${row}.competition_id; END;`)
+    db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_${operation.toLowerCase()}_revision
+      AFTER ${operation} ON ${table}
+      BEGIN UPDATE competitions SET revision = revision + 1
+        ${table === 'competition_files' ? ', input_revision = input_revision + 1' : ''}
+        WHERE id = ${row}.competition_id; END;`)
+  }
+}
+
+/** Replacing an artifact without a competition_files row (the baseline). */
+export function invalidateCompetitionInputs(id: string, notebook = true): void {
+  db.prepare('UPDATE competitions SET input_revision = input_revision + 1, notebook_input_revision = notebook_input_revision + ? WHERE id = ?').run(notebook ? 1 : 0, id)
+}
+
 
 /* ------------------------------------------------------------------ имена */
 
@@ -376,6 +438,10 @@ interface CompetitionRow {
   scoring: string
   private_opened_at: number | null
   baseline_submission_id: string | null
+  baseline_entrant_id: string | null
+  revision: number
+  input_revision: number
+  notebook_input_revision: number
   created_by: string | null
   created_at: number
   updated_at: number
@@ -409,6 +475,10 @@ function toCompetition(row: CompetitionRow): Competition {
     scoring: row.scoring as ScoringRule,
     privateOpenedAt: row.private_opened_at,
     baselineSubmissionId: row.baseline_submission_id,
+    baselineEntrantId: row.baseline_entrant_id,
+    revision: row.revision,
+    inputRevision: row.input_revision,
+    notebookInputRevision: row.notebook_input_revision,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -992,6 +1062,8 @@ interface SubmissionRow {
   participant_error: string | null
   teacher_error: string | null
   chosen: number
+  input_revision: number | null
+  notebook_input_revision: number | null
 }
 
 function toSubmission(row: SubmissionRow): Submission {
@@ -1013,13 +1085,17 @@ function toSubmission(row: SubmissionRow): Submission {
     participantError: row.participant_error,
     teacherError: row.teacher_error,
     chosen: row.chosen === 1,
+    inputRevision: row.input_revision,
+    notebookInputRevision: row.notebook_input_revision,
   }
 }
 
 const insertSubmission = db.prepare(`
   INSERT INTO submissions
-    (id, competition_id, entrant_id, number, file_name, bytes, accepted_at, state, stage)
-  VALUES (@id, @competition_id, @entrant_id, @number, @file_name, @bytes, @at, 'queued', 'accepted')
+    (id, competition_id, entrant_id, number, file_name, bytes, accepted_at, state, stage, input_revision, notebook_input_revision)
+  VALUES (@id, @competition_id, @entrant_id, @number, @file_name, @bytes, @at, 'queued', 'accepted',
+    (SELECT input_revision FROM competitions WHERE id = @competition_id),
+    (SELECT notebook_input_revision FROM competitions WHERE id = @competition_id))
 `)
 const nextNumber = db.prepare(
   'SELECT COALESCE(MAX(number), 0) + 1 AS n FROM submissions WHERE competition_id = ?',
@@ -1186,6 +1262,8 @@ export function usedToday(
 
 /** Что прогонщик записывает в посылку по ходу дела. */
 export interface SubmissionPatch {
+  notebookInputRevision?: number | null
+  inputRevision?: number | null
   state?: SubmissionState
   stage?: SubmissionStage
   publicScore?: number | null
@@ -1198,6 +1276,8 @@ export interface SubmissionPatch {
 }
 
 const SUBMISSION_COLUMN: Record<keyof SubmissionPatch, string> = {
+  inputRevision: 'input_revision',
+  notebookInputRevision: 'notebook_input_revision',
   state: 'state',
   stage: 'stage',
   publicScore: 'public_score',
@@ -1243,7 +1323,7 @@ export function updateSubmission(id: string, patch: SubmissionPatch): Submission
 export const chooseSubmission = db.transaction(
   (competitionId: string, entrantId: string, submissionId: string): boolean => {
     const row = selectSubmission.get(submissionId) as SubmissionRow | undefined
-    if (!row) return false
+    if (!row || getCompetition(competitionId)?.scoring !== 'chosen') return false
     if (row.competition_id !== competitionId || row.entrant_id !== entrantId) return false
     if (row.state !== 'scored') return false
     db.prepare(
@@ -1346,6 +1426,8 @@ export function competitionSummary(id: string): CompetitionSummary {
 /* ---------------------------------------------------------------- прогоны */
 
 interface RunRow {
+  attempt_id: string | null
+  input_revision: number | null
   id: string
   submission_id: string
   seq: number
@@ -1366,6 +1448,8 @@ interface RunRow {
 
 function toRun(row: RunRow): SubmissionRun {
   return {
+    attemptId: row.attempt_id,
+    inputRevision: row.input_revision,
     id: row.id,
     submissionId: row.submission_id,
     seq: row.seq,
@@ -1386,8 +1470,8 @@ function toRun(row: RunRow): SubmissionRun {
 }
 
 const insertRun = db.prepare(`
-  INSERT INTO submission_runs (id, submission_id, seq, kind, started_at, container)
-  VALUES (@id, @submission_id, @seq, @kind, @at, @container)
+  INSERT INTO submission_runs (id, submission_id, seq, kind, started_at, container, attempt_id, input_revision)
+  VALUES (@id, @submission_id, @seq, @kind, @at, @container, @attempt_id, @input_revision)
 `)
 const nextRunSeq = db.prepare(
   'SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM submission_runs WHERE submission_id = ?',
@@ -1399,6 +1483,8 @@ const selectRuns = db.prepare(
 
 export const startRun = db.transaction(
   (input: {
+    attemptId?: string
+    inputRevision?: number
     submissionId: string
     kind: RunKind
     container?: string | null
@@ -1412,6 +1498,8 @@ export const startRun = db.transaction(
       kind: input.kind,
       at: input.at ?? Date.now(),
       container: input.container ?? null,
+      attempt_id: input.attemptId ?? null,
+      input_revision: input.inputRevision ?? null,
     })
     return toRun(selectRun.get(id) as RunRow)
   },
@@ -1500,6 +1588,8 @@ export interface QueueRow {
   /** Жизнь процесса, которая начала прогон. Чужая — значит прогон осиротел. */
   boot: string | null
   container: string | null
+  attemptId: string | null
+  pendingKind: RunKind | null
 }
 
 interface QueueRowRaw {
@@ -1514,6 +1604,8 @@ interface QueueRowRaw {
   turn: number
   boot: string | null
   container: string | null
+  attempt_id: string | null
+  pending_kind: string | null
 }
 
 function toQueueRow(row: QueueRowRaw): QueueRow {
@@ -1529,6 +1621,8 @@ function toQueueRow(row: QueueRowRaw): QueueRow {
     turn: row.turn,
     boot: row.boot,
     container: row.container,
+    attemptId: row.attempt_id,
+    pendingKind: row.pending_kind as RunKind | null,
   }
 }
 
@@ -1544,7 +1638,10 @@ const upsertQueue = db.prepare(`
     started_at = NULL,
     attempts = 0,
     boot = NULL,
-    container = NULL
+    container = NULL,
+    attempt_id = NULL,
+    pending_kind = NULL
+  WHERE competition_queue.state != 'running'
 `)
 /* Идущее сверху, ждущие следом в порядке прихода — так это читает панель. */
 const selectQueue = db.prepare(`
@@ -1560,12 +1657,12 @@ const countWaiting = db.prepare(
 const markRunning = db.prepare(`
   UPDATE competition_queue
   SET state = 'running', started_at = @at, attempts = attempts + 1, boot = @boot,
-      container = @container
+      container = @container, attempt_id = @attempt_id
   WHERE submission_id = @submission_id
 `)
 const markWaiting = db.prepare(`
   UPDATE competition_queue
-  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL
+  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL
   WHERE submission_id = ?
 `)
 const noteContainer = db.prepare(
@@ -1586,6 +1683,10 @@ export function enqueue(input: {
   kind: RunKind
   at?: number
 }): void {
+  if (queueRow(input.submissionId)?.state === 'running') {
+    db.prepare('UPDATE competition_queue SET pending_kind = ? WHERE submission_id = ? AND state = ?').run(input.kind, input.submissionId, 'running')
+    return
+  }
   upsertQueue.run({
     submission_id: input.submissionId,
     competition_id: input.competitionId,
@@ -1646,6 +1747,11 @@ const selectNext = db.prepare(`
   LIMIT 1
 `)
 
+export function nextQueueRow(): QueueRow | null {
+  const row = selectNext.get() as QueueRowRaw | undefined
+  return row ? toQueueRow(row) : null
+}
+
 /**
  * Взять следующую работу и пометить её своей.
  *
@@ -1669,15 +1775,33 @@ export const takeNext = db.transaction(
       at,
       boot: opts.boot ?? BOOT,
       container: null,
+      attempt_id: randomUUID(),
     })
     return toQueueRow(selectQueueRow.get(row.submission_id) as QueueRowRaw)
   },
 )
 
 /** Запомнить контейнер идущего прогона — по нему его убивают. */
-export function noteQueueContainer(submissionId: string, container: string | null): void {
-  noteContainer.run(container, submissionId)
+export function noteQueueContainer(submissionId: string, container: string | null, attemptId?: string): void {
+  if (attemptId) db.prepare('UPDATE competition_queue SET container = ? WHERE submission_id = ? AND attempt_id = ?').run(container, submissionId, attemptId)
+  else noteContainer.run(container, submissionId)
 }
+
+/** A completion may touch only the immutable lease that started it. */
+export function ownsQueueAttempt(row: QueueRow): boolean {
+  const current = queueRow(row.submissionId)
+  return !!row.attemptId && current?.state === 'running' && current.attemptId === row.attemptId
+}
+
+export const finishQueueAttempt = db.transaction((row: QueueRow): boolean => {
+  if (!ownsQueueAttempt(row)) return false
+  const current = queueRow(row.submissionId)!
+  if (current.pendingKind) {
+    db.prepare("UPDATE competition_queue SET kind = pending_kind, pending_kind = NULL, state = 'waiting', started_at = NULL, container = NULL, boot = NULL, attempt_id = NULL, attempts = 0 WHERE submission_id = ? AND attempt_id = ?").run(row.submissionId, row.attemptId)
+    updateSubmission(row.submissionId, { state: 'queued', stage: 'queue', publicScore: null, privateScore: null })
+  } else db.prepare('DELETE FROM competition_queue WHERE submission_id = ? AND attempt_id = ?').run(row.submissionId, row.attemptId)
+  return true
+})
 
 /** Работа кончилась (чем угодно) — строка уходит из очереди. */
 export function leaveQueue(submissionId: string): boolean {

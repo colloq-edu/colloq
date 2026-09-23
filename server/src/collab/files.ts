@@ -1,3 +1,4 @@
+import { authorizeSocket, type SocketCredentials } from '../socket-authorization.js'
 import { tr } from '@shared/i18n'
 /**
  * Один открытый файл — один документ Yjs, привязанный к байтам на диске.
@@ -218,7 +219,7 @@ export function getFileDoc(sessionId: string, path: string): FileDoc | null {
     // Запись с диска не возвращается на диск: это её же байты, и второй заход
     // отличался бы от первого только временем изменения — которого хватило бы,
     // чтобы наблюдатель счёл его чужой правкой и пошёл на третий круг.
-    if (origin === DISK) return
+    if (origin === DISK || origin === SERVER) return
     scheduleSave(entry)
   })
 
@@ -283,8 +284,18 @@ export function putText(sessionId: string, path: string, text: string): boolean 
     if (wrote) fileSaved?.(sessionId, path, 'server')
     return wrote
   }
+  // Commit the durable file first. Yjs updates synchronously reach observers
+  // and sockets; rolling back after an I/O failure would already be too late.
+  const at = statPath(sessionId, path)
+  if (!at || at.dir) return false
+  if (!writeText(sessionId, path, text)) return false
+  if (entry.saveTimer) clearTimeout(entry.saveTimer)
+  entry.saveTimer = null
+  entry.onDisk = text
+  entry.stamp = stampOf(sessionId, path)
   entry.doc.transact(() => spliceText(entry.doc.getText(TEXT_KEY), text), SERVER)
-  return saveNow(entry, 'server')
+  fileSaved?.(sessionId, path, 'server')
+  return true
 }
 
 /**
@@ -647,7 +658,9 @@ export function handleFileSocket(
   path: string,
   role: ParticipantRole,
   participantId: string | null,
+  credentials?: SocketCredentials,
 ): void {
+  const authorized = authorizeSocket(ws, credentials)
   const entry = getFileDoc(sessionId, path)
   if (!entry) {
     /*
@@ -692,7 +705,9 @@ export function handleFileSocket(
     const here = entry.conns.get(ws)
     if (here) here.missedPongs = 0
   })
-  ws.on('message', (data: RawData) => handleMessage(entry, ws, toUint8Array(data)))
+  ws.on('message', (data: RawData) => {
+    if (authorized()) handleMessage(entry, ws, toUint8Array(data))
+  })
   ws.on('close', () => closeConn(entry, ws))
   ws.on('error', () => closeConn(entry, ws))
 

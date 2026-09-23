@@ -26,6 +26,8 @@ import busboy from 'busboy'
 import path from 'node:path'
 import { Router, type Request, type Response } from 'express'
 import { tr } from '@shared/i18n'
+import { assertCompetitionCapability, competitionCapabilities } from '../competitions/capabilities.js'
+import { competitionRevision } from '../dependencies/store.js'
 import { readEnvironmentInventory } from '../environment-inventory.js'
 import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
 import { DependencyStoreError } from '../dependencies/store.js'
@@ -184,8 +186,7 @@ function baselineScore(competition: Competition): number | null {
 
 /** Кому записана сэмпл-тетрадь: её строку таблица отбивает пунктиром внизу. */
 function baselineEntrantOf(competition: Competition): string | null {
-  if (!competition.baselineSubmissionId) return null
-  return getSubmission(competition.baselineSubmissionId)?.entrantId ?? null
+  return competition.baselineEntrantId ?? null
 }
 
 /**
@@ -452,7 +453,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
   })
 
   /** Страница одного соревнования: задача, файлы на скачивание, условия проверки. */
-  router.get('/api/k/competitions/:slug', (req, res) => {
+  router.get('/api/k/competitions/:slug', async (req, res) => {
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     const me = currentEntrant(req)
@@ -461,6 +462,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
       // publicCompetition — не украшение ответа, а единственное место, где с
       // соревнования снимают код метрики и зерно деления строк.
       competition: publicCompetition(competition),
+      capabilities: await competitionCapabilities(competition.environment, competitionRevision(competition.id)?.imageDigest),
       files: listFiles(competition.id, 'open').map((file) => ({
         name: file.name,
         bytes: file.bytes,
@@ -481,7 +483,11 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     try {
-      res.json(await inventory(competition.environment))
+      const retained = competitionRevision(competition.id)
+      res.json(retained && retained.environmentName === competition.environment
+        ? { name: retained.environmentName, python: retained.pythonVersion,
+            packages: retained.packages, revisionId: retained.id }
+        : await inventory(competition.environment))
     } catch {
       refuse(res, 503, 'unavailable', tr('common.environmentUnavailable'))
     }
@@ -647,7 +653,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
    * жестоко: двадцать мегабайт по телефонному интернету ради ответа «дедлайн
    * прошёл ещё вчера».
    */
-  router.post('/api/k/competitions/:slug/submissions', requireEntrant, (req, res) => {
+  router.post('/api/k/competitions/:slug/submissions', requireEntrant, async (req, res) => {
     const competition = visible(req.params.slug)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     const me = (req as EntrantRequest).entrant!
@@ -681,6 +687,12 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
     if (tooOften(uploads, addressOf(req), UPLOAD_WINDOW, MAX_UPLOADS)) {
       res.setHeader('Retry-After', '60')
       return refuse(res, 429, 'too_often', tr('competitions.refusal.tooOften'))
+    }
+
+    try {
+      await assertCompetitionCapability('execution', competition.environment, competitionRevision(competition.id)?.imageDigest)
+    } catch (error) {
+      return refuse(res, 503, 'unavailable', error instanceof Error ? error.message : tr('runtime.brokerUnavailable'))
     }
 
     readNotebook(req, res, async (fileName, body, bundleId) => {
@@ -746,6 +758,9 @@ export function competitionRoutes(inventory = readEnvironmentInventory): Router 
      */
     if (submissionsOpen(competition, Date.now()) !== 'open') {
       return refuse(res, 403, 'closed', tr('competitions.refusal.chooseClosed'))
+    }
+    if (competition.scoring !== 'chosen') {
+      return refuse(res, 409, 'invalid', tr('competitions.refusal.chooseAutomatic'))
     }
     if (!chooseSubmission(competition.id, me.id, submission.id)) {
       return refuse(res, 409, 'invalid', tr('competitions.refusal.notScored'))

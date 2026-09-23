@@ -1,3 +1,4 @@
+import type { CompetitionCapabilities } from './capabilities.js'
 /**
  * Что панель преподавателя спрашивает у сервера про соревнования, и что он
  * отвечает.
@@ -19,6 +20,7 @@ import type {
   Entrant,
   MetricDirection,
   PrivateRelease,
+  RankedRow,
   RunKind,
   ScoringRule,
   Submission,
@@ -158,6 +160,9 @@ export interface FileView extends CompetitionFile {
 
 /** Карточка сэмпл-тетради и её проверки. */
 export interface BaselineView {
+  inputsCurrent?: boolean
+  inputRevision?: number | null
+  notebookInputRevision?: number | null
   fileName: string
   bytes: number
   /** «14 ячеек»; null — файл не разобрался как тетрадь. */
@@ -185,6 +190,7 @@ export interface SplitView {
 }
 
 export interface CompetitionView {
+  capabilities?: CompetitionCapabilities
   competition: Competition
   openFiles: FileView[]
   /** Скрытые ответы: имена, строки и колонки — содержимое не отдаётся никогда. */
@@ -232,6 +238,7 @@ export interface SubmissionFeed {
 
 /** Живое состояние экрана A3: то, что меняется само, пока на него смотрят. */
 export interface CompetitionLive {
+  revision?: number
   counts: CompetitionCounts
   queue: QueueSnapshot
   /** Ждущие ЭТОГО соревнования; очередь общая, а экран один. */
@@ -275,4 +282,12 @@ export interface EntrantRow extends Entrant {
 
 export interface EntrantsList {
   entrants: EntrantRow[]
+}
+
+/** Full authoritative standings, independent of submission feed pagination. */
+export interface CompetitionLeaderboard {
+  baseline?: BaselineView | null
+  revision: number
+  public: (RankedRow & { entrantName: string })[]
+  private: (RankedRow & { entrantName: string })[]
 }

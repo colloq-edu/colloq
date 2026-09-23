@@ -1,3 +1,4 @@
+import { authorizeSocket, type SocketCredentials } from './socket-authorization.js'
 import {getLocale} from '@shared/i18n'
 import {onInstanceLanguage} from './instance-language.js'
 import { tr, formatNumber } from '@shared/i18n'
@@ -4142,7 +4143,7 @@ export function dispatch(
      * `off`: правила меняются на живой комнате, и естественный ход
      * «оракул натворил → выключаю оракула → откатываю» упирался в отказ,
      * который вдобавок говорил «может преподаватель» тому самому
-     * преподавателю. Выключенный режим — это запрет НАЧИНАТЬ; убрать за уже
+     * преподавателю. Выключенный режим останавливает дальнейшие действия; убрать за уже
      * начатым преподаватель вправе всегда.
      */
     case 'ai:undo': {
@@ -5295,7 +5296,8 @@ function inkFrame(sessionId: string, page: number): Buffer | null {
 
 /* --------------------------------------------------------------- socket */
 
-export function handleControlSocket(ws: WebSocket, sessionId: string, payload: TokenPayload): void {
+export function handleControlSocket(ws: WebSocket, sessionId: string, payload: TokenPayload, credentials?: SocketCredentials): void {
+  const authorized = authorizeSocket(ws, credentials)
   let room = rooms.get(sessionId)
   if (!room) {
     room = {
@@ -5436,6 +5438,7 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   })
 
   ws.on('message', (data: RawData, isBinary: boolean) => {
+    if (!authorized()) return
     if (isBinary) return
     const message = parse(data)
     if (message === TOO_BIG) {

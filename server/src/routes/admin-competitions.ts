@@ -26,12 +26,16 @@ import busboy from 'busboy'
 import { Router, type Request, type Response } from 'express'
 import { tr } from '@shared/i18n'
 import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
+import { assertCompetitionCapability, competitionCapabilities } from '../competitions/capabilities.js'
+import { submissionUsesCurrentBase } from '../competitions/provenance.js'
+import { competitionRevision } from '../dependencies/store.js'
 import { DependencyStoreError } from '../dependencies/store.js'
 import { dependencyMessage } from '../dependencies/messages.js'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
 import {
   acceptSubmission,
   competitionSummary,
+  invalidateCompetitionInputs,
   createCompetition,
   createEntrant,
   deleteCompetition,
@@ -184,8 +188,7 @@ function submissionOf(competition: Competition, req: Request, res: Response): Su
 
 /** Служебный участник, на которого записана сэмпл-тетрадь; null — её не проверяли. */
 function baselineEntrantOf(competition: Competition): string | null {
-  if (!competition.baselineSubmissionId) return null
-  return getSubmission(competition.baselineSubmissionId)?.entrantId ?? null
+  return competition.baselineEntrantId ?? null
 }
 
 /** Файл сэмпл-тетради на диске: байты и когда положен. */
@@ -206,6 +209,13 @@ function bestPublicOf(competition: Competition, baselineEntrant: string | null):
   return rows.length ? rows[0].score : null
 }
 
+function baselineInputsCurrent(competition: Competition, baseline: Submission | null): boolean {
+  return !!baseline && baseline.inputRevision != null && baseline.notebookInputRevision != null
+    && baseline.inputRevision === competition.inputRevision
+    && baseline.notebookInputRevision === competition.notebookInputRevision
+    && submissionUsesCurrentBase(competition, baseline.id)
+}
+
 function readinessOf(competition: Competition) {
   const baseline = competition.baselineSubmissionId
     ? getSubmission(competition.baselineSubmissionId)
@@ -215,7 +225,7 @@ function readinessOf(competition: Competition) {
     hiddenFiles: listFiles(competition.id, 'hidden').length,
     metricCode: competition.metric.code,
     baseline: baselineFile(competition.id) !== null,
-    baselineState: baseline?.state ?? null,
+    baselineState: baselineInputsCurrent(competition, baseline) ? baseline?.state ?? null : null,
     privateRelease: competition.privateRelease,
     deadlineAt: competition.deadlineAt,
   })
@@ -283,6 +293,9 @@ function baselineView(competition: Competition): BaselineView | null {
     cells: notebook ? notebookCells(notebook) : null,
     uploadedAt: file.uploadedAt,
     submissionId: submission?.id ?? null,
+    inputsCurrent: baselineInputsCurrent(competition, submission),
+    inputRevision: submission?.inputRevision ?? null,
+    notebookInputRevision: submission?.notebookInputRevision ?? null,
     state: submission?.state ?? null,
     publicScore: submission?.publicScore ?? null,
     privateScore: submission?.privateScore ?? null,
@@ -292,7 +305,9 @@ function baselineView(competition: Competition): BaselineView | null {
   }
 }
 
-function viewOf(competition: Competition): CompetitionView {
+async function viewOf(competition: Competition): Promise<CompetitionView> {
+  const capabilities = await competitionCapabilities(competition.environment, competitionRevision(competition.id)?.imageDigest)
+  competition = getCompetition(competition.id) ?? competition
   const open = listFiles(competition.id, 'open')
   const hidden = listFiles(competition.id, 'hidden')
   const hiddenViews = hidden.map((file) => fileView(competition.id, file))
@@ -313,6 +328,7 @@ function viewOf(competition: Competition): CompetitionView {
   const publicRows = usage?.publicRows ?? publicRowCount(total ?? 0, competition.publicPercent)
   return {
     competition,
+    capabilities,
     openFiles: open.map((file) => fileView(competition.id, file)),
     hiddenFiles: hiddenViews,
     baseline: baselineView(competition),
@@ -448,6 +464,7 @@ function liveOf(competition: Competition, now = Date.now()): CompetitionLive {
     .map((submission) => submission.durationMs)
     .filter((ms): ms is number => typeof ms === 'number' && ms > 0)
   return {
+    revision: competition.revision ?? 0,
     counts: countsOf(competition),
     queue: snapshot,
     waiting: waitingRows(competition.id, snapshot, now),
@@ -687,7 +704,7 @@ export function adminCompetitionRoutes(): Router {
   })
 
   /** Новое соревнование — всегда черновиком: открывает его отдельная дверь. */
-  router.post('/api/admin/competitions', requireStaff, (req, res) => {
+  router.post('/api/admin/competitions', requireStaff, async (req, res) => {
     const parsed = parseCompetitionInput(req.body, { creating: true })
     if ('refusal' in parsed) return refuseInput(res, parsed.refusal)
     const created = createCompetition({
@@ -698,16 +715,16 @@ export function adminCompetitionRoutes(): Router {
     })
     if (!created) return fail(res, 409, 'exists', tr('competitions.refusal.slug.taken'))
     ensureCompetition(created.id)
-    res.status(201).json(viewOf(created))
+    res.status(201).json(await viewOf(created))
   })
 
-  router.get('/api/admin/competitions/:id', requireStaff, (req, res) => {
+  router.get('/api/admin/competitions/:id', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
-    res.json(viewOf(competition))
+    res.json(await viewOf(competition))
   })
 
-  router.patch('/api/admin/competitions/:id', requireStaff, (req, res) => {
+  router.patch('/api/admin/competitions/:id', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
     const parsed = parseCompetitionInput(req.body)
@@ -715,7 +732,7 @@ export function adminCompetitionRoutes(): Router {
     const saved = updateCompetition(competition.id, parsed.input)
     if (saved === 'taken') return fail(res, 409, 'exists', tr('competitions.refusal.slug.taken'))
     if (!saved) return fail(res, 404, 'not_found', tr('competitions.refusal.notFound'))
-    res.json(viewOf(saved))
+    res.json(await viewOf(saved))
   })
 
   /**
@@ -741,7 +758,7 @@ export function adminCompetitionRoutes(): Router {
    * Редактор кода в A2 сохраняется своей кнопкой и не показывает ни сроков, ни
    * пределов: PATCH со всей формой из него затёр бы поля, которых он не видел.
    */
-  router.put('/api/admin/competitions/:id/metric', requireStaff, (req, res) => {
+  router.put('/api/admin/competitions/:id/metric', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
     const parsed = parseCompetitionInput({ metric: req.body })
@@ -750,7 +767,7 @@ export function adminCompetitionRoutes(): Router {
     if (!saved || saved === 'taken') {
       return fail(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     }
-    res.json(viewOf(saved))
+    res.json(await viewOf(saved))
   })
 
   /* ---------------------------------------------------------- данные */
@@ -814,7 +831,7 @@ export function adminCompetitionRoutes(): Router {
         visibility: 'open',
       })
     }
-    res.json(viewOf(getCompetition(competition.id)!))
+    res.json(await viewOf(getCompetition(competition.id)!))
   })
 
   /** Скачать открытый файл — то же, что увидит участник. Ответы сюда не ходят. */
@@ -839,7 +856,7 @@ export function adminCompetitionRoutes(): Router {
     res.end(bytes)
   })
 
-  router.delete('/api/admin/competitions/:id/files/:name', requireStaff, (req, res) => {
+  router.delete('/api/admin/competitions/:id/files/:name', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
     const name = String(req.params.name)
@@ -847,7 +864,7 @@ export function adminCompetitionRoutes(): Router {
     if (!listed) return fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
     dropOpenFile(competition.id, name)
     dropFile(competition.id, name)
-    res.json(viewOf(getCompetition(competition.id)!))
+    res.json(await viewOf(getCompetition(competition.id)!))
   })
 
   /**
@@ -885,14 +902,14 @@ export function adminCompetitionRoutes(): Router {
       rows: shape?.rows ?? null,
       visibility: 'hidden',
     })
-    res.json(viewOf(getCompetition(competition.id)!))
+    res.json(await viewOf(getCompetition(competition.id)!))
   })
 
   /** Снять ответы. Владельцем: без них соревнование перестаёт считаться вовсе. */
   router.delete(
     '/api/admin/competitions/:id/solution/:name',
     ownerOnly('competitions.owner.dropSolution'),
-    (req, res) => {
+    async (req, res) => {
       const competition = competitionOf(req, res)
       if (!competition) return
       const name = String(req.params.name)
@@ -900,9 +917,19 @@ export function adminCompetitionRoutes(): Router {
       if (!listed) return fail(res, 404, 'not_found', tr('competitions.refusal.fileMissing'))
       dropSecretFile(competition.id, name)
       dropFile(competition.id, name)
-      res.json(viewOf(getCompetition(competition.id)!))
+      res.json(await viewOf(getCompetition(competition.id)!))
     },
   )
+
+  async function executionAvailable(competition: Competition, res: Response): Promise<boolean> {
+    try {
+      await assertCompetitionCapability('execution', competition.environment, competitionRevision(competition.id)?.imageDigest)
+      return true
+    } catch (error) {
+      fail(res, 503, 'failed', error instanceof Error ? error.message : tr('runtime.brokerUnavailable'))
+      return false
+    }
+  }
 
   /* -------------------------------------------------------- сэмпл-тетрадь */
 
@@ -925,6 +952,7 @@ export function adminCompetitionRoutes(): Router {
       return fail(res, 400, 'invalid', tr('competitions.refusal.notNotebook'))
     }
     putBaseline(competition.id, file.body)
+    invalidateCompetitionInputs(competition.id)
     /*
      * Прежняя проверка забывается вместе с файлом.
      *
@@ -932,7 +960,7 @@ export function adminCompetitionRoutes(): Router {
      * соревнование можно было бы по числу, которое получила не та.
      */
     updateCompetition(competition.id, { baselineSubmissionId: null })
-    res.json(viewOf(getCompetition(competition.id)!))
+    res.json(await viewOf(getCompetition(competition.id)!))
   })
 
   /**
@@ -945,6 +973,7 @@ export function adminCompetitionRoutes(): Router {
   router.post('/api/admin/competitions/:id/baseline/check', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
+    if (!await executionAvailable(competition, res)) return
     const notebook = readBaseline(competition.id, LIMITS.notebookBytes)
     if (!notebook) {
       return fail(res, 409, 'not_ready', tr('competitions.refusal.noBaselineFile'))
@@ -953,6 +982,11 @@ export function adminCompetitionRoutes(): Router {
     let revision
     try { revision = await executionRevision(competition) } catch {
       return fail(res, 503, 'failed', tr('dependencies.error.base'))
+    }
+    // The notebook bytes and configuration were observed before async image
+    // inspection. A concurrent edit must start a fresh baseline check.
+    if (getCompetition(competition.id)?.inputRevision !== competition.inputRevision) {
+      return fail(res, 409, 'not_ready', tr('competitions.refusal.open.baselineNotChecked'))
     }
     let submission
     try {
@@ -979,9 +1013,10 @@ export function adminCompetitionRoutes(): Router {
    * одной правки `score()` десятиминутную тетрадь заново — это десять минут,
    * за которые преподаватель уйдёт делать что-то другое.
    */
-  router.post('/api/admin/competitions/:id/metric/check', requireStaff, (req, res) => {
+  router.post('/api/admin/competitions/:id/metric/check', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
+    if (!await executionAvailable(competition, res)) return
     const baseline = competition.baselineSubmissionId
       ? getSubmission(competition.baselineSubmissionId)
       : null
@@ -1000,9 +1035,12 @@ export function adminCompetitionRoutes(): Router {
 
   /* ------------------------------------------------- открыть и завершить */
 
-  router.post('/api/admin/competitions/:id/open', requireStaff, (req, res) => {
-    const competition = competitionOf(req, res)
+  router.post('/api/admin/competitions/:id/open', requireStaff, async (req, res) => {
+    let competition = competitionOf(req, res)
     if (!competition) return
+    if (!await executionAvailable(competition, res)) return
+    competition = getCompetition(competition.id)
+    if (!competition) return fail(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     if (competition.state !== 'draft') {
       return fail(res, 409, 'invalid', tr('competitions.refusal.notDraft'))
     }
@@ -1011,7 +1049,7 @@ export function adminCompetitionRoutes(): Router {
       return fail(res, 409, 'not_ready', tr(`competitions.refusal.open.${refusal}`))
     }
     setCompetitionState(competition.id, 'live')
-    res.json(viewOf(getCompetition(competition.id)!))
+    res.json(await viewOf(getCompetition(competition.id)!))
   })
 
   /**
@@ -1024,7 +1062,7 @@ export function adminCompetitionRoutes(): Router {
   router.post(
     '/api/admin/competitions/:id/finish',
     ownerOnly('competitions.owner.finish'),
-    (req, res) => {
+    async (req, res) => {
       const competition = competitionOf(req, res)
       if (!competition) return
       if (competition.state !== 'live') {
@@ -1032,16 +1070,16 @@ export function adminCompetitionRoutes(): Router {
       }
       setCompetitionState(competition.id, 'finished')
       if (competition.privateRelease === 'auto') openPrivateBoard(competition.id)
-      res.json(viewOf(getCompetition(competition.id)!))
+      res.json(await viewOf(getCompetition(competition.id)!))
     },
   )
 
   /** Открыть приватный лидерборд рукой — «открою вручную, на разборе». */
-  router.post('/api/admin/competitions/:id/private-board', requireStaff, (req, res) => {
+  router.post('/api/admin/competitions/:id/private-board', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
     openPrivateBoard(competition.id)
-    res.json(viewOf(getCompetition(competition.id)!))
+    res.json(await viewOf(getCompetition(competition.id)!))
   })
 
   /* ---------------------------------------------------------- живое (A3) */
@@ -1090,6 +1128,19 @@ export function adminCompetitionRoutes(): Router {
   })
 
   /* --------------------------------------------------------- лента посылок */
+
+  // The board is computed from complete server state; the feed is only a page.
+  router.get('/api/admin/competitions/:id/leaderboard', requireStaff, (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    const baseline = baselineEntrantOf(competition)
+    const names = new Map(listCompetitionEntrants(competition.id).map((entrant) => [entrant.id, entrant.name]))
+    const board = (part: 'public' | 'private') => leaderboard(competition.id, part)
+      .filter((row) => row.entrantId !== baseline)
+      .map((row, index) => ({ ...row, place: index + 1,
+        entrantName: names.get(row.entrantId) ?? getEntrant(row.entrantId)?.name ?? '' }))
+    res.json({ revision: competition.revision ?? 0, public: board('public'), private: board('private'), baseline: baselineView(competition) })
+  })
 
   router.get('/api/admin/competitions/:id/submissions', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
@@ -1174,9 +1225,10 @@ export function adminCompetitionRoutes(): Router {
   router.post(
     '/api/admin/competitions/:id/submissions/:sid/rerun',
     requireStaff,
-    (req, res) => {
+    async (req, res) => {
       const competition = competitionOf(req, res)
       if (!competition) return
+    if (!await executionAvailable(competition, res)) return
       const submission = submissionOf(competition, req, res)
       if (!submission) return
       /*
@@ -1198,9 +1250,10 @@ export function adminCompetitionRoutes(): Router {
   router.post(
     '/api/admin/competitions/:id/submissions/:sid/rescore',
     requireStaff,
-    (req, res) => {
+    async (req, res) => {
       const competition = competitionOf(req, res)
       if (!competition) return
+    if (!await executionAvailable(competition, res)) return
       const submission = submissionOf(competition, req, res)
       if (!submission) return
       if (!rescorable(submission.state)) {
@@ -1256,9 +1309,10 @@ export function adminCompetitionRoutes(): Router {
    * Тетради не запускаются: ответы участников лежат на диске, и в этом весь
    * смысл двух шагов. В очередь идёт только то, у чего этот ответ есть.
    */
-  router.post('/api/admin/competitions/:id/rescore', requireStaff, (req, res) => {
+  router.post('/api/admin/competitions/:id/rescore', requireStaff, async (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
+    if (!await executionAvailable(competition, res)) return
     // Считает насос: годится та посылка, чей ответ ЛЕЖИТ НА ДИСКЕ, а это
     // вопрос к файлам, а не к состоянию строки.
     res.status(202).json({ queued: rescoreCompetition(competition.id) })

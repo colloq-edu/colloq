@@ -1,3 +1,4 @@
+import { authorizeSocket, type SocketCredentials } from '../socket-authorization.js'
 import { tr } from '@shared/i18n'
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
@@ -1419,7 +1420,9 @@ export function handleCollabSocket(
   sessionId: string,
   role: ParticipantRole = 'participant',
   participantId: string | null = null,
+  credentials?: SocketCredentials,
 ): void {
+  const authorized = authorizeSocket(ws, credentials)
   const entry = getEntry(sessionId)
   /*
    * Комната открылась — по первому сокету, а не по строке в базе.
@@ -1450,7 +1453,9 @@ export function handleCollabSocket(
   ws.on('pong', () => {
     state.missedPongs = 0
   })
-  ws.on('message', (data: RawData) => handleMessage(entry, ws, toUint8Array(data)))
+  ws.on('message', (data: RawData) => {
+    if (authorized()) handleMessage(entry, ws, toUint8Array(data))
+  })
   ws.on('close', () => closeConn(entry, ws))
   ws.on('error', () => closeConn(entry, ws))
 

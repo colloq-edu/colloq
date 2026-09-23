@@ -75,3 +75,13 @@ for (const phone of [false, true]) {
     assert.equal(sent, 0)
   })
 }
+
+test('unavailable execution disables file selection and explains the capability', () => {
+  const html = render(SendBox, { props: {
+    view: { competition: { slug: 'sample', limits: { wallSeconds: 600 } }, capabilities: { execution: { available: false, code: 'unsupported_backend', reason: 'Execution unavailable in this deployment.' } } },
+    mine: { accepting: 'open', leftToday: 5, perDay: 5, inFlight: 0 },
+    phone: true, busy: false, refusal: null, onsend: async () => true, onrefuse: () => {},
+  } }).body
+  assert.match(html, /Execution unavailable in this deployment\./)
+  assert.match(html, /<button[^>]*disabled/)
+})

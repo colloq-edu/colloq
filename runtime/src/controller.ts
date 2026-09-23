@@ -345,6 +345,8 @@ const UNSCHEDULABLE_GRACE_MS = 20000
 export class RuntimeController {
   private readonly queues = new Map<string, RoomQueue>()
   private readonly root: string
+  private readonly recovery = { rollbackRetries: 0, rollbackFailures: 0, rollbacksApplied: 0 }
+  recoveryDiagnostics() { return { ...this.recovery } }
   constructor(private readonly options: Options) {
     this.root = `/api/v1/namespaces/${options.config.namespace}`
   }
@@ -515,6 +517,35 @@ export class RuntimeController {
       RESIZE_PATCH,
     )
   }
+  /** Restore only this Pod, rereading the resourceVersion after kubelet races.
+   * The persisted Infeasible condition lets a later ensure (even after a broker
+   * restart) retry restoration if all three writes fail. */
+  private async rollbackResources(id: string, pod: KubeObject, target: ResizeTarget): Promise<KubeObject> {
+    const uid = pod.metadata.uid
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        assertOwned(pod, id)
+        if (pod.metadata.uid !== uid || pod.metadata.deletionTimestamp)
+          throw new Error('Pod was replaced or is terminating')
+        try {
+          const restored = await this.patchResources(id, pod, target)
+          this.recovery.rollbacksApplied = Math.min(Number.MAX_SAFE_INTEGER, this.recovery.rollbacksApplied + 1)
+          return restored
+        } catch (err) {
+          if (!(err instanceof KubernetesError && err.status === 409) || attempt === 2) throw err
+          this.recovery.rollbackRetries = Math.min(Number.MAX_SAFE_INTEGER, this.recovery.rollbackRetries + 1)
+          const current = await this.get('pods', id)
+          if (!current) throw new Error('Pod disappeared')
+          pod = current
+        }
+      }
+    } catch {
+      this.recovery.rollbackFailures = Math.min(Number.MAX_SAFE_INTEGER, this.recovery.rollbackFailures + 1)
+      // Never include an API response body or Pod credentials in diagnostics.
+      console.warn(`[runtime] room ${id} resize rollback unreconciled; next ensure will retry`)
+    }
+    throw new RuntimeError('Room resize rollback failed; resources are unreconciled, retry required', 503)
+  }
   private async resizeWorkload(id: string, target: ResizeTarget): Promise<RuntimeResizeResult> {
     const wantCpu = target.cpu === undefined ? undefined : milliCpuOf({ limits: { cpu: target.cpu } })
     let uid: string | undefined
@@ -588,7 +619,7 @@ export class RuntimeController {
             : {}),
         }
         if (Object.keys(revert).length)
-          await this.patchResources(id, pod, revert).catch(() => undefined)
+          await this.rollbackResources(id, pod, revert)
         throw new RuntimeError('Room resize is infeasible on this node', 409)
       }
       const reached =
@@ -795,6 +826,21 @@ export class RuntimeController {
         service.spec.externalName)
     )
       throw new RuntimeError('Managed room Service does not match the private service policy', 409)
+    // An infeasible spec can survive a failed rollback and a broker restart.
+    // Recover from the actual kubelet allocation before adopting the Pod. Do
+    // not immediately submit the same impossible resize again in this ensure.
+    let reconciled = false
+    if (pod && !pod.metadata.deletionTimestamp && podPhase(pod) !== 'failed' &&
+      resizeCondition(pod, 'PodResizePending')?.reason === 'Infeasible' &&
+      onlyResizableDiffers(pod.spec, desired.spec)) {
+      const resources = kernelOf(pod.status?.containerStatuses)?.resources
+      const actualMemory = memoryOf(resources), actualCpu = milliCpuOf(resources)
+      if (actualMemory === undefined || actualCpu === undefined)
+        throw new RuntimeError('Room resize rollback failed; actual resources are unknown and unreconciled', 503)
+      pod = await this.rollbackResources(id, pod, { memoryMb: actualMemory, cpu: String(resources.limits.cpu) })
+      reconciled = true
+      check()
+    }
     /*
      * Живой Pod, у которого отличаются одни память и ядра, — это изменение
      * лимита, не доехавшее раньше (брокер лежал, патч отказал, веб старее
@@ -842,7 +888,7 @@ export class RuntimeController {
       check()
       if (!podMatches(pod.spec, desired.spec))
         throw new RuntimeError('Managed Pod does not match the requested workload policy', 409)
-    } else if (resize) {
+    } else if (resize && !reconciled) {
       // Не дожидаясь kubelet: комнате нужен Python, а не отчёт о cgroup. Не
       // вышло (узлу сейчас нечем, API старый) — Pod остаётся прежним и рабочим,
       // а перепись комнат покажет те память и ядра, что у него есть на деле.
@@ -1068,10 +1114,12 @@ export class RuntimeController {
         defaultCpus: Number(resourceQuantity('cpu', this.options.config.cpu)) / 1000,
         defaultMemoryMb: this.defaultMemoryMb(),
         maxMemoryMb: this.maxMemoryMb(),
+        recovery: this.recoveryDiagnostics(),
       }
     } catch (err) {
       return {
         ok: false,
+        recovery: this.recoveryDiagnostics(),
         reason:
           err instanceof KubernetesError
             ? err.message

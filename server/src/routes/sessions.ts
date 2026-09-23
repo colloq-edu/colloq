@@ -1,8 +1,8 @@
+import { roleFor } from '../authorization.js'
 import { tr } from '@shared/i18n'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { kernelRetirementInProgress } from '../kernel/retirement.js'
-import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
-import { getTeacher } from '../admin/store.js'
+import { currentStaff } from '../admin/auth.js'
 import {
   HANDOFF_TTL_MS,
   newParticipantId,
@@ -23,7 +23,6 @@ import {
   storedRules,
   getSession,
   isFinished,
-  isTokenHost,
   listParticipants,
   setRules,
   setSessionCpus,
@@ -396,21 +395,7 @@ export function sessionAuth(req: Request): TokenPayload | null {
  * получал `host` на кнопках и `participant` на соединении, которым эти кнопки
  * работают. Расходиться им теперь негде.
  */
-export function roleFor(
-  cookieHeader: string | undefined,
-  payload: Pick<TokenPayload, 'sessionId' | 'participantId'> & { staff?: string },
-): TokenPayload['role'] {
-  // Кука сильнее и проверяется первой: её можно отобрать, и в этом смысл.
-  if (staffFromCookieHeader(cookieHeader)) return 'host'
-  /*
-   * Пульт, уехавший на планшет: куки там нет, но и вечного права быть не
-   * должно. Токен называет преподавателя, чьей кукой это право держится, и
-   * спрашивается оно здесь — убранный из штата теряет пульт вместе со всем
-   * остальным, ровно как если бы он сидел за ноутбуком.
-   */
-  if (payload.staff && getTeacher(payload.staff)) return 'host'
-  return isTokenHost(payload.sessionId, payload.participantId) ? 'host' : 'participant'
-}
+export { roleFor } from '../authorization.js'
 
 /**
  * Греть ли ядро на входе.

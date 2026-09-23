@@ -205,11 +205,15 @@ export class RuntimeClient {
         throw new RuntimeRequestError(tr("server.invalidKernelRuntimeHealthResponse.dc255b"))
       if (!memoryField(value.defaultMemoryMb) || !memoryField(value.maxMemoryMb))
         throw new RuntimeRequestError(tr("server.invalidKernelRuntimeHealthResponse.dc255b"))
+      const recovery = value.recovery as RuntimeHealth['recovery']
+      const validRecovery = recovery && ['rollbackRetries', 'rollbackFailures', 'rollbacksApplied'].every((key) =>
+        Number.isSafeInteger(recovery[key as keyof typeof recovery]) && recovery[key as keyof typeof recovery] >= 0)
       return {
         ok:value.ok,reason:value.ok ? null : value.reason as string | null,
         ...(typeof cpus === 'number' ? {defaultCpus:cpus} : {}),
         ...(typeof value.defaultMemoryMb === 'number' ? {defaultMemoryMb:value.defaultMemoryMb} : {}),
         ...(typeof value.maxMemoryMb === 'number' ? {maxMemoryMb:value.maxMemoryMb} : {}),
+        ...(validRecovery ? { recovery } : {}),
       }
     } catch(error) { return {ok:false,reason:error instanceof Error ? error.message : tr("server.kernelRuntimeIsUnavailable.44455e")} }
   }

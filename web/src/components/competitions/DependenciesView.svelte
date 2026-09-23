@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { tr } from '@shared/i18n'
-  import { DEPENDENCY_LIMITS, dependencyActive, type DependencyOverview, type DependencyBundle } from '@shared/dependencies'
+  import { DEPENDENCY_LIMITS, requirementLineCount, dependencyActive, type DependencyOverview, type DependencyBundle } from '@shared/dependencies'
   import { entrantApi } from '@/lib/entrantApi'
   import DependencyBundleCard from './DependencyBundleCard.svelte'
   let { slug, signedIn, onjoin }: { slug: string; signedIn: boolean; onjoin: () => void } = $props()
@@ -14,11 +14,12 @@
   let notice = $state('')
   let streamLost = $state(false)
   let importing = $state<HTMLInputElement>()
-  const lines = $derived(text.split('\n').filter((line) => line.trim() && !line.trim().startsWith('#')).length)
+  const lines = $derived(requirementLineCount(text))
   const bytes = $derived(new TextEncoder().encode(text).length)
   const invalid = $derived(lines > DEPENDENCY_LIMITS.lines || bytes > DEPENDENCY_LIMITS.requestBytes)
   const activeId = $derived(overview?.bundles.find((bundle) => dependencyActive(bundle.state))?.id ?? null)
-  const canPrepare = $derived(!!overview?.joined && !!overview.policy.enabled && !!overview.revision && !activeId && !invalid && !!text.trim() && !busy)
+  const unavailable = $derived(overview?.capabilities?.preparation.available === false)
+  const canPrepare = $derived(!unavailable && !!overview?.joined && !!overview.policy.enabled && !!overview.revision && !activeId && !invalid && !!text.trim() && !busy)
   const changed = $derived(text !== savedText)
   const failure = (cause: unknown) => cause instanceof Error ? cause.message : tr('common.networkError')
 
@@ -64,6 +65,7 @@
     })
   }
   function prepare(requirementsText = text): Promise<void> {
+    if (unavailable) return Promise.resolve()
     return act(async () => {
       const next = await entrantApi.dependencyDraft(slug, requirementsText)
       overview = next
@@ -87,6 +89,7 @@
     <p role="status">{error || tr('dependencies.loading')}</p>
     {#if error}<button type="button" class="text-accent-text underline" onclick={load}>{tr('dependencies.reload')}</button>{/if}
   {:else}
+    {#if unavailable}<p class="text-[15px] text-warning" role="status">{overview.capabilities?.preparation.reason}</p>{/if}
     <section class="border border-line bg-surface p-4 sm:p-6">
       <div class="flex flex-wrap items-start justify-between gap-4"><div><h3 class="font-bold text-ink">{tr('dependencies.base')}</h3><p class="mt-1 text-[15px] text-muted">{tr('dependencies.baseHint')}</p></div>
         {#if overview.draft.selectedBundleId}<button type="button" class="min-h-11 border border-line px-4 text-[14px] font-bold text-accent-text disabled:opacity-50" disabled={busy || invalid} onclick={() => save(null)}>{tr('dependencies.useBase')}</button>{:else}<span class="text-[14px] text-positive">{tr('dependencies.selected')}</span>{/if}
@@ -115,7 +118,7 @@
         {#if streamLost && activeId}<p class="text-[14px] text-warning" role="status">{tr('dependencies.streamLost')}</p>{/if}
         {#if !overview.bundles.length}<p class="border border-line p-5 text-[15px] text-muted">{tr('dependencies.empty')}</p>{/if}
         {#each overview.bundles as bundle (bundle.id)}
-          <DependencyBundleCard {bundle} selected={overview.draft.selectedBundleId === bundle.id} compatible={overview.revision?.id === bundle.revisionId} busy={busy} lockUrl={entrantApi.dependencyLockUrl(slug, bundle.id)} onselect={() => save(bundle.id)} oncancel={() => act(async () => update(await entrantApi.cancelDependencies(slug, bundle.id)))} onretry={overview.policy.enabled && !activeId ? () => prepare(bundle.requirementsText) : undefined} onedit={() => { text = bundle.requirementsText; notice = ''; document.getElementById('requirements')?.focus() }} />
+          <DependencyBundleCard {bundle} selected={overview.draft.selectedBundleId === bundle.id} compatible={overview.revision?.id === bundle.revisionId} busy={busy} lockUrl={entrantApi.dependencyLockUrl(slug, bundle.id)} onselect={() => save(bundle.id)} oncancel={() => act(async () => update(await entrantApi.cancelDependencies(slug, bundle.id)))} onretry={!unavailable && overview.policy.enabled && !activeId ? () => prepare(bundle.requirementsText) : undefined} onedit={() => { text = bundle.requirementsText; notice = ''; document.getElementById('requirements')?.focus() }} />
         {/each}
       </section>
     </div>

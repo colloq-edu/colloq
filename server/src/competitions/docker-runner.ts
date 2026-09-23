@@ -26,13 +26,11 @@
  *    прямо в ячейке, и на диск хоста не попадает ни байта. Цена честная и
  *    названная: tmpfs считается в `--memory` посылки.
  *
- * 4. `/result` — крошечная папка хоста рядом. Нужна потому, что tmpfs умирает
- *    вместе с контейнером: `docker cp` из остановленного его уже не видит
- *    (проверено). Туда ложатся маячок, `run.json`, исполненная тетрадь и копия
- *    ответа, которую обвязка кладёт сама, проверив размер.
+ * 4. `/result` is bounded tmpfs. A fixed supervisor keeps it mounted after
+ *    notebook completion; the host exports only regular allowlisted files with
+ *    per-file byte limits, then removes the container. No writable host mount.
  *
- * 5. `--ulimit fsize`. Потолок на ОДИН файл, ядром. Нужен сверх tmpfs как
- *    стенка для того, кто пишет прямо в `/result`.
+ * 5. `--ulimit fsize` also bounds each individual file inside tmpfs.
  *
  * 6. Нет `--rm`. Контейнер нужен мёртвым ещё десяток миллисекунд — прочитать
  *    `State.OOMKilled`. У ОДНОРАЗОВОГО контейнера этот флаг честен, в отличие
@@ -44,6 +42,8 @@
  */
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { config } from '../config.js'
 import { competitionsFs, hostPathOf } from './storage.js'
 import { harnessDir } from './harness.js'
 import {
@@ -65,6 +65,10 @@ import type { RunVerdict } from '@shared/competitions'
 /** Метка на обоих контейнерах: по ней их находит уборка, и только их. */
 export const RUN_LABEL = 'colloq.kind=competition-run'
 export const SCORE_LABEL = 'colloq.kind=competition-score'
+const HOST_DATA_ROOT = path.resolve(hostPathOf(config.dataDir))
+const INSTANCE_KEY = 'ru.colloq.competition-instance'
+const INSTANCE_SCOPE = createHash('sha256').update(HOST_DATA_ROOT).digest('hex').slice(0, 16)
+const INSTANCE_LABEL = `${INSTANCE_KEY}=${INSTANCE_SCOPE}`
 
 /** Образ — тот же, в котором идёт занятие: одно окружение у задачи и у решения. */
 const IMAGE_PREFIX = 'colloq-kernel'
@@ -73,12 +77,11 @@ const IMAGE_PREFIX = 'colloq-kernel'
 const POLL_MS = 250
 
 /** Имена файлов, которые обвязка кладёт в `/result`. */
-const PROGRESS_FILE = 'progress.json'
 const RUN_FILE = 'run.json'
 const SCORE_FILE = 'score.json'
 
 interface Shell {
-  (args: string[], timeoutMs?: number): Promise<{ code: number; out: string }>
+  (args: string[], timeoutMs?: number, maxOutputBytes?: number): Promise<{ code: number; out: string }>
 }
 
 /**
@@ -88,24 +91,47 @@ interface Shell {
  * короткий срок на чтение, а здесь бывает `docker run` тяжёлого образа. Форма
  * та же — spawn массивом, без шелла, без кавычек.
  */
-const shell: Shell = (args, timeoutMs = 60_000) =>
+const shell: Shell = (args, timeoutMs = 60_000, maxOutputBytes = 256 * 1024) =>
   new Promise((resolve) => {
     const child = spawn('docker', args)
     let out = ''
     const kill = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
-    child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString()))
-    child.stderr.on('data', (chunk: Buffer) => (out += chunk.toString()))
+    let bytes = 0, overflow = false
+    const read = (chunk: Buffer) => {
+      bytes += chunk.length
+      if (bytes > maxOutputBytes) { overflow = true; child.kill('SIGKILL'); return }
+      out += chunk.toString()
+    }
+    child.stdout.on('data', read)
+    child.stderr.on('data', read)
     child.on('error', (err) => {
       clearTimeout(kill)
       resolve({ code: -1, out: String(err) })
     })
     child.on('close', (code) => {
       clearTimeout(kill)
-      resolve({ code: code ?? -1, out: out.trim() })
+      resolve({ code: overflow ? -1 : code ?? -1, out: overflow ? 'Docker response exceeded its output limit' : out.trim() })
     })
   })
 
 let docker: Shell = shell
+const pendingCleanup = new Set<string>()
+let cleanupFailures = 0
+let unverifiedLegacyContainers = 0
+export function competitionDockerDiagnostics() { return { cleanupFailures, pendingCleanup: pendingCleanup.size, unverifiedLegacyContainers } }
+
+async function removeContainer(container: string): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const removed = await docker(['rm', '-f', container], 60_000)
+    if (removed.code === 0 || /No such container/i.test(removed.out)) {
+      pendingCleanup.delete(container)
+      return
+    }
+  }
+  if (!pendingCleanup.has(container)) cleanupFailures = Math.min(Number.MAX_SAFE_INTEGER, cleanupFailures + 1)
+  pendingCleanup.add(container)
+  throw new Error('Competition container cleanup failed; execution capacity is held until cleanup recovers')
+}
 
 /**
  * Подменить docker — тестам аргументов и вскрытия.
@@ -131,6 +157,12 @@ export function useDockerForCompetitions(fake: Shell | null): void {
  */
 function hardeningArgs(pids: number): string[] {
   return [
+    '--label', INSTANCE_LABEL,
+    // Raw stdout/stderr can bypass the notebook's IOPub counter. Keep daemon
+    // log files bounded too: two rotated 8 MiB files per execution container.
+    '--log-driver=local',
+    '--log-opt=max-size=8m',
+    '--log-opt=max-file=2',
     '--user=1000:1000',
     '--cap-drop=ALL',
     '--security-opt=no-new-privileges',
@@ -172,6 +204,7 @@ function mount(inside: string, at: string, readOnly = false): string[] {
  * когда кто-то им воспользуется.
  */
 export function runArgs(opts: {
+  attemptId?: string
   container: string
   image: string
   dataDir: string
@@ -246,8 +279,10 @@ export function runArgs(opts: {
     // Каталог, а не файл: внутри одна тетрадь и больше ничего.
     ...mount(opts.inputDir, '/submission', true),
     ...mount(harnessDir(), '/harness', true),
-    // Единственное место, где посылка касается диска хоста.
-    ...mount(opts.resultDir, '/result'),
+    // Hard aggregate export bound. The host copies only validated named files.
+    `--tmpfs=/result:rw,nosuid,nodev,size=${Math.max(1, Math.ceil(limits.targetBytes * 2 / 1024 ** 2))}m,mode=1777`,
+    '-e', `COMP_ATTEMPT_ID=${opts.attemptId ?? opts.container}`,
+    '-e', `COMP_MAX_OUTPUT_KILL_BYTES=${limits.outputKillBytes}`,
     ...(opts.dependenciesDir ? [...mount(opts.dependenciesDir, '/deps', true), '-e', 'COMP_DEPENDENCIES=/deps'] : []),
     `--memory=${memory}`,
     // Swap ровно по памяти — иначе упёршийся контейнер не умирает, а уходит на
@@ -263,6 +298,8 @@ export function runArgs(opts: {
     '--entrypoint',
     'python',
     opts.image,
+    '/harness/hold_export.py',
+    '/result',
     '/harness/run_notebook.py',
   ]
 }
@@ -276,6 +313,7 @@ export function runArgs(opts: {
  * его ошибки.
  */
 export function scoreArgs(opts: {
+  attemptId?: string
   container: string
   image: string
   secretDir: string
@@ -332,7 +370,8 @@ export function scoreArgs(opts: {
     ...mount(opts.secretDir, '/secret', true),
     ...mount(opts.submissionDir, '/submission', true),
     ...mount(harnessDir(), '/harness', true),
-    ...mount(opts.outDir, '/out'),
+    '--tmpfs=/out:rw,nosuid,nodev,size=4m,mode=1777',
+    '-e', `COMP_ATTEMPT_ID=${opts.attemptId ?? opts.container}`,
     `--memory=${memory}`,
     `--memory-swap=${memory}`,
     `--cpus=${limits.cpus}`,
@@ -345,6 +384,8 @@ export function scoreArgs(opts: {
     '--entrypoint',
     'python',
     opts.image,
+    '/harness/hold_export.py',
+    '/out',
     '/harness/score_metric.py',
   ]
 }
@@ -355,12 +396,14 @@ export function scoreArgs(opts: {
 interface Watched {
   killedBy: 'wall' | 'output' | 'disk' | null
   progress: RunProgress | null
+  exit?: number
 }
 
 const INSPECT = '{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}}'
 
 function readJson(file: string): Record<string, unknown> | null {
   try {
+    if (competitionsFs.statSync(file).size > 1024 * 1024) return null
     const raw = competitionsFs.readFileSync(file) as Buffer
     const value: unknown = JSON.parse(raw.toString('utf8'))
     return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
@@ -381,25 +424,31 @@ function num(value: unknown): number | null {
  * fsize` ловит один файл, а не сотню файлов по гигабайту. Снаружи от
  * контейнера не спрячешься: `docker kill` — это SIGKILL от ядра хоста.
  *
- * Сторож по размеру каталога — ЗАПАСНАЯ стенка, а не основная. Прототип
- * намерил перелёт втрое: при опросе раз в четверть секунды тетрадь успела
- * написать 360 МБ при потолке в 128. Основная стенка — tmpfs и `--ulimit`,
- * которые держит ядро.
+ * Disk growth is bounded by tmpfs itself, including nested directories. The
+ * host watchdog handles time/output and reads only bounded progress JSON.
  */
 async function watch(
   container: string,
   resultDir: string,
   limits: StepLimits,
+  attemptId: string,
   onProgress?: (progress: RunProgress) => void,
+  signal?: AbortSignal,
 ): Promise<Watched> {
   const deadline = Date.now() + limits.wallSeconds * 1000
-  const diskCeiling = limits.targetBytes * 2
   let last: RunProgress | null = null
   for (;;) {
+    if (signal?.aborted) {
+      await docker(['kill', '--signal=KILL', container], 30_000)
+      return { killedBy: null, progress: last }
+    }
     const alive = await docker(['inspect', container, '--format', '{{.State.Running}}'], 20_000)
     if (alive.code !== 0 || alive.out.trim() !== 'true') return { killedBy: null, progress: last }
 
-    const beat = readJson(path.join(resultDir, PROGRESS_FILE))
+    const snapshot = await docker(['exec', container, 'python', '-I', '/harness/export_files.py', 'status', resultDir], 5000, 128 * 1024)
+    let state: any = {}
+    try { state = snapshot.code === 0 ? JSON.parse(snapshot.out) : {} } catch { /* incomplete report */ }
+    const beat = state.progress?.attemptId === attemptId ? state.progress : null
     if (beat) {
       const progress: RunProgress = {
         phase: beat.phase === 'dependencies' ? 'dependencies' : 'notebook',
@@ -432,10 +481,8 @@ async function watch(
       await docker(['kill', '--signal=KILL', container], 30_000)
       return { killedBy: 'output', progress: last }
     }
-    if (dirBytes(resultDir) > diskCeiling) {
-      await docker(['kill', '--signal=KILL', container], 30_000)
-      return { killedBy: 'disk', progress: last }
-    }
+    if (state.complete?.attemptId === attemptId && Number.isInteger(state.complete.exit))
+      return { killedBy: null, progress: last, exit: state.complete.exit }
     await sleep(POLL_MS)
   }
 }
@@ -444,23 +491,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Сколько весит то, что контейнер написал в смонтированный каталог хоста. */
-function dirBytes(dir: string): number {
-  let total = 0
-  let names: string[]
-  try {
-    names = competitionsFs.readdirSync(dir) as string[]
-  } catch {
-    return 0
+/** Copy only a bounded allowlist while the supervisor keeps tmpfs mounted. */
+async function collectExports(container: string, from: string, to: string, files: Array<[string, number]>): Promise<void> {
+  competitionsFs.mkdirSync(to, { recursive: true })
+  for (const [name, maximum] of files) {
+    const result = await docker(['exec', container, 'python', '-I', '/harness/export_files.py', 'file', from, name], 20000, Math.ceil(maximum / 3) * 4 + 4)
+    if (result.code !== 0 || result.out.length > Math.ceil(maximum / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(result.out)) continue
+    const body = Buffer.from(result.out, 'base64')
+    if (body.length > maximum || body.toString('base64') !== result.out) continue
+    competitionsFs.writeFileSync(path.join(to, name), body, { mode: 0o600 })
   }
-  for (const name of names) {
-    try {
-      total += competitionsFs.statSync(path.join(dir, name)).size
-    } catch {
-      /* исчез между readdir и stat — значит, не весит ничего */
-    }
-  }
-  return total
 }
 
 /** Вскрытие остановленного контейнера — ДО того, как его снимут. */
@@ -546,9 +586,11 @@ class DockerCompetitionRunner implements CompetitionRunner {
 
   async run(request: RunRequest): Promise<RunOutcome> {
     const started = Date.now()
+    const attemptId = request.attemptId ?? randomUUID()
     const image = request.imageDigest ?? `${IMAGE_PREFIX}:${request.competition.environment || 'base'}`
     const args = runArgs({
       container: request.container,
+      attemptId,
       image,
       dataDir: request.dataDir,
       inputDir: request.inputDir,
@@ -559,6 +601,7 @@ class DockerCompetitionRunner implements CompetitionRunner {
     })
     const started_ = await docker(args, 120_000)
     if (started_.code !== 0) {
+      await removeContainer(request.container)
       return {
         status: 'harness_error',
         cell: -1,
@@ -573,18 +616,23 @@ class DockerCompetitionRunner implements CompetitionRunner {
     let watched: Watched = { killedBy: null, progress: null }
     let dead = { exit: null as number | null, oom: false, tail: '' }
     try {
-      watched = await watch(request.container, request.resultDir, request.limits, request.onProgress)
+      watched = await watch(request.container, '/result', request.limits, attemptId, request.onProgress, request.signal)
       dead = await postmortem(request.container)
+      if (watched.exit !== undefined) {
+        dead.exit = watched.exit
+        await collectExports(request.container, '/result', request.resultDir, [[RUN_FILE, 65536], [SUBMISSION_NAME, request.limits.targetBytes], ['executed.ipynb', 64 * 1024 ** 2]])
+      }
     } finally {
       // Контейнер снимается ВСЕГДА и только после вскрытия: `--rm` отнял бы у
       // нас флаг OOM, а забытый контейнер — это гигабайты на машине, где идёт
       // занятие.
-      await docker(['rm', '-f', request.container], 60_000)
+      await removeContainer(request.container)
     }
-    const report = readJson(path.join(request.resultDir, RUN_FILE))
+    const observed = readJson(path.join(request.resultDir, RUN_FILE))
+    const report = observed?.attemptId === attemptId ? observed : null
     const answer = path.join(request.resultDir, SUBMISSION_NAME)
     const produced = competitionsFs.existsSync(answer)
-    const status = typeof report?.status === 'string' ? report.status : null
+    const status = dead.exit !== 0 && report?.status === 'ok' ? 'exit' : typeof report?.status === 'string' ? report.status : null
     const verdict = verdictOfRun({ oom: dead.oom, killedBy: watched.killedBy, status, produced })
     const beat = watched.progress
     return {
@@ -607,9 +655,11 @@ class DockerCompetitionRunner implements CompetitionRunner {
 
   async score(request: ScoreRequest): Promise<ScoreOutcome> {
     const started = Date.now()
+    const attemptId = request.attemptId ?? randomUUID()
     const image = request.imageDigest ?? `${IMAGE_PREFIX}:${request.competition.environment || 'base'}`
     const args = scoreArgs({
       container: request.container,
+      attemptId,
       image,
       secretDir: request.secretDir,
       submissionDir: request.submissionDir,
@@ -623,15 +673,20 @@ class DockerCompetitionRunner implements CompetitionRunner {
     })
     const launched = await docker(args, 120_000)
     if (launched.code !== 0) {
+      await removeContainer(request.container)
       return metricFailure(this.backend, launched.out, Date.now() - started, null, false)
     }
     let watched: Watched = { killedBy: null, progress: null }
     let dead = { exit: null as number | null, oom: false, tail: '' }
     try {
-      watched = await watch(request.container, request.outDir, request.limits)
+      watched = await watch(request.container, '/out', request.limits, attemptId, undefined, request.signal)
       dead = await postmortem(request.container)
+      if (watched.exit !== undefined) {
+        dead.exit = watched.exit
+        await collectExports(request.container, '/out', request.outDir, [[SCORE_FILE, 1024 * 1024]])
+      }
     } finally {
-      await docker(['rm', '-f', request.container], 60_000)
+      await removeContainer(request.container)
     }
     const wall = Date.now() - started
     /*
@@ -653,7 +708,7 @@ class DockerCompetitionRunner implements CompetitionRunner {
       )
     }
     const report = readJson(path.join(request.outDir, SCORE_FILE))
-    if (!report) {
+    if (!report || report.attemptId !== attemptId || (report.status === 'ok' && dead.exit !== 0)) {
       return metricFailure(this.backend, `no ${SCORE_FILE}\n${dead.tail}`, wall, dead.exit, false)
     }
     const status = typeof report.status === 'string' ? asVerdict(report.status) : 'metric_error'
@@ -681,15 +736,39 @@ class DockerCompetitionRunner implements CompetitionRunner {
    * заведены только этим модулем и живут только на время одной посылки, так
    * что любой найденный после старта — уже осиротевший.
    */
-  async sweep(): Promise<number> {
+  async sweep(legacyContainers: readonly string[] = []): Promise<number> {
     let dropped = 0
     for (const label of [RUN_LABEL, SCORE_LABEL]) {
-      const found = await docker(['ps', '-aq', '--filter', `label=${label}`], 20_000)
+      const found = await docker(['ps', '-aq', '--filter', `label=${label}`, '--filter', `label=${INSTANCE_LABEL}`], 20_000)
       if (found.code !== 0) continue
       for (const id of found.out.split('\n').map((line) => line.trim()).filter(Boolean)) {
-        const gone = await docker(['rm', '-f', id], 60_000)
-        if (gone.code === 0) dropped++
+        try { await removeContainer(id); dropped++ } catch { /* capacity stays blocked until cleanup succeeds */ }
       }
+    }
+    // Old queue rows name specific pre-scope containers. Never scan/delete all
+    // unscoped jobs: prove each recorded container binds only this data root.
+    for (const container of new Set(legacyContainers)) {
+      const inspected = await docker(['inspect', container, '--format', '{"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}}}'], 10_000)
+      if (inspected.code !== 0 && /No such (?:container|object)/i.test(inspected.out)) continue
+      let owned = false
+      try {
+        const info = JSON.parse(inspected.out)
+        const kind = info.labels?.['colloq.kind']
+        const instance = info.labels?.[INSTANCE_KEY]
+        const binds = Array.isArray(info.mounts) ? info.mounts.filter((mount: any) => mount.Type === 'bind') : []
+        owned = inspected.code === 0 && ['competition-run', 'competition-score'].includes(kind)
+          && (instance === INSTANCE_SCOPE || (!instance && binds.length > 0 && binds.every((mount: any) => {
+            if (typeof mount.Source !== 'string') return false
+            const source = path.resolve(mount.Source)
+            return source === HOST_DATA_ROOT || source.startsWith(`${HOST_DATA_ROOT}${path.sep}`)
+          })))
+      } catch { /* Unreadable ownership stays untouched. */ }
+      if (!owned) {
+        unverifiedLegacyContainers = Math.min(Number.MAX_SAFE_INTEGER, unverifiedLegacyContainers + 1)
+        console.warn('[competitions] recorded legacy container ownership could not be verified; left untouched')
+        continue
+      }
+      try { await removeContainer(container); dropped++ } catch { /* retry through capacity */ }
     }
     return dropped
   }
@@ -703,8 +782,12 @@ class DockerCompetitionRunner implements CompetitionRunner {
    * работу посылку, которой `docker run` откажет посреди пары.
    */
   async capacity(): Promise<Capacity> {
+    for (const container of pendingCleanup) {
+      try { await removeContainer(container) } catch { return { availableMb: 0 } }
+    }
     try {
-      const machine = await machineResources()
+      // reserveWork atomically deducts all in-flight promises after this census.
+      const machine = await machineResources({ fresh: true, beforeReservations: true })
       return { availableMb: machine.memory.availableMb }
     } catch {
       return { availableMb: null }

@@ -43,6 +43,7 @@ export interface DependencyBundle {
 }
 export interface DependencyDraft { requirementsText: string; selectedBundleId: string | null }
 export interface DependencyOverview {
+  capabilities?: import('./capabilities.js').CompetitionCapabilities
   policy: DependencyPolicy
   revision: EnvironmentRevision | null
   draft: DependencyDraft
@@ -50,6 +51,7 @@ export interface DependencyOverview {
   joined: boolean
 }
 export interface AdminDependencyOverview {
+  capabilities?: import('./capabilities.js').CompetitionCapabilities
   policy: DependencyPolicy
   revision: EnvironmentRevision | null
   bundles: (DependencyBundle & { entrantName: string })[]
@@ -74,3 +76,12 @@ export const DEPENDENCY_LIMITS = {
 } as const
 export const dependencyActive = (state: DependencyState): boolean =>
   state === 'queued' || state === 'resolving' || state === 'downloading' || state === 'verifying'
+
+/** Match Python str.splitlines(), including imported Unicode separators. */
+export function normalizeRequirements(text: string): string {
+  return text.replace(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/g, '\n')
+}
+/** Same meaningful-line rule in the editor, intake and isolated resolver. */
+export function requirementLineCount(text: string): number {
+  return normalizeRequirements(text).split('\n').filter(line => line.trim() && !line.trim().startsWith('#')).length
+}

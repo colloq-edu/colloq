@@ -9,7 +9,7 @@
 
   Живое состояние приезжает потоком (SSE), как журнал сборки окружений: одна
   сторона, браузер переподключается сам, и никакого второго протокола ради
-  пяти чисел. Лента перечитывается, когда числа изменились, — не по таймеру.
+  пяти чисел. Лента перечитывается по серверной ревизии, включая пересчёты и выбор.
 -->
 <script lang="ts">
   import { tr } from '@shared/i18n'
@@ -32,13 +32,13 @@
   } from '@shared/competitions'
   import type {
     CompetitionLive,
+    CompetitionLeaderboard,
     CompetitionView,
     EntrantRow,
     SubmissionDetail,
     SubmissionFeed,
   } from '@shared/competitions-api'
   import {
-    boardFromFeed,
     clock,
     count,
     deadlineLine,
@@ -67,6 +67,19 @@
 
   let live = $state<CompetitionLive | null>(null)
   let feed = $state<SubmissionFeed | null>(null)
+  let board = $state<CompetitionLeaderboard | null>(null)
+  let feedRequest = 0
+  let boardRequest = 0
+  let generation = 0
+  $effect(() => {
+    c.id
+    generation += 1
+    live = null
+    feed = null
+    board = null
+    entrants = null
+    detail = null
+  })
   let entrants = $state<EntrantRow[] | null>(null)
   let detail = $state<SubmissionDetail | null>(null)
   let busy = $state(false)
@@ -79,7 +92,6 @@
 
   /** Сколько строк ленты берётся за раз и сколько их берётся всего. */
   const PAGE = 200
-  const FEED_CAP = 2000
 
   const explain = (cause: unknown): string =>
     cause instanceof AdminApiError ? cause.message : tr('admin.competitions.requestFailed')
@@ -121,9 +133,10 @@
   $effect(() => {
     const id = c.id
     if (!streaming) return
+    const active = generation
     const source = new EventSource(adminApi.competitionStreamUrl(id))
     source.addEventListener('state', (event) => {
-      live = JSON.parse((event as MessageEvent<string>).data) as CompetitionLive
+      if (active === generation && id === c.id) live = JSON.parse((event as MessageEvent<string>).data) as CompetitionLive
     })
     source.onerror = () => {
       source.close()
@@ -135,10 +148,11 @@
   $effect(() => {
     if (streaming) return
     const id = c.id
+    const active = generation
     const pull = () => {
       void adminApi
         .competitionLive(id)
-        .then((fresh) => (live = fresh))
+        .then((fresh) => { if (active === generation && id === c.id) live = fresh })
         .catch(() => undefined)
     }
     pull()
@@ -146,63 +160,55 @@
     return () => window.clearInterval(tick)
   })
 
-  /*
-   * Лента перечитывается, когда числа изменились.
-   *
-   * Число посылок — единственный дешёвый признак того, что в ленте появилась
-   * строка: снимок живого состояния приезжает каждые полторы секунды, а лента
-   * — это двести строк и обход всех посылок соревнования на сервере.
-   */
-  let feedMark: string | null = null
+  // A server mutation revision includes all terminal outcomes, score changes
+  // and manual choices, even when the summary counts stay the same.
   $effect(() => {
-    const counts = live?.counts
-    const mark = counts
-      ? `${counts.submissions}:${counts.scored}:${counts.notebookFailed}:${counts.rejected}:${counts.metricFailed}`
-      : ''
-    if (mark === feedMark) return
-    feedMark = mark
+    c.id
+    live?.revision
     untrack(() => void loadFeed())
   })
 
-  async function loadFeed(all = false): Promise<void> {
+  async function loadFeed(more = false): Promise<void> {
     const id = c.id
+    const active = generation
+    const request = ++feedRequest
+    const previous = more ? feed?.rows ?? [] : []
     try {
-      const first = await adminApi.competitionSubmissions(id, { limit: PAGE })
-      let rows = first.rows
-      /*
-       * Лидерборд считается из ленты, поэтому для него она нужна целиком:
-       * правило зачёта одно (`shared/competitions.ts` · boardOf), и экран,
-       * считающий по половине посылок, разошёлся бы с сервером в том, чья
-       * посылка пошла в счёт. Потолок — чтобы соревнование на десять тысяч
-       * посылок не утянуло вкладку.
-       */
-      while (all && rows.length < Math.min(first.total, FEED_CAP)) {
-        const next = await adminApi.competitionSubmissions(id, {
-          limit: PAGE,
-          offset: rows.length,
-        })
-        if (next.rows.length === 0) break
-        rows = [...rows, ...next.rows]
-      }
-      feed = { rows, total: first.total }
+      const next = await adminApi.competitionSubmissions(id, { limit: PAGE, offset: previous.length })
+      if (id !== c.id || active !== generation || request !== feedRequest) return
+      feed = { rows: [...previous, ...next.rows], total: next.total }
       errorText = null
     } catch (cause) {
+      if (id !== c.id || active !== generation || request !== feedRequest) return
+      lost(cause)
+      errorText = () => explain(cause)
+    }
+  }
+
+  async function loadBoard(): Promise<void> {
+    const id = c.id
+    const active = generation
+    const request = ++boardRequest
+    try {
+      const fresh = await adminApi.competitionLeaderboard(id)
+      if (id === c.id && active === generation && request === boardRequest) board = fresh
+    } catch (cause) {
+      if (id !== c.id || active !== generation || request !== boardRequest) return
       lost(cause)
       errorText = () => explain(cause)
     }
   }
 
   $effect(() => {
-    if (tab !== 'board') return
-    const loaded = untrack(() => feed)
-    if (loaded && loaded.rows.length < Math.min(loaded.total, FEED_CAP)) {
-      untrack(() => void loadFeed(true))
-    }
+    c.id
+    live?.revision
+    if (tab === 'board') untrack(() => void loadBoard())
   })
 
   $effect(() => {
     const id = c.id
     if (tab !== 'entrants' || untrack(() => entrants) !== null) return
+    const active = generation
     untrack(() => {
       void adminApi
         .competitionEntrants(id)
@@ -212,8 +218,9 @@
          * ним нет — а ключ, показанный рядом с живыми, кто-нибудь однажды
          * продиктует.
          */
-        .then((list) => (entrants = list.entrants.filter((row) => !row.baseline)))
+        .then((list) => { if (active === generation && id === c.id) entrants = list.entrants.filter((row) => !row.baseline) })
         .catch((cause: unknown) => {
+          if (active !== generation || id !== c.id) return
           lost(cause)
           errorText = () => explain(cause)
         })
@@ -321,10 +328,11 @@
   const deadline = $derived(deadlineLine(c, now))
   const privateOpen = $derived(privateBoardOpen(c, now))
   const worst = $derived(worstCell(rows))
-  const publicBoard = $derived(feed ? boardFromFeed(rows, c, 'public') : [])
-  const privateBoard = $derived(feed ? boardFromFeed(rows, c, 'private') : [])
+  const boardBaseline = $derived(board?.baseline ?? null)
+  const publicBoard = $derived(board?.public ?? [])
+  const privateBoard = $derived(board?.private ?? [])
   const nameOf = $derived(
-    new Map(rows.map((row) => [row.submission.entrantId, row.entrantName] as const)),
+    new Map(publicBoard.map((row) => [row.entrantId, row.entrantName] as const)),
   )
 
   function goTab(next: LiveTab): void {
@@ -508,7 +516,7 @@
     </div>
   {:else if tab === 'board'}
     <div class="comp-feed py-5">
-      {#if feed === null}
+      {#if board === null}
         <RowsSkeleton label={tr('competitions.loading')} />
       {:else if publicBoard.length === 0}
         <div class="py-16 text-center">
@@ -558,7 +566,7 @@
             </span>
           </div>
         {/each}
-        {#if view.baseline?.state === 'scored'}
+        {#if boardBaseline?.state === 'scored'}
           <!-- Базовое решение — строкой без места: оно не участник, и
                ранжировать его вместе с классом значило бы отнять у кого-то
                место в пользу преподавателя. -->
@@ -569,12 +577,12 @@
             </span>
             <span class="w-[104px] shrink-0 text-right font-mono text-2xs text-muted">
               {@render caption(tr('admin.competitions.col.public'))}{metricNumber(
-                view.baseline.publicScore,
+                boardBaseline.publicScore,
               )}
             </span>
             <span class="w-[112px] shrink-0 text-right font-mono text-2xs text-muted">
               {@render caption(tr('admin.competitions.col.private'))}{metricNumber(
-                view.baseline.privateScore,
+                boardBaseline.privateScore,
               )}
             </span>
             <span class="feed-shift w-[88px] shrink-0"></span>

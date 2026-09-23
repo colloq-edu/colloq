@@ -66,11 +66,34 @@ export function controlDisabled(connected: boolean, allowed = true): boolean {
 export const MAX_QUEUED_CONTROL = 16
 
 export function enqueueControl<T>(queue: T[], message: T): T[] {
+  const key = snapshotKey(message)
   const encoded = JSON.stringify(message)
-  if (queue.some((q) => JSON.stringify(q) === encoded)) return queue
+  // A command consumes the preceding state. Never coalesce snapshots across it
+  // or deduplicate a later command across intervening state changes.
+  for (let i = queue.length - 1; i >= 0; i -= 1) {
+    const previousKey = snapshotKey(queue[i])
+    if (key !== null) {
+      if (previousKey === null) break
+      if (previousKey === key) queue.splice(i, 1)
+    } else {
+      if (previousKey !== null) break
+      if (JSON.stringify(queue[i]) === encoded) return queue
+    }
+  }
   queue.push(message)
   if (queue.length > MAX_QUEUED_CONTROL) queue.splice(0, queue.length - MAX_QUEUED_CONTROL)
   return queue
+}
+
+/** Only these messages replace a complete resource state; all others are commands. */
+function snapshotKey(message: unknown): string | null {
+  if (!message || typeof message !== 'object') return null
+  const value = message as Record<string, unknown>
+  if (value.t === 'council:draft' && typeof value.cellId === 'string')
+    return JSON.stringify([value.t, value.cellId])
+  if (value.t === 'notes:set' && typeof value.file === 'string' && typeof value.page === 'number')
+    return JSON.stringify([value.t, value.file, value.page])
+  return null
 }
 
 /* ------------------------------------------------------- возвращение связи */

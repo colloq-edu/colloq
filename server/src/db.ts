@@ -952,6 +952,13 @@ export function forgetRules(sessionId: string): void {
   forgetRoom(sessionId)
 }
 
+/** Rule changes invalidate accepted work synchronously after durable storage. */
+const rulesChangedListeners = new Set<(sessionId: string, rules: RoomRules) => void>()
+export function onRulesChanged(listener: (sessionId: string, rules: RoomRules) => void): () => void {
+  rulesChangedListeners.add(listener)
+  return () => { rulesChangedListeners.delete(listener) }
+}
+
 /**
  * Write a room's rules.
  *
@@ -963,6 +970,7 @@ export function setRules(sessionId: string, rules: RoomRules): RoomRules {
   const clean = readRules(rules)
   updateRules.run(JSON.stringify(clean), sessionId)
   rulesCache.set(sessionId, { rules: clean, finishedAt: roomOf(sessionId).finishedAt })
+  for (const listener of rulesChangedListeners) listener(sessionId, clean)
   return clean
 }
 

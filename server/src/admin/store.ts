@@ -30,6 +30,24 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS staff_link_key ON staff(link_key) WHERE link_key IS NOT NULL;
 `)
 
+// Existing credentials belong to generation 1. Rotation advances the durable
+// generation, including for old handoff tokens that did not carry it yet.
+if (!(db.prepare('PRAGMA table_info(staff)').all() as { name: string }[]).some(row => row.name === 'auth_version')) {
+  db.exec('ALTER TABLE staff ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1')
+}
+
+const authorizationListeners = new Set<(staffId: string) => void>()
+export function onStaffAuthorizationChanged(listener: (staffId: string) => void): () => void {
+  authorizationListeners.add(listener)
+  return () => { authorizationListeners.delete(listener) }
+}
+function authorizationChanged(id: string): void {
+  for (const listener of authorizationListeners) listener(id)
+}
+export function staffAuthorizationVersion(id: string): number | null {
+  return (selectAuthorizationVersion.get(id) as { auth_version: number } | undefined)?.auth_version ?? null
+}
+
 interface StaffRow {
   id: string
   email: string
@@ -54,13 +72,14 @@ const selectOldestOwner = db.prepare(
   "SELECT * FROM staff WHERE role = 'owner' ORDER BY created_at ASC, id ASC LIMIT 1",
 )
 const selectLinkKey = db.prepare('SELECT link_key FROM staff WHERE id = ?')
+const selectAuthorizationVersion = db.prepare('SELECT auth_version FROM staff WHERE id = ?')
 const insertStaff = db.prepare(`
   INSERT INTO staff (id, email, name, role, created_at, last_seen_at, link_key)
   VALUES (@id, @email, @name, @role, @created_at, NULL, NULL)
 `)
 const updateRole = db.prepare('UPDATE staff SET role = ? WHERE id = ?')
 const updateIdentity = db.prepare('UPDATE staff SET name = ?, email = ? WHERE id = ?')
-const updateLinkKey = db.prepare('UPDATE staff SET link_key = ? WHERE id = ?')
+const updateLinkKey = db.prepare('UPDATE staff SET link_key = ?, auth_version = auth_version + 1 WHERE id = ?')
 const deleteById = db.prepare('DELETE FROM staff WHERE id = ?')
 const touchSeen = db.prepare('UPDATE staff SET last_seen_at = ? WHERE id = ?')
 const countOwnersStmt = db.prepare("SELECT COUNT(*) AS n FROM staff WHERE role = 'owner'")
@@ -145,6 +164,7 @@ export function createTeacher(input: { email: string; name: string; role: AdminR
 
 export function updateTeacherRole(id: string, role: AdminRole): Teacher | null {
   if (updateRole.run(role, id).changes === 0) return null
+  authorizationChanged(id)
   return getTeacher(id)
 }
 
@@ -175,12 +195,15 @@ export function updateTeacherIdentity(
 export function rotateLinkKey(id: string): MintedLink | null {
   const key = newLinkKey()
   if (updateLinkKey.run(key, id).changes === 0) return null
+  authorizationChanged(id)
   const teacher = getTeacher(id)
   return teacher ? { teacher, key } : null
 }
 
 export function deleteTeacher(id: string): boolean {
-  return deleteById.run(id).changes > 0
+  const deleted = deleteById.run(id).changes > 0
+  if (deleted) authorizationChanged(id)
+  return deleted
 }
 
 export function touchTeacherLastSeen(id: string): void {

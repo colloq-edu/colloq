@@ -32,6 +32,7 @@
  * ровно та же беда и то же лечение, что у комнат (kernel/pool.ts · hostMount).
  */
 import path from 'node:path'
+import fs from 'node:fs'
 import { config } from '../config.js'
 import { createAnchoredFilesystem, type HeldFile } from '../secure-files.js'
 
@@ -103,9 +104,57 @@ export function inputDir(id: string, submissionId: string): string {
   return path.join(submissionDir(id, submissionId), 'in')
 }
 
-/** Единственное место, куда посылка пишет на диск хоста. */
+/** Host-promoted artifacts; participant containers cannot write here. */
 export function resultDir(id: string, submissionId: string): string {
   return path.join(submissionDir(id, submissionId), 'out')
+}
+
+/** Every execution owns its directories; previous results are never inputs to
+ * a new notebook attempt. Only validated host exports are promoted to out/. */
+export function attemptDir(id: string, submissionId: string, attemptId: string, part: 'result' | 'score' | 'score-out' | 'secret' = 'result'): string {
+  return ensureDir(path.join(submissionDir(id, submissionId), 'attempts', checkId(attemptId), part))
+}
+
+export function dropAttempt(id: string, submissionId: string, attemptId: string): void {
+  competitionsFs.rmSync(path.join(submissionDir(id, submissionId), 'attempts', checkId(attemptId)), { recursive: true, force: true })
+}
+
+/** Snapshot through anchored descriptors without buffering a whole dataset. */
+export function copyCompetitionFile(from: string, to: string): void {
+  const source = competitionsFs.openRead(from)
+  let output: number | undefined
+  try {
+    output = competitionsFs.openSync(to, 'wx', 0o600)
+    const chunk = Buffer.alloc(1024 * 1024)
+    let size: number
+    while ((size = fs.readSync(source.fd, chunk, 0, chunk.length, null)) > 0) {
+      let offset = 0
+      while (offset < size) offset += fs.writeSync(output, chunk, offset, size - offset)
+    }
+  } finally { source.close(); if (output !== undefined) fs.closeSync(output) }
+}
+
+export function promoteAttempt(id: string, submissionId: string, from: string, answer: Buffer): void {
+  const out = ensureDir(resultDir(id, submissionId))
+  // Atomic host rename: readers see the last complete successful answer.
+  const temporary = path.join(out, '.answer-next')
+  competitionsFs.writeFileSync(temporary, answer, { mode: 0o600 })
+  competitionsFs.renameSync(temporary, path.join(out, SUBMISSION_FILE))
+  publishAttemptArtifacts(id, submissionId, from)
+}
+
+/** A failed notebook still has useful current output; retain its execution
+ * artifacts separately from the last successful CSV used by metric rescoring. */
+export function publishAttemptArtifacts(id: string, submissionId: string, from: string): void {
+  const out = ensureDir(resultDir(id, submissionId))
+  for (const name of ['executed.ipynb', 'run.json']) {
+    const body = readIfExists(path.join(from, name), 64 * 1024 * 1024)
+    if (body) {
+      const temporary = path.join(out, `.${name}-next`)
+      competitionsFs.writeFileSync(temporary, body, { mode: 0o600 })
+      competitionsFs.renameSync(temporary, path.join(out, name))
+    } else competitionsFs.rmSync(path.join(out, name), { force: true })
+  }
 }
 
 /**

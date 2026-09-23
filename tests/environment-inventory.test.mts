@@ -100,3 +100,28 @@ test('unavailable environment returns a readable error without Docker diagnostic
     assert(!body.error.includes('private host'))
   } finally { server.closeAllConnections(); server.close() }
 })
+
+test('public inventory uses retained execution revision even after an alias rebuild', async () => {
+  const { default: express } = await import('express')
+  const { competitionRoutes } = await import('../server/src/routes/competitions.js')
+  const { createCompetition, setCompetitionState } = await import('../server/src/competitions/store.js')
+  const { putRevision, selectRevision } = await import('../server/src/dependencies/store.js')
+  const c = createCompetition({ slug: 'inventory-pinned', title: 'Pinned' })!
+  setCompetitionState(c.id, 'live')
+  const revision = putRevision({ environmentName: 'base', imageDigest: IMAGE_A, pythonVersion: '3.11.1', pythonAbi: 'cp311', platform: 'linux/amd64', packages: [{ name: 'numpy', version: '1.0' }], baseConstraintsHash: 'old' })
+  selectRevision(c.id, revision.id)
+  const app = express()
+  let aliasReads = 0
+  app.use(competitionRoutes(async name => { aliasReads++; return parseInventory(name, payload) }))
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise<void>(resolve => server.on('listening', resolve))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    const response = await fetch(`${base}/api/k/competitions/inventory-pinned/environment`)
+    const body = await response.json()
+    assert.equal(body.python, '3.11.1')
+    assert.deepEqual(body.packages, [{ name: 'numpy', version: '1.0' }])
+    assert.equal(body.revisionId, revision.id)
+    assert.equal(aliasReads, 0)
+  } finally { server.closeAllConnections(); server.close() }
+})

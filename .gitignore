@@ -65,3 +65,7 @@ __pycache__/
 # Локальные скиллы Claude Code: инструмент конкретной машины, а не исходник
 # продукта, и у сторонних скиллов своя лицензия.
 /.claude/
+
+# Browser regression traces and reports.
+/test-results/
+/playwright-report/

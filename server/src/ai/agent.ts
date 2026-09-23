@@ -87,6 +87,7 @@ import {
   agentStepsIn,
   allows,
   allowsRun,
+  allowsAgent,
   allowsStructure,
   bookRefusal,
   mayEditCell,
@@ -101,7 +102,7 @@ import { currentText, flushSessionFiles, putText } from '../collab/files.js'
 import { bookText, createBook, isBookFile, projectBooks } from '../collab/books.js'
 import { mark } from '../collab/history.js'
 import { rememberDeleted } from '../collab/ops.js'
-import { getRules, isFinished } from '../db.js'
+import { getRules, isFinished, onRulesChanged } from '../db.js'
 import { MAX_TEXT_BYTES, freeName, listFiles, makeFile, readText, statPath } from '../workspace.js'
 import {
   interruptTerminal,
@@ -428,6 +429,7 @@ export function undoTurn(sessionId: string, entryId: string, by: string): number
   if ((entry.get('undo') as UndoState) !== 'available') return null
   let touched = 0
   const skipped: string[] = []
+  const failed: string[] = []
   for (const [path, snapshot] of files) {
     /*
      * `null` — файла на этом пути больше нет: его переименовали или убрали.
@@ -439,15 +441,20 @@ export function undoTurn(sessionId: string, entryId: string, by: string): number
     const now = currentText(sessionId, path)
     if (now === null || snapshot.left === null || now !== snapshot.left) {
       skipped.push(path)
+      files.delete(path)
       continue
     }
     // Файла до хода не было: оракул его завёл. Убирать его целиком — не наше
     // право (удаление в этой комнате преподавательское и проходит через
     // дерево), поэтому он остаётся пустым — и это видно.
-    putText(sessionId, path, snapshot.was ?? '')
+    if (!putText(sessionId, path, snapshot.was ?? '')) {
+      failed.push(path)
+      continue
+    }
+    files.delete(path)
     touched += 1
   }
-  before.delete(key)
+  if (files.size === 0) before.delete(key)
   doc.transact(() => {
     if (skipped.length > 0) {
       // Тред пишет «файлы вернулись к тому, что было»; про те, что не
@@ -459,8 +466,12 @@ export function undoTurn(sessionId: string, entryId: string, by: string): number
           tr("server.theFilesWereChangedOrDeletedAfter.0aad9d"),
       )
     }
-    entry.set('undo', 'done' as UndoState)
-    entry.set('undoBy', by)
+    if (failed.length > 0) {
+      const answer = chatAnswer(entry)
+      answer.insert(answer.length, `\n\n${tr("server.couldNotCompleteTheActionTryAgain.234540")} (${failed.join(', ')})`)
+    }
+    entry.set('undo', (failed.length > 0 ? 'available' : 'done') as UndoState)
+    if (failed.length === 0) entry.set('undoBy', by)
   }, ORIGIN)
   return touched
 }
@@ -798,6 +809,14 @@ async function runTool(
   rawArgs: string,
   signal?: AbortSignal,
 ): Promise<Ran> {
+  if (signal?.aborted || !allowsAgent(getRules(hands.sessionId).agent, hands.role)) {
+    const said = !actsAfterClass(isFinished(hands.sessionId), hands.role)
+      ? tr(CLASS_IS_OVER)
+      : getRules(hands.sessionId).agent === 'host'
+        ? tr("server.onlyTheTeacherMayAskTheOracle.441f53")
+        : tr("server.oracleFileEditingIsDisabledInThis.9b1999")
+    return { step: note(said, name), failed: true, said }
+  }
   const known = toolsFor(hands)
   let args: Record<string, unknown> = {}
   try {
@@ -1056,15 +1075,6 @@ async function runTool(
       }
     }
 
-    if (!existed) {
-      const made = makeFile(hands.sessionId, wanted, '')
-      if (made !== 'ok' && made !== 'exists') {
-        return {
-          step: note(tr("server.couldNotCreate.c6f8bf"), wanted),
-          said: tr("server.couldNotCreate.703abe", { p0: wanted }),
-        }
-      }
-    }
     /*
      * Запись может и БРОСИТЬ, а не вернуть `false`: под путём оказалась не
      * папка, диск не дал, права сменились. Раньше такая ошибка вылетала из
@@ -2520,6 +2530,11 @@ const INTERRUPT_GRACE_MS = 5_000
  */
 async function runInRoom(hands: Hands, command: string, signal?: AbortSignal): Promise<RunResult> {
   await openTerminal(hands.sessionId)
+  // Opening a runtime can outlast a rule change. Do not enqueue even one
+  // command after cancellation; interrupting it afterwards is already too late.
+  if (signal?.aborted || !allowsAgent(getRules(hands.sessionId).agent, hands.role)) {
+    return { output: '', exit: null, finished: false, cut: 'stop' }
+  }
   const result = await new Promise<{ output: string; finished: boolean; cut: RunResult['cut'] }>(
     (resolve) => {
       let settled = false
@@ -2688,6 +2703,9 @@ async function loop(options: WorkOptions, entryId: string, history: ChatTurn[]):
   const key = `${options.sessionId} ${entryId}`
   const controller = new AbortController()
   running.set(key, controller)
+  const unsubscribe = onRulesChanged((sessionId, rules) => {
+    if (sessionId === options.sessionId && !allowsAgent(rules.agent, options.role)) controller.abort()
+  })
   let outcome: ActivityOutcome = 'error'
   try {
     await steps(options, entryId, history, controller.signal)
@@ -2697,6 +2715,7 @@ async function loop(options: WorkOptions, entryId: string, history: ChatTurn[]):
     appendActivity(options.sessionId, options.participantId, 'oracle.work_finished', {
       entryId, action: 'work', outcome, source: 'oracle', durationMs: Date.now() - activityBeganAt,
     }, options.role)
+    unsubscribe()
     running.delete(key)
   }
 }
@@ -2813,7 +2832,7 @@ async function steps(
   const outOfTime = () => Date.now() - began >= TURN_BUDGET_MS
 
   while (stepLimit === 0 || taken < stepLimit) {
-    if (signal.aborted) {
+    if (signal.aborted || !allowsAgent(getRules(options.sessionId).agent, options.role)) {
       stopped = true
       break
     }
@@ -2846,7 +2865,7 @@ async function steps(
     const answer = await completeWithTools(messages, tools, signal, bill, options.effort)
     // Прерванный запрос возвращается пустым ответом без вызовов, и без этой
     // проверки ход заканчивался бы пустотой: ни текста, ни «Остановлено».
-    if (signal.aborted) {
+    if (signal.aborted || !allowsAgent(getRules(options.sessionId).agent, options.role)) {
       stopped = true
       break
     }
@@ -2890,7 +2909,7 @@ async function steps(
     for (const call of answer.calls) {
       // Между шагами, а не внутри: правка, брошенная на середине, — это
       // половина файла, и никакая отмена такого не ждёт.
-      if (signal.aborted) {
+      if (signal.aborted || !allowsAgent(getRules(options.sessionId).agent, options.role)) {
         stopped = true
         break
       }

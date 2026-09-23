@@ -4,13 +4,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { config } from '../config.js'
 import { hostPathOf } from '../competitions/storage.js'
-import { DEPENDENCY_LIMITS } from '@shared/dependencies'
+import { DEPENDENCY_LIMITS, requirementLineCount } from '@shared/dependencies'
 import { DependencyPreparationError } from './preparation-contract.js'
 import type { PreparationRequest, PreparationResult, PreparationProgress } from './preparation-contract.js'
 import { PREPARATION_PROXY_PYTHON, PREPARATION_PYTHON } from './preparation-python.js'
 
 const LABEL = 'ru.colloq.dependency-preparation'
-const scope = createHash('sha256').update(config.dataDir).digest('hex').slice(0, 16)
+const scope = createHash('sha256').update(path.resolve(hostPathOf(config.dataDir))).digest('hex').slice(0, 16)
 const label = `${LABEL}=${scope}`
 const active = new Set<string>()
 const MARKER = '__COLLOQ_DEP__'
@@ -58,7 +58,7 @@ async function checkedDocker(args: string[], signal: AbortSignal): Promise<strin
 }
 
 function profile(name: string, memory: number, tmpBytes: number): string[] {
-  return ['--name', name, '--label', label, '--read-only', '--user=1000:1000', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--cpus=1', `--memory=${memory}`, `--memory-swap=${memory}`, '--ulimit=nofile=1024:1024', '--sysctl=net.ipv6.conf.all.disable_ipv6=1', '--tmpfs', `/tmp:rw,nosuid,nodev,exec,size=${tmpBytes},mode=1777`, '--env', 'HOME=/tmp', '--env', 'PYTHONNOUSERSITE=1', '--env', 'PYTHONDONTWRITEBYTECODE=1', '--env', 'PIP_CONFIG_FILE=/dev/null', '--entrypoint', 'python']
+  return ['--name', name, '--label', label, '--log-driver=local', '--log-opt=max-size=8m', '--log-opt=max-file=2', '--read-only', '--user=1000:1000', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--cpus=1', `--memory=${memory}`, `--memory-swap=${memory}`, '--ulimit=nofile=1024:1024', '--sysctl=net.ipv6.conf.all.disable_ipv6=1', '--tmpfs', `/tmp:rw,nosuid,nodev,exec,size=${tmpBytes},mode=1777`, '--env', 'HOME=/tmp', '--env', 'PYTHONNOUSERSITE=1', '--env', 'PYTHONDONTWRITEBYTECODE=1', '--env', 'PIP_CONFIG_FILE=/dev/null', '--entrypoint', 'python']
 }
 
 function bind(source: string, target: string, readOnly: boolean): string[] {
@@ -86,7 +86,7 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
   if (!/^(?:sha256:[a-f0-9]{64}|[a-zA-Z0-9._/:\-]+@sha256:[a-f0-9]{64})$/.test(request.imageDigest)) {
     throw new DependencyPreparationError('image_unpinned', 'Package preparation requires an immutable base image.')
   }
-  if (Buffer.byteLength(request.requirementsText, 'utf8') > DEPENDENCY_LIMITS.requestBytes || request.requirementsText.split(/\r?\n/).length > DEPENDENCY_LIMITS.lines + 1) {
+  if (Buffer.byteLength(request.requirementsText, 'utf8') > DEPENDENCY_LIMITS.requestBytes || requirementLineCount(request.requirementsText) > DEPENDENCY_LIMITS.lines) {
     throw new DependencyPreparationError('requirements_limit', 'Requirements exceed the allowed size or number of lines.')
   }
   if (![request.maxDownloadBytes, request.maxInstalledBytes].every(value => Number.isSafeInteger(value) && value > 0)
@@ -136,6 +136,7 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
     let verified: Pick<PreparationResult, 'installedBytes' | 'lock'> | undefined
     const run = async (name: string, phase: 'resolve' | 'verify') => {
       let reportedError: DependencyPreparationError | undefined
+      let latestState: PreparationProgress['state'] = phase === 'resolve' ? 'resolving' : 'verifying'
       const args = ['run', '--rm', '--pull=never', ...profile(name, 1536 * MiB, (phase === 'resolve' ? request.maxDownloadBytes : request.maxInstalledBytes) + 96 * MiB), `--network=${phase === 'resolve' ? network : 'none'}`, ...bind(input, '/input', true), ...bind(wheels, '/wheels', phase === 'verify')]
       if (phase === 'resolve') args.push(...proxyEnv, '--env', 'NO_PROXY=', '--env', 'no_proxy=', '--env', 'ALL_PROXY=', '--env', 'all_proxy=')
       args.push(request.imageDigest, '-I', '-u', '-c', PREPARATION_PYTHON, phase)
@@ -143,12 +144,15 @@ export async function prepareDependencies(request: PreparationRequest): Promise<
         if (!line.startsWith(MARKER)) return
         const value = JSON.parse(line.slice(MARKER.length))
         if (value.error) reportedError = new DependencyPreparationError(value.error.code, value.error.message, value.error.line ?? undefined)
-        if (value.state) progress(value)
+        if (value.state) { latestState = value.state; progress(value) }
         if (value.resolved) resolved = value.resolved
         if (value.verified) verified = value.verified
       } })
       if (reportedError) throw reportedError
-      if (result.code !== 0) throw new DependencyPreparationError(result.code === 137 ? 'resource_limit' : 'preparation_failed', result.code === 137 ? 'Package preparation exceeded its memory limit.' : 'The isolated package preparation failed.')
+      if (result.code !== 0) {
+        progress({ state: latestState, log: result.out.slice(-2000) })
+        throw new DependencyPreparationError(result.code === 137 ? 'resource_limit' : 'preparation_failed', result.code === 137 ? 'Package preparation exceeded its memory limit.' : 'The isolated package preparation failed.')
+      }
     }
     await run(resolver, 'resolve')
     if (!resolved) throw new DependencyPreparationError('invalid_output', 'Package resolution produced no manifest.')

@@ -210,7 +210,7 @@ test('в контейнер участника не попадает ни отв
   const mounts = args.filter((arg, i) => args[i - 1] === '-v')
   assert.deepEqual(
     mounts.map((mount) => mount.split(':')[1]),
-    ['/data', '/submission', '/harness', '/result'],
+    ['/data', '/submission', '/harness'],
   )
   for (const mount of mounts) {
     assert.ok(!mount.includes('/secret'), `закрытая половина не монтируется: ${mount}`)
@@ -221,7 +221,7 @@ test('в контейнер участника не попадает ни отв
   assert.ok(mounts[0].endsWith(':ro'))
   assert.ok(mounts[1].endsWith(':ro'))
   assert.ok(mounts[2].endsWith(':ro'))
-  assert.ok(!mounts[3].endsWith(':ro'))
+  assert.ok(mounts.every((mount) => mount.endsWith(':ro')))
 })
 
 test('команда метрики: секреты внутри, открытые данные и тетрадь — нет', () => {
@@ -245,7 +245,7 @@ test('команда метрики: секреты внутри, открыты
   const mounts = args.filter((arg, i) => args[i - 1] === '-v')
   assert.deepEqual(
     mounts.map((mount) => mount.split(':')[1]),
-    ['/secret', '/submission', '/harness', '/out'],
+    ['/secret', '/submission', '/harness'],
   )
   for (const mount of mounts) {
     assert.ok(!mount.includes('/data/competitions/c1/data'), 'открытых данных метрика не видит')
@@ -940,16 +940,17 @@ test('Docker launches both steps with their immutable image binding and excludes
   process.env.COMPETITION_BACKEND = 'docker'
   useCompetitionRunner(null)
   forgetCompetitionRunner()
-  useDockerForCompetitions(async (args) => { commands.push(args); return { code: 1, out: 'launch stopped by test' } })
+  useDockerForCompetitions(async (args) => { commands.push(args); return { code: args[0] === 'rm' ? 0 : 1, out: 'launch stopped by test' } })
   try {
     const actual = competitionRunner()
     const competition = { environment: 'mutable-tag', publicPercent: 30, splitSeed: 's' } as Competition
     await actual.run({ competition, imageDigest: 'sha256:notebook-base', dependenciesDir: '/data/bundle', submissionId: 's', container: 'c-run', dataDir: '/data/open', inputDir: '/data/input', resultDir: '/data/result', limits: LIMITS_SAMPLE })
     await actual.score({ competition, imageDigest: 'sha256:scorer-base', submissionId: 's', container: 'c-score', secretDir: '/data/secret', submissionDir: '/data/answer', outDir: '/data/score', limits: LIMITS_SAMPLE })
-    assert.ok(commands[0].includes('sha256:notebook-base'))
-    assert.ok(commands[0].includes('/data/bundle:/deps:ro'))
-    assert.ok(commands[1].includes('sha256:scorer-base'))
-    assert.ok(!commands[1].some((arg) => arg.includes('/deps') || arg.includes('COMP_DEPENDENCIES')))
+    const launches = commands.filter((args) => args[0] === 'run')
+    assert.ok(launches[0].includes('sha256:notebook-base'))
+    assert.ok(launches[0].includes('/data/bundle:/deps:ro'))
+    assert.ok(launches[1].includes('sha256:scorer-base'))
+    assert.ok(!launches[1].some((arg) => arg.includes('/deps') || arg.includes('COMP_DEPENDENCIES')))
     assert.ok(!commands.flat().some((arg) => arg.includes('mutable-tag')))
   } finally {
     useDockerForCompetitions(null)

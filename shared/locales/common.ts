@@ -1,5 +1,7 @@
+import { operationMessages } from './operations.js'
 import type { MessageCatalog } from '../i18n-types.js'
 export const commonMessages: MessageCatalog = {
+  ...operationMessages,
   'common.environmentDetails': { ru: 'Состав окружения', en: 'Environment details' },
   'common.environmentOpen': { ru: 'Показать состав окружения {name}', en: 'Show installed packages in {name}' },
   'common.environmentLoading': { ru: 'Читаем состав окружения…', en: 'Reading the environment…' },

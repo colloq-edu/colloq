@@ -1,3 +1,4 @@
+import type { CompetitionCapabilities } from './capabilities.js'
 /**
  * Что страницы `/k` спрашивают у сервера и что он отвечает.
  *
@@ -69,6 +70,7 @@ export interface EntrantCompetitionList {
 
 /** Страница одного соревнования: задача, файлы, условия проверки. */
 export interface EntrantCompetitionView {
+  capabilities?: CompetitionCapabilities
   competition: CompetitionPublic
   files: EntrantFile[]
   entrants: number

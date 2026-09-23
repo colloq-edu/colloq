@@ -91,6 +91,7 @@ DATA = Path(os.environ.get("COMP_DATA", "/data"))
 RESULT = Path(os.environ.get("COMP_RESULT", "/result"))
 TARGET = os.environ.get("COMP_TARGET", "submission.csv")
 MAX_OUTPUT = env_int("COMP_MAX_OUTPUT_BYTES", 2_000_000)
+MAX_OUTPUT_KILL = env_int("COMP_MAX_OUTPUT_KILL_BYTES", 64 * 1024 * 1024)
 MAX_TARGET = env_int("COMP_MAX_TARGET_BYTES", 64 * 1024 * 1024)
 # Потолок ОДНОЙ ячейки. Общий срок держит хост: внутренний таймер не переживёт
 # ячейку, захватившую GIL в сишном цикле.
@@ -102,6 +103,7 @@ RUN_JSON = RESULT / "run.json"
 
 def write_json(path: Path, payload: dict) -> None:
     """Запись, переживающая убийство контейнера в следующую миллисекунду."""
+    payload["attemptId"] = os.environ.get("COMP_ATTEMPT_ID", "")
     tmp = path.with_suffix(".tmp")
     with tmp.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False)
@@ -124,6 +126,8 @@ class Runner(NotebookClient):
         self.cell_index = -1
         self.output_bytes = 0
         self.output_truncated = False
+        self._output_beat_at = time.monotonic()
+        self._hard_output_reported = False
         self.started = time.monotonic()
         self.cell_times: list[float] = []
         self._cell_started = 0.0
@@ -171,10 +175,16 @@ class Runner(NotebookClient):
             chunk = "".join(str(v) for v in data.values()) if data else ""
             if not chunk and content.get("evalue"):
                 chunk = str(content["evalue"])
-        self.output_bytes += len(chunk.encode("utf-8", "replace"))
+        if content.get("traceback"):
+            chunk = str(chunk) + "\\n".join(str(line) for line in content["traceback"])
+        self.output_bytes += len(str(chunk).encode("utf-8", "replace"))
         if self.output_bytes > MAX_OUTPUT:
-            if not self.output_truncated:
+            now = time.monotonic()
+            crossed = self.output_bytes > globals().get("MAX_OUTPUT_KILL", 64 * 1024 * 1024) and not self._hard_output_reported
+            if not self.output_truncated or crossed or now - self._output_beat_at >= 0.25:
                 self.output_truncated = True
+                self._hard_output_reported = self._hard_output_reported or crossed
+                self._output_beat_at = now
                 self.beat("truncated")
             return None
         return super().output(outs, msg, display_id, cell_index)
@@ -684,6 +694,7 @@ def main() -> int:
             "teacherOnly": f"{type(exc).__name__}: {exc}\\n{traceback.format_exc()[-4000:]}",
         }
     result["wall"] = round(time.monotonic() - started, 3)
+    result["attemptId"] = os.environ.get("COMP_ATTEMPT_ID", "")
     (OUT / "score.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
     return 0 if result["status"] == "ok" else 1
 
@@ -692,10 +703,64 @@ if __name__ == "__main__":
     sys.exit(main())
 `
 
+// Keep bounded tmpfs alive until the host has collected named artifacts. No
+// participant-writable directory is ever mounted from the host. The host owns
+// the wall timeout and always removes this supervisor, including cancellation.
+const HOLD_EXPORT = `import json, os, subprocess, sys, time
+from pathlib import Path
+directory = Path(sys.argv[1])
+directory.mkdir(parents=True, exist_ok=True)
+child = subprocess.run([sys.executable, sys.argv[2]])
+temporary = directory / ".complete-next"
+temporary.write_text(json.dumps({"attemptId": os.environ["COMP_ATTEMPT_ID"], "exit": child.returncode}))
+os.replace(temporary, directory / ".complete.json")
+while True:
+    time.sleep(60)
+`
+
+// Invoked by docker exec. Open a bounded regular file through a descriptor;
+// never tar or recursively copy attacker-controlled result trees to the host.
+const EXPORT_FILES = `import base64, json, os, stat, sys
+from pathlib import Path
+root = Path(sys.argv[2])
+allowed = {"progress.json": 65536, "run.json": 65536, "score.json": 1048576,
+           ".complete.json": 4096, "submission.csv": int(os.environ.get("COMP_MAX_TARGET_BYTES", 67108864)),
+           "executed.ipynb": 67108864}
+def read(name):
+    maximum = allowed[name]
+    fd = os.open(str(root / name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > maximum:
+            raise ValueError("invalid export")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            body = stream.read(maximum + 1)
+        if len(body) > maximum:
+            raise ValueError("export grew beyond limit")
+        return body
+    finally:
+        os.close(fd)
+if sys.argv[1] == "status":
+    value = {}
+    for key, name in (("progress", "progress.json"), ("complete", ".complete.json")):
+        try:
+            value[key] = json.loads(read(name))
+        except (OSError, ValueError):
+            pass
+    print(json.dumps(value))
+else:
+    name = sys.argv[3]
+    if name not in allowed or name == ".complete.json":
+        raise ValueError("unknown export")
+    sys.stdout.write(base64.b64encode(read(name)).decode("ascii"))
+`
+
 /** Что лежит в каталоге обвязки: имя файла — то, чем его зовут в контейнере. */
 const FILES: ReadonlyArray<readonly [string, string]> = [
   ['run_notebook.py', RUN_NOTEBOOK],
   ['score_metric.py', SCORE_METRIC],
+  ['hold_export.py', HOLD_EXPORT],
+  ['export_files.py', EXPORT_FILES],
   ['colloq_metric.py', COLLOQ_METRIC],
   ['colloq_split.py', COLLOQ_SPLIT],
 ]

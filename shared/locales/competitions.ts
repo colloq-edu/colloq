@@ -173,6 +173,10 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'В зачёт идёт только посылка, дошедшая до числа.',
     en: 'Only a submission that reached a score can be counted.',
   },
+  'competitions.refusal.chooseAutomatic': {
+    ru: 'В этом соревновании зачётная посылка выбирается автоматически.',
+    en: 'This competition selects the counted submission automatically.',
+  },
   'competitions.refusal.chooseClosed': {
     ru: 'Выбор зачётной посылки закрылся вместе с приёмом: после дедлайна его не поменять.',
     en: 'Picking the counted submission closed together with intake: it cannot be changed after the deadline.',
@@ -818,6 +822,10 @@ export const competitionsMessages: MessageCatalog = {
   'competitions.p.colCounted': { ru: 'ПОСЫЛКА В ЗАЧЁТ', en: 'SUBMISSION THAT COUNTS' },
   'competitions.p.countedChosen': { ru: '#{number} · выбор участника', en: '#{number} · participant’s pick' },
   'competitions.p.countedYours': { ru: '#{number} · ваш выбор', en: '#{number} · your pick' },
+  'competitions.p.countedLast': {
+    ru: '#{number} · последняя посылка',
+    en: '#{number} · latest submission',
+  },
   'competitions.p.countedBest': {
     ru: '#{number} · лучший публичный результат',
     en: '#{number} · best public result',

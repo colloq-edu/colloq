@@ -83,6 +83,7 @@ export interface RuntimeHealth {
   defaultMemoryMb?: number
   /** Больше этого брокер комнате не выдаст: потолок оператора или узла. */
   maxMemoryMb?: number
+  recovery?: { rollbackRetries: number; rollbackFailures: number; rollbacksApplied: number }
 }
 export interface RuntimeRoom {
   sessionId: string

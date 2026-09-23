@@ -1,0 +1,35 @@
+name: Browser reconnect smoke
+on:
+  pull_request:
+    paths: ['web/**', 'server/**', 'shared/**', 'tests/browser/**', 'playwright.config.mts', 'package*.json', '.github/workflows/browser-smoke.yml']
+  push:
+    branches: [main]
+    paths: ['web/**', 'server/**', 'shared/**', 'tests/browser/**', 'playwright.config.mts', 'package*.json', '.github/workflows/browser-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: browser-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  reconnect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-reconnect-traces
+          path: test-results/browser
+          retention-days: 7

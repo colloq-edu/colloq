@@ -1,3 +1,4 @@
+import { competitionCapabilities } from './competitions/capabilities.js'
 import {tr} from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, loadRuntimeCatalog, runtimeDefaultEnvironment } from './kernel/runtime-client.js'
 /**
@@ -390,7 +391,7 @@ app.get('/api/health', (_req, res) => {
             ? `The database is unreadable: ${err.message}`
             : 'The database is unreadable'
       }
-      const kernel = await kernelHealth()
+      const [kernel, capabilities] = await Promise.all([kernelHealth(), competitionCapabilities()])
       if (dbOk && !kernel.ok) reason = kernel.reason
 
       let workspaceOk = true
@@ -410,6 +411,7 @@ app.get('/api/health', (_req, res) => {
         ok,
         reason,
         kernel: kernel.ok,
+        capabilities,
         // docker | broker | null — у каждой ли комнаты свой контейнер (roomIsolation).
         isolation: roomIsolation(kernel.ok),
         database: dbOk,

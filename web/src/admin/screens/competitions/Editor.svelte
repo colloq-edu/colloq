@@ -256,6 +256,7 @@
 
   /** Проверка сэмпл-тетради: она идёт в общую очередь настоящей посылкой. */
   async function checkBaseline(): Promise<void> {
+    if (view.capabilities?.execution.available === false) return
     const id = c.id
     const started = await act(() => adminApi.checkCompetitionBaseline(id))
     if (started) await refresh(id)
@@ -263,6 +264,7 @@
 
   /** «Проверить на бейзлайне» — только метрика, тетрадь второй раз не запускается. */
   async function checkMetric(): Promise<void> {
+    if (view.capabilities?.execution.available === false) return
     const id = c.id
     if (!(await save())) return
     const started = await act(() => adminApi.checkCompetitionMetric(id))
@@ -600,7 +602,7 @@
   >
     <div class="flex flex-col gap-2.5">
       {#if view.baseline}
-        {@const b = view.baseline}
+        {@const b = view.baseline.inputsCurrent === false && view.baseline.state === 'scored' ? { ...view.baseline, state: null } : view.baseline}
         <div class="flex flex-wrap items-center gap-3.5 border border-line px-3.5 py-3">
           <Icon name="notebook" size={16} class="shrink-0 text-primary" />
           <div class="min-w-0 flex-1">
@@ -695,11 +697,14 @@
                 {tr('admin.competitions.baselineWaiting')}
               {/if}
             </p>
+            {#if view.capabilities?.execution.available === false}
+              <p class="text-micro text-warning" role="status">{view.capabilities.execution.reason}</p>
+            {/if}
             <button
               type="button"
               class="shrink-0 text-2xs text-accent-text underline decoration-dotted underline-offset-4
                      hover:brightness-110 disabled:text-faint"
-              disabled={busy || baselineInFlight}
+              disabled={busy || baselineInFlight || view.capabilities?.execution.available === false}
               onclick={() => void checkBaseline()}
             >
               {b.state === null
@@ -804,7 +809,7 @@
         <button
           type="button"
           class="btn-outline h-[30px] border-primary px-3 text-micro font-bold text-primary"
-          disabled={busy || !view.baseline}
+          disabled={busy || !view.baseline || view.capabilities?.execution.available === false}
           onclick={() => void checkMetric()}
         >
           {tr('admin.competitions.checkMetric')}
@@ -1013,7 +1018,7 @@
           : tr('admin.save')}
     </button>
     {#if draftState}
-      <button type="button" class="btn-outline" disabled={busy || refusal !== null} onclick={() => void open()}>
+      <button type="button" class="btn-outline" disabled={busy || refusal !== null || view.capabilities?.execution.available === false} onclick={() => void open()}>
         {tr('admin.competitions.openCompetition')}
       </button>
     {/if}
@@ -1069,7 +1074,7 @@
         <button
           type="button"
           class="btn-primary text-micro font-bold uppercase tracking-caps max-[640px]:h-11 max-[640px]:flex-1"
-          disabled={busy || refusal !== null}
+          disabled={busy || refusal !== null || view.capabilities?.execution.available === false}
           title={refusal === null ? undefined : refusalText(refusal)}
           onclick={() => void open()}
         >

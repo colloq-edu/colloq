@@ -127,6 +127,36 @@ interface Binding {
 
 const bindings = new Map<string, Binding>()
 
+/** Process-lifetime counters; never retain a room identifier or exception. */
+let saveFailures = 0
+let lastFailureAt: number | null = null
+
+function recordSaveFailure(): void {
+  saveFailures = Math.min(Number.MAX_SAFE_INTEGER, saveFailures + 1)
+  lastFailureAt = Date.now()
+}
+
+export interface PersistenceDiagnostics {
+  documents: number
+  dirtyDocuments: number
+  oldestUnsavedMs: number
+  saveFailures: number
+  lastFailureAt: number | null
+}
+
+/** Aggregate pending durability, suitable for operator status without document data. */
+export function persistenceDiagnostics(): PersistenceDiagnostics {
+  const now = Date.now()
+  let dirtyDocuments = 0
+  let oldestUnsavedMs = 0
+  for (const binding of bindings.values()) {
+    if (binding.dirtySince === 0) continue
+    dirtyDocuments += 1
+    oldestUnsavedMs = Math.max(oldestUnsavedMs, now - binding.dirtySince)
+  }
+  return { documents: bindings.size, dirtyDocuments, oldestUnsavedMs, saveFailures, lastFailureAt }
+}
+
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
@@ -270,6 +300,7 @@ function settle(binding: Binding): void {
     try {
       full(binding, Y.encodeStateVector(binding.doc))
     } catch (err) {
+      recordSaveFailure()
       console.error(`[persistence] snapshot on settle failed for ${binding.sessionId}`, err)
     }
   }, SETTLE_MS)
@@ -288,6 +319,7 @@ function write(binding: Binding, force = false): void {
       try {
         full(binding, Y.encodeStateVector(binding.doc))
       } catch (err) {
+        recordSaveFailure()
         console.error(`[persistence] snapshot failed for ${binding.sessionId}`, err)
       }
     }
@@ -375,6 +407,9 @@ function write(binding: Binding, force = false): void {
       }
     }
   } catch (err) {
+    // Tail writes return false to this same boundary: count the failed save
+    // once, regardless of whether persistence selected a snapshot or a tail.
+    recordSaveFailure()
     // Losing a snapshot must not take the live session down with it.
     console.error(`[persistence] snapshot failed for ${binding.sessionId}`, err)
     // Документ остался грязным — значит, будет и повтор. Только пока привязка

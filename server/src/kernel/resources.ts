@@ -22,10 +22,11 @@ import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { db, sessionMemoryMb } from '../db.js'
 import { listNames, needsGpu } from '../environments.js'
-import { containerLimits, defaultCpus, defaultMemoryMb, dockerRead, listRoomKernels, memoryLimitMb } from './pool.js'
+import { containerLimits, defaultCpus, defaultMemoryMb, dockerRead, roomContainers, memoryLimitMb, ownLimits } from './pool.js'
 import { kernelBackend, kernelRuntimeClient } from './runtime-client.js'
 import type { GpuCard, InstanceResources, RoomResource } from '@shared/admin'
 import type { RuntimeRoom } from '@shared/runtime'
+import { observeWorkMemory, workBudgetSnapshot } from '../ops/work-budget.js'
 
 const MB = 1024 * 1024
 
@@ -339,9 +340,12 @@ interface RoomRow {
 const selectRooms = db.prepare(
   'SELECT id, name, environment, memory_mb, cpus FROM sessions ORDER BY created_at DESC LIMIT 200',
 )
+const selectRoom = db.prepare('SELECT id, name, environment, memory_mb, cpus FROM sessions WHERE id = ?')
 
-async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promise<RoomResource[]> {
+async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promise<{ rows: RoomResource[]; takenMb: number; takenCpus: number; memoryBySlot: Map<string, number>; complete: boolean }> {
   let alive: Set<string>
+  let complete = true
+  const memoryBySlot = new Map<string, number>()
   /*
    * У кого из занятий есть ВТОРОЙ контейнер — тот, где живут личные тетради.
    *
@@ -350,22 +354,38 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
    * контейнера нет». Под брокером второго контейнера не бывает вовсе.
    */
   let withOwn = new Set<string>()
+  let runningRoom = new Set<string>()
+  let runningOwn = new Set<string>()
+  const runtimeById = new Map(runtimeRooms?.map((room) => [room.sessionId, room]))
   try {
     if (runtimeRooms) {
       alive = new Set(runtimeRooms.filter((room) => room.phase === 'ready' || room.phase === 'pending').map((room) => room.sessionId))
     } else {
-      const census = await listRoomKernels()
+      const census = kernelBackend() === 'docker' ? await roomContainers({ strict: true }) : []
       alive = new Set(census.filter((r) => r.running).map((r) => r.session))
-      withOwn = new Set(census.filter((r) => r.own).map((r) => r.session))
+      withOwn = new Set(census.filter((r) => r.role === 'own').map((r) => r.session))
+      runningRoom = new Set(census.filter((r) => r.running && r.role === 'room').map((r) => r.session))
+      runningOwn = new Set(census.filter((r) => r.running && r.role === 'own').map((r) => r.session))
+      for (const room of census) if (room.stopped) {
+        memoryBySlot.set(room.role === 'own' ? `${room.session}#own` : room.session, 0)
+      }
     }
   } catch {
     alive = new Set()
+    complete = false
   }
-  const rows = selectRooms.all() as RoomRow[]
-  const interesting = rows
+  const rows = new Map((selectRooms.all() as RoomRow[]).map((row) => [row.id, row]))
+  // Census is authoritative. Neither the DB display window nor an absent DB
+  // row can erase resources a running workload still holds.
+  for (const id of alive) if (!rows.has(id)) {
+    const observed = runtimeById.get(id)
+    rows.set(id, selectRoom.get(id) as RoomRow | undefined ?? {
+      id, name: id, environment: observed?.environment ?? null, memory_mb: null, cpus: null,
+    })
+  }
+  const interesting = [...rows.values()]
     .filter((row) => alive.has(row.id) || row.memory_mb !== null || row.cpus !== null)
-    .slice(0, 50)
-  return Promise.all(
+  const allocations = await Promise.all(
     interesting.map(async (row) => {
       const settledMb = row.memory_mb ?? envDefaultMb(row.environment)
       const settledCpus = row.cpus ?? instanceCpus
@@ -378,8 +398,8 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
        */
       // Под брокером то же правило: перепись комнат отдаёт память из status
       // Pod — то, что kubelet выставил, а не то, что записано в spec.
-      const census = runtimeRooms?.find((room) => room.sessionId === row.id)
-      const real = alive.has(row.id) && kernelBackend() === 'docker'
+      const census = runtimeById.get(row.id)
+      const real = runningRoom.has(row.id) && kernelBackend() === 'docker'
         ? await containerLimits(row.id).catch(() => ({ memoryMb: null, cpus: null }))
         : { memoryMb: census?.memoryMb ?? null, cpus: census?.cpus ?? null }
       /*
@@ -393,6 +413,9 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
       const own = withOwn.has(row.id)
         ? await containerLimits(row.id, 'own').catch(() => ({ memoryMb: null, cpus: null }))
         : null
+      if (kernelBackend() === 'docker' && ((runningRoom.has(row.id) && real.memoryMb === null)
+        || (runningOwn.has(row.id) && own?.memoryMb == null))) complete = false
+      const ownDefaults = own ? ownLimits(row.id) : null
       return {
         id: row.id,
         name: row.name,
@@ -400,10 +423,24 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
         cpus: real.cpus ?? settledCpus,
         environment: row.environment,
         alive: alive.has(row.id),
-        ...(own ? { own: { memoryMb: own.memoryMb ?? settledMb, cpus: own.cpus ?? settledCpus } } : {}),
+        ...(own ? { own: { memoryMb: own.memoryMb ?? ownDefaults?.memoryMb ?? settledMb, cpus: own.cpus ?? ownDefaults?.cpus ?? settledCpus } } : {}),
       }
     }),
   )
+  let takenMb = 0, takenCpus = 0
+  for (const room of allocations) {
+    if (runtimeRooms ? room.alive : runningRoom.has(room.id)) {
+      takenMb += room.memoryMb
+      takenCpus += room.cpus
+      memoryBySlot.set(room.id, room.memoryMb)
+    }
+    if (runningOwn.has(room.id) && room.own) {
+      takenMb += room.own.memoryMb
+      takenCpus += room.own.cpus
+      memoryBySlot.set(`${room.id}#own`, room.own.memoryMb)
+    }
+  }
+  return { rows: allocations.slice(0, 50), takenMb, takenCpus, memoryBySlot, complete }
 }
 
 /* ------------------------------------------------------------------ сбор */
@@ -417,6 +454,7 @@ async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promis
  * разработчика: `nvidia-smi` там нет, и «Ресурсы» рисовались бы наполовину.
  */
 async function collect(): Promise<Collected> {
+  const censusStartedAt = process.hrtime.bigint()
   const fake = kernelBackend() === 'test'
   let instanceCpus = defaultCpus()
   let runtimeRooms: RuntimeRoom[] | undefined
@@ -433,9 +471,9 @@ async function collect(): Promise<Collected> {
   for (const name of safeNames()) {
     perEnvironment[name] = { memoryMb: envDefaultMb(name), gpu: safeGpu(name) }
   }
-  const roomList = await rooms(instanceCpus, runtimeRooms)
+  const allocation = await rooms(instanceCpus, runtimeRooms)
   // Живая комната свою память уже держит — раздать её второй раз нельзя.
-  const takenMb = roomList.reduce((sum, room) => (room.alive ? sum + room.memoryMb : sum), 0)
+  const takenMb = allocation.takenMb
   const daemon = await readDaemon()
   const picture = memoryPicture({
     daemonTotalMb: daemon?.totalMb ?? null,
@@ -452,15 +490,20 @@ async function collect(): Promise<Collected> {
    * не встанет — ровно то, о чём должно предупредить поле. Меньшее из двух:
    * обещанное мимо нас (сам кластер, приложение) MemAvailable тоже заметит.
    */
-  if (kernelBackend() === 'broker') {
+  if (kernelBackend() !== 'test') {
     const unpromised = Math.max(0, picture.totalMb - HOST_RESERVE_MB - takenMb)
     picture.availableMb = Math.min(picture.availableMb ?? unpromised, unpromised)
   }
   const brokerMb = kernelBackend() === 'broker' ? brokerDefaultMb() : null
+  const gpus = fake ? [{ index: 0, name: 'NVIDIA GeForce RTX 3090', memoryMb: 24_576 }] : await readGpus()
+  // An outage is not an empty machine. Keep admission closed until every
+  // running allocation can be counted; the UI may still show fallback rows.
+  if (!allocation.complete && kernelBackend() === 'docker') picture.availableMb = 0
+  observeWorkMemory(allocation.complete ? allocation.memoryBySlot : null, censusStartedAt)
   return {
     memory: fake ? { totalMb: 73_728, availableMb: 51_200, source: 'host' as const } : picture,
     cpus: fake ? 16 : machineCpus(),
-    gpus: fake ? [{ index: 0, name: 'NVIDIA GeForce RTX 3090', memoryMb: 24_576 }] : await readGpus(),
+    gpus,
     kernel: {
       defaultMemoryMb: brokerMb ?? defaultMemoryMb(false),
       // У брокера нет отдельного умолчания для GPU: Pod с картой получает то же.
@@ -470,7 +513,7 @@ async function collect(): Promise<Collected> {
       defaultCpus: instanceCpus,
       perEnvironment,
     },
-    rooms: roomList,
+    rooms: allocation.rows,
   }
 }
 
@@ -522,8 +565,14 @@ const TTL_MS = 10_000
 let cached: { at: number; value: Collected } | null = null
 let inflight: Promise<Collected> | null = null
 
-export function machineResources(): Promise<Collected> {
-  if (cached && Date.now() - cached.at < TTL_MS) return Promise.resolve(cached.value)
+export async function machineResources(options: { fresh?: boolean; beforeReservations?: boolean } = {}): Promise<Collected> {
+  if (options.fresh) cached = null
+  const display = (value: Collected): Collected => options.beforeReservations ? value : {
+    ...value,
+    memory: { ...value.memory, availableMb: value.memory.availableMb === null ? null : Math.max(0, value.memory.availableMb - workBudgetSnapshot().memoryMb) },
+  }
+  // Reservation changes must be visible immediately even while census is cached.
+  if (cached && Date.now() - cached.at < TTL_MS) return display(cached.value)
   // Один сбор на всех, кто спросил, пока он идёт: иначе десять вкладок панели
   // запускают десять `nvidia-smi` в одну секунду — ровно то, от чего кеш.
   inflight ??= collect()
@@ -534,7 +583,7 @@ export function machineResources(): Promise<Collected> {
     .finally(() => {
       inflight = null
     })
-  return inflight
+  return display(await inflight)
 }
 
 /** Забыть собранное — после того, как комнате поменяли лимит. Вместе с демоном:

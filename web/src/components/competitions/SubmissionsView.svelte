@@ -9,7 +9,7 @@
    * неизменную таблицу, чтобы посмотреть на свой таймер.
    */
   import { tr } from '@shared/i18n'
-  import { compareScores, type EntrantSubmission } from '@shared/competitions'
+  import { countedSubmission, compareScores, type EntrantSubmission } from '@shared/competitions'
   import type {
     EntrantBoardLine,
     EntrantCompetitionView,
@@ -74,6 +74,8 @@
    * choose), а кнопка обязана исчезнуть раньше отказа — предлагать действие,
    * которое сервер не выполнит, хуже, чем не предлагать его вовсе.
    */
+  const canChoose = $derived(view.competition.scoring === 'chosen')
+  const counted = $derived(countedSubmission(view.competition.scoring, mine.submissions.map((s) => ({ ...s, privateScore: s.privateScore ?? null })), view.competition.metric.direction)?.id ?? null)
   const frozen = $derived(mine.accepting !== 'open')
   const limitMs = $derived(view.competition.limits.wallSeconds * 1000)
 
@@ -136,7 +138,7 @@
         <h2 class="text-[20px] font-black leading-6 tracking-[-0.01em] text-ink">
           {tr('competitions.p.mine')}
         </h2>
-        {#if !phone && !frozen}
+        {#if !phone && canChoose && !frozen}
           <p class="whitespace-pre-line text-right text-2xs leading-[18px] text-muted">
             {tr('competitions.p.chooseHint')}
           </p>
@@ -154,6 +156,8 @@
             dependenciesSlug={view.competition.slug}
             live={liveFor(submission.id)}
             best={submission.id === best}
+            counted={submission.id === counted}
+            {canChoose}
             paused={mine.paused}
             {now}
             {busy}
@@ -169,6 +173,8 @@
             dependenciesSlug={view.competition.slug}
             live={liveFor(submission.id)}
             best={submission.id === best}
+            counted={submission.id === counted}
+            {canChoose}
             paused={mine.paused}
             {now}
             {busy}

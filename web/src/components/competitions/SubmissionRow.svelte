@@ -28,6 +28,8 @@
     submission: EntrantSubmission
     live: SubmissionLive | null
     best: boolean
+    counted?: boolean
+    canChoose?: boolean
     paused: boolean
     now: number
     busy: boolean
@@ -41,7 +43,7 @@
     onchoose: (id: string) => void
   }
 
-  const { submission, live, best, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
+  const { submission, live, best, counted = submission.chosen, canChoose = true, paused, now, busy, limitMs, notebookUrl, dependenciesSlug, frozen, oncancel, onchoose }: Props =
     $props()
 
   let open = $state(false)
@@ -95,7 +97,7 @@
 </script>
 
 <div
-  class="flex flex-col gap-3 border-b border-line py-4 {submission.chosen
+  class="flex flex-col gap-3 border-b border-line py-4 {counted
     ? 'bg-[#F2FAF7] dark:bg-positive/10'
     : ''}"
   data-submission={submission.number}
@@ -141,14 +143,14 @@
         >
           {tr('competitions.p.cancelRun')}
         </button>
-      {:else if submission.chosen}
+      {:else if counted}
         <span class="flex items-center gap-1.5 bg-positive px-[9px] py-1 text-white dark:text-canvas">
           <svg width="10" height="8" viewBox="0 0 10 8" aria-hidden="true">
             <path d="M1 4l2.75 2.75L9 1.25" fill="none" stroke="currentColor" stroke-width="1.6" />
           </svg>
           <span class="text-micro font-bold leading-4">{tr('competitions.counted')}</span>
         </span>
-      {:else if submission.state === 'scored' && !frozen}
+      {:else if submission.state === 'scored' && canChoose && !frozen}
         <button
           class="text-2xs leading-4 text-accent-text hover:underline disabled:text-faint"
           type="button"

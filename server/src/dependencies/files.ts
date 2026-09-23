@@ -43,6 +43,9 @@ function regular(file:string):fs.Stats {
 }
 export async function publishBundle(key:string,result:PreparationResult):Promise<void> {
   ensureDependencyStorage()
+  // The downloaded source and CAS copy coexist until publication completes.
+  const free=freeDependencyBytes()
+  if(free!==null&&free<result.downloadBytes+64*1024*1024)throw new DependencyPreparationError('disk_full','Insufficient storage to publish packages')
   const destination=bundleDir(key)
   if(fs.existsSync(destination))throw new Error('Dependency bundle is immutable')
   const stage=stagingDir(key)
@@ -100,3 +103,22 @@ export function freeDependencyBytes():number|null {
   ensureDependencyStorage()
   try { const stat=fs.statfsSync(dependencyRoot);return Number(stat.bavail)*Number(stat.bsize) }catch{return null}
 }
+
+/** A SQL cascade or interrupted cleanup may remove bundle rows before their
+ * hardlinked wheels. Do not follow symlinks; fresh publication has a grace. */
+export function reconcileBundles(knownIds: ReadonlySet<string>, before = Date.now() - 3600000): number {
+  ensureDependencyStorage()
+  let removed = 0
+  for (const name of fs.readdirSync(path.join(dependencyRoot, 'bundles'))) {
+    if (!/^[a-f0-9]{32}$/.test(name) || knownIds.has(name)) continue
+    const target = bundleDir(name)
+    const stat = fs.lstatSync(target)
+    if (stat.mtimeMs >= before) continue
+    fs.rmSync(target, { recursive: stat.isDirectory() && !stat.isSymbolicLink(), force: true })
+    removed++
+  }
+  return removed
+}
+
+/** Source wheels + CAS copy + bounded metadata/publication headroom. */
+export function preparationPeakBytes(downloadBytes:number):number{return 2*downloadBytes+256*1024*1024}

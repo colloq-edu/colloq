@@ -413,7 +413,7 @@ export function fileRoutes(): Router {
        * The temp name starts with a dot, so a half-finished upload never shows
        * up in the room's file list.
        */
-      const tmp = `${folder}/.${name}.uploading-${randomBytes(6).toString('hex')}`
+      const tmp = `${folder}/.colloq.uploading-${randomBytes(6).toString('hex')}`
       temps.add(tmp)
       let out: fs.WriteStream
       try { out = workspaceFs.createWriteStream(tmp, { flags: 'wx' }) }

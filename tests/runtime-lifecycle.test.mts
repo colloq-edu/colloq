@@ -504,6 +504,7 @@ test('readiness checks API permissions and catalog without claiming that a room 
     // числами брокера, а не docker-пути, которых Pod не получает.
     defaultMemoryMb: 2048,
     maxMemoryMb: 262144,
+    recovery: { rollbackRetries: 0, rollbackFailures: 0, rollbacksApplied: 0 },
   })
   assert.equal(kube.creates.length, 0)
   kube.failure = 403

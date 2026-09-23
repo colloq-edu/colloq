@@ -126,3 +126,29 @@ test('«стоп» с целью и «стоп» без цели — два ра
   enqueueControl(queue, { t: 'interrupt', cellId: 'c1' })
   assert.equal(queue.length, 2, 'повтор одного и того же нажатия удвоился')
 })
+
+test('offline state snapshots persist the final A after A → B → A', () => {
+  for (const t of ['council:draft', 'notes:set']) {
+    const queue: any[] = []
+    for (const text of ['A', 'B', 'A']) enqueueControl(queue, t === 'council:draft'
+      ? { t, cellId: 'cell', text }
+      : { t, file: 'slides.pdf', page: 1, text })
+    assert.deepEqual(queue.map((message) => message.text), ['A'])
+  }
+})
+
+test('offline state coalescing preserves independent resources and command barriers', () => {
+  const queue: any[] = []
+  enqueueControl(queue, { t: 'council:draft', cellId: 'a', text: 'before' })
+  enqueueControl(queue, { t: 'council:draft', cellId: 'b', text: 'other' })
+  enqueueControl(queue, { t: 'council:submit', cellId: 'a' })
+  enqueueControl(queue, { t: 'council:draft', cellId: 'a', text: 'after' })
+  enqueueControl(queue, { t: 'council:submit', cellId: 'a' })
+  assert.deepEqual(queue.map((message) => message.text ?? message.t), [
+    'before', 'other', 'council:submit', 'after', 'council:submit',
+  ])
+  enqueueControl(queue, { t: 'notes:set', file: 'slides.pdf', page: 1, text: 'one' })
+  enqueueControl(queue, { t: 'notes:set', file: 'slides.pdf', page: 2, text: 'two' })
+  enqueueControl(queue, { t: 'notes:set', file: 'slides.pdf', page: 1, text: 'latest' })
+  assert.deepEqual(queue.slice(-2).map((message) => [message.page, message.text]), [[2, 'two'], [1, 'latest']])
+})

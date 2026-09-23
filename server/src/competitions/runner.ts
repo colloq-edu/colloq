@@ -21,6 +21,10 @@
  */
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
+import fs from 'node:fs'
+import { reserveWork, workBudgetSnapshot } from '../ops/work-budget.js'
+import { competitionCapabilities } from './capabilities.js'
+import { submissionUsesCurrentBase, type AttemptProvenance } from './provenance.js'
 import { tr } from '@shared/i18n'
 import '../admin/settings.js'
 import { db } from '../db.js'
@@ -30,11 +34,14 @@ import {
   BOOT,
   enqueue,
   finishRun,
+  finishQueueAttempt,
+  ownsQueueAttempt,
   getCompetition,
   getSubmission,
   leaveQueue,
   listSubmissions,
   noteQueueContainer,
+  nextQueueRow,
   orphanedRuns,
   queuePaused,
   queueRow,
@@ -50,21 +57,21 @@ import {
 } from './store.js'
 import {
   competitionsFs,
-  dropScoreDirs,
-  freshScoreDir,
-  freshScoreOutDir,
+  competitionsDir,
+  copyCompetitionFile,
+  attemptDir,
+  dropAttempt,
+  promoteAttempt,
+  publishAttemptArtifacts,
   inputDir,
   NOTEBOOK_FILE,
   openDir,
-  readResultFile,
   resultDir,
-  scoreDir,
   secretDir,
-  putSecretFile,
   SOLUTION_FILE,
   SUBMISSION_FILE,
 } from './storage.js'
-import { METRIC_NAME } from './docker-runner.js'
+import { METRIC_NAME, competitionDockerDiagnostics } from './docker-runner.js'
 import {
   competitionBackend,
   competitionRunner,
@@ -171,14 +178,6 @@ export function enoughMemory(availableMb: number | null, needMb: number): boolea
 }
 
 /**
- * Сколько памяти нужно самой тяжёлой из ждущих работ.
- *
- * Именно самой тяжёлой, а не следующей по очереди, и это не осторожность, а
- * честность очереди: пропустив вперёд лёгкую посылку, потому что тяжёлая не
- * помещается, насос сломал бы тот самый порядок, который обещан подписью
- * «третья в очереди». Пусть лучше очередь подождёт освободившейся памяти.
- */
-/**
  * Дать контейнеру прочитать то, что мы ему смонтировали.
  *
  * Файлы соревнования пишутся режимом 0600 — правильно для каталога внутри
@@ -206,33 +205,21 @@ function letContainerRead(dir: string): void {
   }
 }
 
-/** И записать: в `/result` и в каталог ответа метрики пишет контейнер, а не мы. */
-function letContainerWrite(dir: string): void {
-  try {
-    competitionsFs.chmodSync(dir, 0o777)
-  } catch {
-    /* см. выше */
-  }
-}
-
-function pendingNeedMb(): number {
-  let need = 0
-  for (const row of queueRows()) {
-    if (row.state !== 'waiting') continue
-    const competition = getCompetition(row.competitionId)
-    // Соревнования уже нет, а строка в очереди есть: работа снимется сама, и
-    // памяти ей не нужно ни мегабайта.
-    if (!competition) continue
-    // Пересчёт метрики тяжёлым не бывает: у неё свои два гигабайта.
-    need = Math.max(need, limitsFor(competition, row.kind).memoryMb)
-  }
-  return need
-}
-
 /* ------------------------------------------------------------------ насос */
 
 /** Идущие в ЭТОМ процессе работы: по ним видно, кого ещё ждать при остановке. */
 const inFlight = new Map<string, Promise<void>>()
+const aborters = new Map<string, AbortController>()
+const diagnostics = { started: 0, completed: 0, cancelled: 0, recovered: 0, cleanupFailures: 0 }
+function count(key: keyof typeof diagnostics) { diagnostics[key] = Math.min(Number.MAX_SAFE_INTEGER, diagnostics[key] + 1) }
+export function competitionExecutionDiagnostics() {
+  const docker = competitionDockerDiagnostics()
+  return { started: diagnostics.started, completed: diagnostics.completed, retries: diagnostics.recovered,
+    cancellations: diagnostics.cancelled, cleanupFailures: diagnostics.cleanupFailures + docker.cleanupFailures,
+    pendingContainerCleanup: docker.pendingCleanup,
+    unverifiedLegacyContainers: docker.unverifiedLegacyContainers,
+    activeAttemptIds: [...inFlight.keys()].slice(0, MAX_SLOTS) }
+}
 
 /** Посылки, которые велели снять. Читается прогоном в конце, а не в начале. */
 const cancelled = new Map<string, 'entrant' | 'teacher'>()
@@ -257,23 +244,38 @@ export async function pumpOnce(): Promise<number> {
     const slots = queueSlots()
     if (runningRows().length >= slots) return 0
     if (waitingCount() === 0) return 0
-    const need = pendingNeedMb()
+    if (!(await competitionCapabilities()).execution.available) return 0
     const { availableMb } = await competitionRunner().capacity()
-    if (!enoughMemory(availableMb, need)) {
-      warnOnce(
-        `[competitions] на машине свободно ${availableMb} МБ, посылке нужно ${need} — очередь ждёт`,
-      )
-      return 0
-    }
-    forgetWarning()
+    let availableDiskBytes: number | null = null
+    try { const disk = fs.statfsSync(competitionsDir); availableDiskBytes = disk.bavail * disk.bsize } catch { /* unknown capacity */ }
     for (;;) {
+      if (runningRows().length >= slots) break
+      const candidate = nextQueueRow()
+      if (!candidate) break
+      const competition = getCompetition(candidate.competitionId)
+      const need = competition ? Math.max(limitsFor(competition, candidate.kind).memoryMb, limitsFor(competition, 'metric').memoryMb) : 0
+      let secretBytes = 0
+      try { secretBytes = competitionsFs.statSync(path.join(secretDir(candidate.competitionId), SOLUTION_FILE)).size } catch { /* no solution */ }
+      const release = reserveWork({ id: `competition:${newToken()}`, kind: 'competition', memoryMb: need + RUN_RESERVE_MB,
+        diskBytes: LIMITS.submissionBytes * 4 + secretBytes }, { availableMemoryMb: availableMb, availableDiskBytes })
+      if (!release) {
+        warnOnce(`[competitions] resource reservations leave insufficient capacity for ${candidate.submissionId}`)
+        break
+      }
+      forgetWarning()
       const row = takeNext({ boot: BOOT, slots })
-      if (!row) break
+      if (!row) { release(); break }
       started++
+      const attemptId = row.attemptId!
+      count('started')
+      aborters.set(attemptId, new AbortController())
       const job = runJob(row).finally(() => {
-        inFlight.delete(row.submissionId)
+        release()
+        inFlight.delete(attemptId)
+        aborters.delete(attemptId)
+        count('completed')
       })
-      inFlight.set(row.submissionId, job)
+      inFlight.set(attemptId, job)
     }
   } finally {
     pumping = false
@@ -363,13 +365,16 @@ export async function reclaimCompetitionQueue(): Promise<{
   abandoned: number
   swept: number
 }> {
+  if (!(await competitionCapabilities()).execution.available) return { requeued: 0, abandoned: 0, swept: 0 }
   const orphans = orphanedRuns(BOOT)
   const { requeued, abandoned } = reclaimQueue(BOOT)
   const runner = competitionRunner()
   for (const row of orphans) {
-    if (row.container) await runner.kill(row.container).catch(() => undefined)
+    // Docker verifies recorded legacy ownership inside sweep before stopping it.
+    if (row.container && runner.backend !== 'docker') await runner.kill(row.container).catch(() => undefined)
   }
   for (const row of requeued) {
+    count('recovered')
     /*
      * Строка посылки осталась «выполняется» — она о перезапуске не знает. Без
      * этой правки участник до следующего подъёма работы смотрел бы на таймер,
@@ -377,7 +382,11 @@ export async function reclaimCompetitionQueue(): Promise<{
      */
     updateSubmission(row.submissionId, { state: 'queued', stage: 'queue' })
   }
-  const swept = await runner.sweep().catch(() => 0)
+  const swept = await runner.sweep(orphans.flatMap((row) => row.container ? [row.container] : [])).catch(() => 0)
+  for (const row of orphans) if (row.attemptId) {
+    try { dropAttempt(row.competitionId, row.submissionId, row.attemptId) }
+    catch { count('cleanupFailures'); console.warn('[competitions] orphan attempt cleanup failed', row.attemptId) }
+  }
   if (requeued.length || abandoned.length || swept) {
     console.log(
       `[competitions] после перезапуска: поднято ${requeued.length}, брошено ${abandoned.length}, снято контейнеров ${swept}`,
@@ -394,12 +403,17 @@ async function runJob(row: QueueRow): Promise<void> {
   if (!submission || !competition) {
     // Соревнование удалили, пока посылка ждала: снимать нечего, и держать
     // строку в очереди незачем.
-    leaveQueue(row.submissionId)
+    finishQueueAttempt(row)
     return
   }
   try {
-    if (row.kind === 'metric') await scoreOnly(competition, submission)
-    else await runNotebookThenScore(competition, submission)
+    if (!ownsQueueAttempt(row)) return
+    const provenance: AttemptProvenance = submissionUsesCurrentBase(competition, submission.id)
+      ? { inputRevision: competition.inputRevision ?? 0, notebookInputRevision: competition.notebookInputRevision ?? 0 }
+      : { inputRevision: null, notebookInputRevision: null }
+    snapshotSecrets(competition, submission, row)
+    if (row.kind === 'metric') await scoreOnly(competition, submission, row, provenance)
+    else await runNotebookThenScore(competition, submission, row, provenance)
   } catch (err) {
     /*
      * Сюда попадает только наша собственная поломка — не падение тетради и не
@@ -407,27 +421,27 @@ async function runJob(row: QueueRow): Promise<void> {
      * слово `metricFailed` выбрано именно поэтому: он прочтёт «проверяющий код
      * упал, посылка будет пересчитана», а не обвинение своей тетради.
      */
-    console.error('[competitions] прогон сорвался', err)
-    updateSubmission(submission.id, {
+    console.error('[competitions] attempt failed', { attemptId: row.attemptId, submissionId: submission.id, inputRevision: competition.inputRevision }, err)
+    if (ownsQueueAttempt(row)) updateSubmission(submission.id, {
       state: 'metricFailed',
       teacherError: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
     })
   } finally {
-    leaveQueue(row.submissionId)
-    cancelled.delete(row.submissionId)
+    if (finishQueueAttempt(row)) cancelled.delete(row.submissionId)
+    try { dropAttempt(competition.id, submission.id, row.attemptId!) } catch { count('cleanupFailures'); console.warn('[competitions] attempt cleanup failed', row.attemptId) }
   }
 }
 
 /** Шаг первый и, если он удался, шаг второй. */
-async function runNotebookThenScore(competition: Competition, submission: Submission): Promise<void> {
+async function runNotebookThenScore(competition: Competition, submission: Submission, row: QueueRow, provenance: AttemptProvenance): Promise<void> {
   const runner = competitionRunner()
   const binding = getBinding(submission.id)
   const limits = limitsFor(competition, 'notebook')
   const container = containerName(submission.id, 'notebook', newToken())
-  const run = startRun({ submissionId: submission.id, kind: 'notebook', container })
+  const run = startRun({ submissionId: submission.id, kind: 'notebook', container, attemptId: row.attemptId!, inputRevision: provenance.inputRevision ?? undefined })
   // Имя ложится и в строку очереди: контейнер переживает процесс, который его
   // запустил, и снимать его после перезапуска будет уже другая жизнь сервера.
-  noteQueueContainer(submission.id, container)
+  noteQueueContainer(submission.id, container, row.attemptId!)
   updateSubmission(submission.id, {
     state: 'running',
     stage: binding?.bundle ? 'dependencies' : 'notebook',
@@ -438,11 +452,10 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
 
   const data = openDir(competition.id)
   const input = inputDir(competition.id, submission.id)
-  const result = resultDir(competition.id, submission.id)
+  const result = attemptDir(competition.id, submission.id, row.attemptId!)
   if (runner.backend === 'docker') {
     letContainerRead(data)
     letContainerRead(input)
-    letContainerWrite(result)
   }
 
   let dependenciesDir: string | undefined
@@ -458,7 +471,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     } catch (error) { preflightError = error }
   }
   // Hashing a large set yields to cancellation before any container exists.
-  if (takeCancellation(submission.id, 0)) {
+  if (!ownsQueueAttempt(row) || takeCancellation(submission.id, 0)) {
     finishRun(run.id, { finishedAt: Date.now(), verdict: 'exit', cellsDone: 0, cellsTotal: 0,
       teacherError: 'Cancelled before container start' })
     return
@@ -472,12 +485,15 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     dependenciesDir,
     competition,
     submissionId: submission.id,
+    attemptId: row.attemptId!,
+    signal: aborters.get(row.attemptId!)?.signal,
     container,
     dataDir: data,
     inputDir: input,
     resultDir: result,
     limits,
     onProgress: (progress) => {
+      if (!ownsQueueAttempt(row)) return
       updateSubmission(submission.id, {
         stage: progress.phase === 'dependencies' ? 'dependencies' : 'notebook',
         cellsDone: progress.cell + 1,
@@ -496,7 +512,8 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     teacherError: teacherNote(outcome),
   })
 
-  if (takeCancellation(submission.id, outcome.wall)) return
+  if (!ownsQueueAttempt(row) || takeCancellation(submission.id, outcome.wall)) return
+  publishAttemptArtifacts(competition.id, submission.id, result)
   if (outcome.status !== 'ok') {
     updateSubmission(submission.id, {
       state: stateOfVerdict('notebook', outcome.status),
@@ -521,7 +538,7 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     cellsDone: outcome.cell + 1,
     cellsTotal: outcome.cells,
   })
-  const answer = readAnswer(competition.id, submission.id)
+  const answer = readAnswer(competition.id, submission.id, result)
   if (typeof answer === 'string') {
     updateSubmission(submission.id, {
       state: 'rejected',
@@ -531,7 +548,9 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
     })
     return
   }
-  await scoreStep(competition, submission, answer, outcome.wall, outcome)
+  updateSubmission(submission.id, { notebookInputRevision: provenance.notebookInputRevision })
+  promoteAttempt(competition.id, submission.id, result, answer)
+  await scoreStep(competition, submission, answer, outcome.wall, outcome, row, provenance)
 }
 
 /**
@@ -541,8 +560,8 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
  * мегабайт» — это два разных разговора, и участник, прочитавший первое вместо
  * второго, пойдёт искать ошибку не там.
  */
-function readAnswer(competitionId: string, submissionId: string): Buffer | string {
-  const file = path.join(resultDir(competitionId, submissionId), SUBMISSION_FILE)
+function readAnswer(competitionId: string, submissionId: string, directory = resultDir(competitionId, submissionId)): Buffer | string {
+  const file = path.join(directory, SUBMISSION_FILE)
   let size: number
   try {
     size = competitionsFs.statSync(file).size
@@ -555,12 +574,13 @@ function readAnswer(competitionId: string, submissionId: string): Buffer | strin
       count: Math.round(LIMITS.submissionBytes / MB),
     })
   }
-  const body = readResultFile(competitionId, submissionId, SUBMISSION_FILE, LIMITS.submissionBytes)
+  let body: Buffer | null = null
+  try { body = competitionsFs.readFileSync(file) as Buffer } catch { /* unreadable regular file */ }
   return body ?? tr('competitions.answer.unreadable', { file: SUBMISSION_FILE })
 }
 
 /** Пересчёт: метрика по сохранённому ответу, без повторного исполнения тетради. */
-async function scoreOnly(competition: Competition, submission: Submission): Promise<void> {
+async function scoreOnly(competition: Competition, submission: Submission, row: QueueRow, provenance: AttemptProvenance): Promise<void> {
   const answer = readAnswer(competition.id, submission.id)
   if (typeof answer === 'string') {
     /*
@@ -582,7 +602,7 @@ async function scoreOnly(competition: Competition, submission: Submission): Prom
     participantError: null,
     teacherError: null,
   })
-  await scoreStep(competition, submission, answer, submission.durationMs ?? 0, null)
+  await scoreStep(competition, submission, answer, submission.durationMs ?? 0, null, row, provenance)
 }
 
 /** Шаг второй: метрика преподавателя во втором одноразовом контейнере. */
@@ -592,6 +612,8 @@ async function scoreStep(
   answer: Buffer,
   notebookWall: number,
   notebook: RunOutcome | null,
+  row: QueueRow,
+  provenance: AttemptProvenance,
 ): Promise<void> {
   const runner = competitionRunner()
   updateSubmission(submission.id, { stage: 'score' })
@@ -605,7 +627,9 @@ async function scoreStep(
     return
   }
 
-  const missing = prepareSecrets(competition)
+  const secrets = attemptDir(competition.id, submission.id, row.attemptId!, 'secret')
+  const missing = !competition.metric.code.trim() ? tr('competitions.answer.noMetric') :
+    !competitionsFs.existsSync(path.join(secrets, SOLUTION_FILE)) ? tr('competitions.answer.noSolution', { file: SOLUTION_FILE }) : null
   if (missing) {
     updateSubmission(submission.id, {
       state: 'metricFailed',
@@ -617,19 +641,19 @@ async function scoreStep(
   }
 
   const container = containerName(submission.id, 'metric', newToken())
-  const run = startRun({ submissionId: submission.id, kind: 'metric', container })
-  noteQueueContainer(submission.id, container)
+  const run = startRun({ submissionId: submission.id, kind: 'metric', container, attemptId: row.attemptId!, inputRevision: provenance.inputRevision ?? undefined })
+  noteQueueContainer(submission.id, container, row.attemptId!)
 
   // Ответ переезжает в свой, НОВЫЙ каталог: контейнер метрики не должен видеть
   // ни исполненную тетрадь участника, ни её вывод. Каталог для ответа метрики
   // — отдельный, СОСЕДНИЙ: один и тот же путь, смонтированный и на чтение, и
   // на запись, отдал бы сторожу размер ответа как «метрика пишет на диск».
-  freshScoreDir(competition.id, submission.id, answer)
-  const outDir = freshScoreOutDir(competition.id, submission.id)
+  const scoreInput = attemptDir(competition.id, submission.id, row.attemptId!, 'score')
+  competitionsFs.writeFileSync(path.join(scoreInput, SUBMISSION_FILE), answer, { mode: 0o600 })
+  const outDir = attemptDir(competition.id, submission.id, row.attemptId!, 'score-out')
   if (runner.backend === 'docker') {
-    letContainerRead(secretDir(competition.id))
-    letContainerRead(scoreDir(competition.id, submission.id))
-    letContainerWrite(outDir)
+    letContainerRead(secrets)
+    letContainerRead(scoreInput)
   }
 
   let outcome: ScoreOutcome
@@ -639,8 +663,10 @@ async function scoreStep(
       competition,
       submissionId: submission.id,
       container,
-      secretDir: secretDir(competition.id),
-      submissionDir: scoreDir(competition.id, submission.id),
+      attemptId: row.attemptId!,
+      signal: aborters.get(row.attemptId!)?.signal,
+      secretDir: secrets,
+      submissionDir: scoreInput,
       outDir,
       limits: limitsFor(competition, 'metric'),
     })
@@ -651,7 +677,10 @@ async function scoreStep(
      * посылок это гигабайты, которых никто не читает. Пересчёт заводит каталог
      * заново — он и обязан быть новым.
      */
-    dropScoreDirs(competition.id, submission.id)
+    try {
+      competitionsFs.rmSync(scoreInput, { recursive: true, force: true })
+      competitionsFs.rmSync(outDir, { recursive: true, force: true })
+    } catch { count('cleanupFailures'); console.warn('[competitions] score cleanup failed', row.attemptId) }
   }
   const state = stateOfVerdict('metric', outcome.status)
   const participant = metricNote(outcome)
@@ -665,12 +694,13 @@ async function scoreStep(
     participantError: participant,
     teacherError: outcome.teacherOnly,
   })
-  if (takeCancellation(submission.id, notebookWall + outcome.wall)) return
+  if (!ownsQueueAttempt(row) || takeCancellation(submission.id, notebookWall + outcome.wall)) return
 
   updateSubmission(submission.id, {
     state,
     stage: 'score',
     durationMs: notebookWall + outcome.wall,
+    inputRevision: provenance.inputRevision,
     publicScore: state === 'scored' ? outcome.public : null,
     privateScore: state === 'scored' ? outcome.private : null,
     participantError: participant,
@@ -689,14 +719,11 @@ async function scoreStep(
  * монтируем сам файл, — именно поэтому перезапись безопасна (см. шапку
  * storage.ts про virtiofs).
  */
-function prepareSecrets(competition: Competition): string | null {
-  const code = competition.metric.code.trim()
-  if (!code) return tr('competitions.answer.noMetric')
-  if (!competitionsFs.existsSync(path.join(secretDir(competition.id), SOLUTION_FILE))) {
-    return tr('competitions.answer.noSolution', { file: SOLUTION_FILE })
-  }
-  putSecretFile(competition.id, METRIC_NAME, Buffer.from(`${code}\n`, 'utf8'))
-  return null
+function snapshotSecrets(competition: Competition, submission: Submission, row: QueueRow): void {
+  const directory = attemptDir(competition.id, submission.id, row.attemptId!, 'secret')
+  const solution = path.join(secretDir(competition.id), SOLUTION_FILE)
+  if (competitionsFs.existsSync(solution)) copyCompetitionFile(solution, path.join(directory, SOLUTION_FILE))
+  competitionsFs.writeFileSync(path.join(directory, METRIC_NAME), Buffer.from(`${competition.metric.code}\n`), { mode: 0o600 })
 }
 
 /**
@@ -840,7 +867,12 @@ export async function cancelSubmission(
     })
     return true
   }
+  if (!(await competitionCapabilities()).execution.available) return false
+  if (queueRow(submissionId)?.attemptId !== row.attemptId) return false
   cancelled.set(submissionId, by)
+  count('cancelled')
+  if (row.attemptId) aborters.get(row.attemptId)?.abort()
+  db.prepare('UPDATE competition_queue SET pending_kind = NULL WHERE submission_id = ? AND attempt_id = ?').run(submissionId, row.attemptId)
   if (row.container) await competitionRunner().kill(row.container).catch(() => undefined)
   return true
 }
@@ -885,6 +917,11 @@ export function rescoreCompetition(competitionId: string): number {
   let queued = 0
   for (const submission of listSubmissions(competitionId)) {
     if (!hasStoredAnswer(competitionId, submission.id)) continue
+    if (queueRow(submission.id)?.state === 'running') {
+      enqueue({ submissionId: submission.id, competitionId, entrantId: submission.entrantId, kind: 'metric' })
+      queued++
+      continue
+    }
     updateSubmission(submission.id, {
       state: 'queued',
       stage: 'score',
@@ -928,6 +965,7 @@ export interface RunnerStatus {
   paused: boolean
   waiting: number
   running: Array<{ submissionId: string; competitionId: string; kind: RunKind; startedAt: number | null }>
+  diagnostics: typeof diagnostics & { oldestWaitingMs: number; reservations: ReturnType<typeof workBudgetSnapshot> }
 }
 
 export function runnerStatus(): RunnerStatus {
@@ -936,6 +974,7 @@ export function runnerStatus(): RunnerStatus {
     slots: queueSlots(),
     paused: queuePaused(),
     waiting: waitingCount(),
+    diagnostics: { ...diagnostics, oldestWaitingMs: Math.max(0, ...queueRows().filter((row) => row.state === 'waiting').map((row) => Date.now() - row.enqueuedAt)), reservations: workBudgetSnapshot() },
     running: runningRows().map((row) => ({
       submissionId: row.submissionId,
       competitionId: row.competitionId,

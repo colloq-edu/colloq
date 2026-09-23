@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { config } from './config.js'
+import { staffAuthorizationVersion } from './admin/store.js'
 import type { ParticipantRole } from '@shared/protocol'
 
 export interface TokenPayload {
@@ -29,6 +30,8 @@ export interface TokenPayload {
    * так что вписать себе чужой id нельзя.
    */
   staff?: string
+  /** Durable generation of the staff credential that granted this token. */
+  staffVersion?: number
 }
 
 /**
@@ -46,7 +49,11 @@ export const TOKEN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
  * stops a participant from claiming to be the host.
  */
 export function signToken(payload: TokenPayload): string {
-  const stamped: TokenPayload = { ...payload, iat: payload.iat ?? Date.now() }
+  const stamped: TokenPayload = {
+    ...payload,
+    iat: payload.iat ?? Date.now(),
+    ...(payload.staff ? { staffVersion: payload.staffVersion ?? staffAuthorizationVersion(payload.staff) ?? 0 } : {}),
+  }
   const body = Buffer.from(JSON.stringify(stamped)).toString('base64url')
   const sig = crypto.createHmac('sha256', config.sessionSecret).update(body).digest('base64url')
   return `${body}.${sig}`
@@ -142,7 +149,7 @@ export function signHandoffToken(
   staff: string | null = null,
 ): string {
   const until = Date.now() + HANDOFF_TTL_MS
-  const who = staff ? `${participantId}\u0000${staff}` : participantId
+  const who = staff ? `${participantId}\u0000${staff}\u0000${staffAuthorizationVersion(staff) ?? 0}` : participantId
   const body = `handoff:${sessionId}\u0000${who}\u0000${until}`
   const sig = crypto.createHmac('sha256', config.sessionSecret).update(body).digest('base64url')
   return `${Buffer.from(who).toString('base64url')}.${until.toString(36)}.${sig}`
@@ -165,7 +172,7 @@ export function verifyHandoffToken(
   } catch {
     return null
   }
-  const [participantId, staff] = decoded.split('\u0000')
+  const [participantId, staff, version] = decoded.split('\u0000')
   if (!participantId) return null
   const expected = crypto
     .createHmac('sha256', config.sessionSecret)
@@ -174,6 +181,7 @@ export function verifyHandoffToken(
   const a = Buffer.from(sig)
   const b = Buffer.from(expected)
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null
+  if (staff && staffAuthorizationVersion(staff) !== (version === undefined ? 1 : Number(version))) return null
   return { participantId, staff: staff || null }
 }
 

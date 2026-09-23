@@ -12,12 +12,17 @@
  * панельных чтений, — и потому, что ответ живой: свободная память меняется
  * между двумя открытиями формы.
  */
+import { operationalStatus } from '../ops/status.js'
 import { Router } from 'express'
 import { requireStaff } from '../admin/auth.js'
 import { cpuBounds, machineResources, memoryBounds } from '../kernel/resources.js'
 
 export function instanceResourcesRoutes(): Router {
   const router = Router()
+
+  router.get('/api/instance/operations',requireStaff,(_req,res,next)=>{
+    void operationalStatus().then(value=>res.set('Cache-Control','no-store').json(value)).catch(next)
+  })
 
   router.get('/api/instance/resources', requireStaff, (_req, res, next) => {
     machineResources()

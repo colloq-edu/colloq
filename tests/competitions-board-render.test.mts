@@ -66,3 +66,11 @@ test('baseline remains visible below paginated participant rows', () => {
     assert.match(html, /68\.9902/)
   }
 })
+
+test('phone and desktop both offer remaining participant rows', () => {
+  const people = Array.from({ length: 9 }, (_, i) => ({ ...baseline, entrantId: `p${i}`, name: `Участник ${i}`, baseline: false, score: 90 - i }))
+  for (const phone of [false, true]) {
+    const html = show({ ...board, public: people }, phone)
+    assert.match(html, /<button[^>]*>[\s\S]*ещё 3/i, phone ? 'phone pagination' : 'desktop pagination')
+  }
+})

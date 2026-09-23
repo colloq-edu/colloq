@@ -5,7 +5,7 @@ import { db } from '../db.js'
 import { submissionsOpen, type Competition, type Submission } from '@shared/competitions'
 import { DEPENDENCY_LIMITS, dependencyActive, type AdminDependencyOverview, type DependencyBundle, type DependencyOverview, type EnvironmentRevision } from '@shared/dependencies'
 import { getCompetition, getEntrant, joinedAt, listEntrantSubmissions, acceptSubmission, inFlightCount, leftToday } from '../competitions/store.js'
-import { competitionBackend } from '../competitions/runner-port.js'
+import { competitionBackend, competitionRunner } from '../competitions/runner-port.js'
 import { prepareDependencies, cleanupPreparationResources } from './preparation.js'
 import { DependencyPreparationError } from './preparation-contract.js'
 import type { PreparationRequest, PreparationResult } from './preparation-contract.js'
@@ -13,29 +13,44 @@ import { ensureCompetitionRevision } from './revisions.js'
 import { dependencyMessage } from './messages.js'
 import * as store from './store.js'
 import * as files from './files.js'
+import { reserveWork, workBudgetSnapshot } from '../ops/work-budget.js'
+import { competitionCapabilities, assertCompetitionCapability } from '../competitions/capabilities.js'
 
 const events=new EventEmitter()
 events.setMaxListeners(0)
 const controllers=new Map<string,AbortController>()
 let timer:ReturnType<typeof setInterval>|null=null
 let active:Promise<void>|null=null
-let starting:Promise<void>|null=null
+let starting:Promise<boolean>|null=null
 let stopping=false
 let lastGC=0
+let lastGCAttempt=0
+const diagnostics={preparationFailures:0,cleanupFailures:0,published:0,waitingForResources:false}
+export function dependencyPreparationDiagnostics(){return {...diagnostics,active:controllers.size,running:timer!==null,starting:starting!==null,lastGCAt:lastGC||null}}
 const emit=(id:string):void=>{events.emit(id)}
 export function watchBundle(id:string,callback:()=>void):()=>void { events.on(id,callback);return()=>events.off(id,callback) }
 export function hasJoined(c:string,e:string):boolean { return joinedAt(c,e)!==null||listEntrantSubmissions(c,e).length>0 }
+function retainedRevision(c:Competition):EnvironmentRevision|null {
+ const revision=store.competitionRevision(c.id)
+ return revision?.environmentName===c.environment?revision:null
+}
 export async function executionRevision(c:Competition):Promise<EnvironmentRevision|null>{
- if(competitionBackend()==='test')return store.competitionRevision(c.id)
+ const retained=retainedRevision(c)
+ await assertCompetitionCapability('execution',c.environment,retained?.imageDigest)
+ if(competitionBackend()==='test')return retained
  return ensureCompetitionRevision(c)
 }
 export async function dependencyOverview(c:Competition,eid:string):Promise<DependencyOverview>{
- const revision=await executionRevision(c).catch(()=>null)
- return {policy:store.policyOf(c.id),revision,draft:store.draftOf(c.id,eid),bundles:store.listBundles(c.id,eid),joined:hasJoined(c.id,eid)}
+ const retained=retainedRevision(c)
+ const capabilities=await competitionCapabilities(c.environment,retained?.imageDigest)
+ const revision=capabilities.execution.available?await executionRevision(c).catch(()=>retained):retained
+ return {capabilities,policy:store.policyOf(c.id),revision,draft:store.draftOf(c.id,eid),bundles:store.listBundles(c.id,eid),joined:hasJoined(c.id,eid)}
 }
 export async function adminDependencyOverview(c:Competition):Promise<AdminDependencyOverview>{
- const revision=await executionRevision(c).catch(()=>null)
- return {policy:store.policyOf(c.id),revision,bundles:store.listBundles(c.id).map(b=>({...b,entrantName:getEntrant(b.entrantId)?.name??'—'}))}
+ const retained=retainedRevision(c)
+ const capabilities=await competitionCapabilities(c.environment,retained?.imageDigest)
+ const revision=capabilities.execution.available?await executionRevision(c).catch(()=>retained):retained
+ return {capabilities,policy:store.policyOf(c.id),revision,bundles:store.listBundles(c.id).map(b=>({...b,entrantName:getEntrant(b.entrantId)?.name??'—'}))}
 }
 export function ownBundle(c:string,eid:string,bid:string):DependencyBundle{
  const b=store.getBundle(bid)
@@ -46,11 +61,12 @@ export async function prepareBundle(c:Competition,eid:string,text:string):Promis
  if(!hasJoined(c.id,eid))throw new store.DependencyStoreError('dependency_join',403)
  if(!store.policyOf(c.id).enabled)throw new store.DependencyStoreError('dependency_disabled',403)
  store.checkRequirements(text)
+ await assertCompetitionCapability('preparation',c.environment,store.competitionRevision(c.id)?.imageDigest)
  const revision=await executionRevision(c)
  if(!revision)throw new store.DependencyStoreError('dependency_image',503)
  if(competitionBackend()!=='test')await startDependencyPump()
  const free=files.freeDependencyBytes()
- if(free!==null&&free<store.policyOf(c.id).maxDownloadBytes+256*1024*1024)throw new store.DependencyStoreError('disk_full',507)
+ if(free!==null&&free<files.preparationPeakBytes(store.policyOf(c.id).maxDownloadBytes)+workBudgetSnapshot().diskBytes)throw new store.DependencyStoreError('disk_full',507)
  const b=store.createBundle(c.id,eid,revision.id,text)
  wakeDependencyPump()
  return b
@@ -83,14 +99,21 @@ function sanitizedLog(line:string,stage:string):string {
  return line.split(stage).join('[work]').replace(/https?:\/\/\S+/g,'[registry URL]').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').slice(0,1000)
 }
 export async function processNextPreparation(prepare:(request:PreparationRequest)=>Promise<PreparationResult>=prepareDependencies):Promise<boolean>{
+ if(!(await competitionCapabilities()).preparation.available)return false
  const bundle=store.claimNextBundle();if(!bundle)return false
  const controller=new AbortController();controllers.set(bundle.id,controller)
  let stage:string|null=null
+ let release:(()=>void)|null=null
  try{
   const revision=store.getRevision(bundle.revisionId)
   if(!revision)throw new store.DependencyStoreError('dependency_image',503)
   const free=files.freeDependencyBytes(),limits=store.bundleLimits(bundle.id)
-  if(free!==null&&free<limits.maxDownloadBytes+256*1024*1024)throw new store.DependencyStoreError('disk_full',507)
+  const diskBytes=files.preparationPeakBytes(limits.maxDownloadBytes)
+  if(free!==null&&free<diskBytes)throw new store.DependencyStoreError('disk_full',507)
+  const {availableMb}=await competitionRunner().capacity()
+  release=reserveWork({id:'prepare:'+bundle.id,kind:'preparation',memoryMb:1664,diskBytes},{availableMemoryMb:availableMb,availableDiskBytes:free})
+  diagnostics.waitingForResources=!release
+  if(!release){store.deferClaim(bundle.id);return false}
   stage=files.freshStaging(bundle.id)
   const result=await prepare({id:bundle.id,imageDigest:revision.imageDigest,requirementsText:bundle.requirementsText,basePackages:revision.packages,workDir:stage,...limits,wallSeconds:DEPENDENCY_LIMITS.wallSeconds,signal:controller.signal,onProgress(update){
    store.updateProgress(bundle.id,{...update,...(update.log?{log:sanitizedLog(update.log,stage!)}:{})});emit(bundle.id)
@@ -99,26 +122,30 @@ export async function processNextPreparation(prepare:(request:PreparationRequest
   if(result.downloadBytes>limits.maxDownloadBytes||result.installedBytes>limits.maxInstalledBytes)throw new DependencyPreparationError('installed_limit','Package set exceeds its stored limits')
   await files.publishBundle(bundle.id,result)
   if(!store.completeBundle(bundle.id,result))files.removeBundleFiles(bundle.id)
+  else diagnostics.published=Math.min(Number.MAX_SAFE_INTEGER,diagnostics.published+1)
  }catch(error){
+  diagnostics.preparationFailures=Math.min(Number.MAX_SAFE_INTEGER,diagnostics.preparationFailures+1)
   const errno=error&&typeof error==='object'&&'code' in error?String(error.code):''
   const code=stopping?'worker_restarted':error instanceof store.DependencyStoreError||error instanceof DependencyPreparationError?error.code:['ENOSPC','EDQUOT'].includes(errno)?'disk_full':'preparation_failed'
   const message=dependencyMessage(code)
   if(error instanceof Error&&stage)store.updateProgress(bundle.id,{state:'verifying',log:sanitizedLog(error.message,stage)})
   store.failBundle(bundle.id,code,message,error instanceof DependencyPreparationError?error.line:undefined)
  }finally{
+  release?.()
   controllers.delete(bundle.id)
-  if(stage)try{files.removeStaging(bundle.id)}catch(error){console.error('[dependencies] staging cleanup failed',error)}
+  if(stage)try{files.removeStaging(bundle.id)}catch(error){diagnostics.cleanupFailures=Math.min(Number.MAX_SAFE_INTEGER,diagnostics.cleanupFailures+1);console.error('[dependencies] staging cleanup failed',error)}
   emit(bundle.id)
  }
  return true
 }
 function collect():void{
- if(Date.now()-lastGC<3600000)return
- lastGC=Date.now()
+ if(Date.now()-lastGC<3600000||Date.now()-lastGCAttempt<60000)return
+ lastGCAttempt=Date.now()
  for(const key of store.unusedBundles(Date.now()-DEPENDENCY_LIMITS.retainedUnusedDays*86400000)){
   if(store.removeUnusedBundle(key))files.removeBundleFiles(key)
  }
  for(const hash of store.orphanArtifacts()){files.removeArtifactFile(hash);store.removeOrphanArtifact(hash)}
+ files.reconcileBundles(store.knownBundleIds())
  files.reconcileArtifacts(store.knownArtifactHashes())
  // Old partial staging is not a durable bundle and is never mounted for execution.
  const root=path.join(files.dependencyRoot,'staging')
@@ -128,25 +155,28 @@ function collect():void{
   if(b&&dependencyActive(b.state))continue
   if(fs.lstatSync(path.join(root,key)).mtimeMs<Date.now()-86400000)files.removeStaging(key)
  }
+ lastGC=Date.now()
 }
 export function wakeDependencyPump():void{
  if(!timer||active||stopping)return
- active=processNextPreparation().then(()=>undefined).catch(error=>console.error('[dependencies] preparation failed',error)).finally(()=>{active=null;if(!stopping)try{collect()}catch(error){console.error('[dependencies] cleanup failed',error)}})
+ active=processNextPreparation().then(()=>undefined).catch(error=>console.error('[dependencies] preparation failed',error)).finally(()=>{active=null;if(!stopping)try{collect()}catch(error){diagnostics.cleanupFailures=Math.min(Number.MAX_SAFE_INTEGER,diagnostics.cleanupFailures+1);console.error('[dependencies] cleanup failed',error)}})
 }
-export async function startDependencyPump():Promise<void>{
- if(timer)return
+export async function startDependencyPump():Promise<boolean>{
+ if(timer)return true
  if(starting)return starting
  starting=(async()=>{
   stopping=false
-  await cleanupPreparationResources()
-  if(stopping)return
+  if(!(await competitionCapabilities()).preparation.available)return false
+  if(competitionBackend()!=='test')await cleanupPreparationResources()
+  if(stopping)return false
   store.recoverPreparations()
   files.ensureDependencyStorage()
   timer=setInterval(wakeDependencyPump,1000)
   timer.unref()
   wakeDependencyPump()
+  return true
  })()
- try{await starting}finally{starting=null}
+ try{return await starting}finally{starting=null}
 }
 export async function stopDependencyPump():Promise<void>{
  stopping=true

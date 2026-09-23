@@ -45,6 +45,9 @@ import { app } from './app.js'
 import { COLLOQ_VERSION } from './version.js'
 import { startDependencyPump, stopDependencyPump } from './dependencies/service.js'
 import { pinLegacySubmissions } from './dependencies/revisions.js'
+import { competitionBackend } from './competitions/runner-port.js'
+import { assertCompetitionCapability } from './competitions/capabilities.js'
+import { createWorkerStartup } from './competitions/worker-startup.js'
 
 /** A whole notebook's state travels in one sync frame; images make it big. */
 const MAX_WS_PAYLOAD = 16 * 1024 * 1024
@@ -236,8 +239,10 @@ server.on('upgrade', (req, socket, head) => {
      */
     try {
       noteLastSeen(payload.participantId)
+      const role = effectiveRole(req, payload)
+      const credentials = { cookieHeader: req.headers.cookie, payload: { ...payload, role } }
       if (channel === 'collab')
-        handleCollabSocket(ws, sessionId, effectiveRole(req, payload), payload.participantId)
+        handleCollabSocket(ws, sessionId, role, payload.participantId, credentials)
       else if (channel === 'file') {
         /*
          * Путь приезжает вторым отрезком адреса, в base64url. Проверяет его тот
@@ -253,7 +258,7 @@ server.on('upgrade', (req, socket, head) => {
           }
           return
         }
-        handleFileSocket(ws, sessionId, wanted, effectiveRole(req, payload), payload.participantId)
+        handleFileSocket(ws, sessionId, wanted, role, payload.participantId, credentials)
       } else {
         /*
          * A participant token carries the role it was minted with. A teacher who
@@ -265,7 +270,7 @@ server.on('upgrade', (req, socket, head) => {
          * stronger credential than the token and it is re-checked here on every
          * reconnect rather than baked into anything.
          */
-        handleControlSocket(ws, sessionId, { ...payload, role: effectiveRole(req, payload) })
+        handleControlSocket(ws, sessionId, credentials.payload, credentials)
       }
     } catch (err) {
       console.error(
@@ -292,6 +297,18 @@ server.on('upgrade', (req, socket, head) => {
  * названная дверь в ту же комнату. Служба systemd ставит здесь 127.0.0.1.
  */
 const bindAddr = (process.env.BIND_ADDR ?? '').trim()
+const workerStartup = createWorkerStartup({
+  async startExecution() {
+    await assertCompetitionCapability('execution')
+    await reclaimCompetitionQueue()
+    // Legacy pinning invokes image probes; the test backend has no containers.
+    if (competitionBackend() !== 'test') await pinLegacySubmissions()
+    startCompetitionPump()
+  },
+  startPreparation: startDependencyPump,
+  onError: (worker, error) => console.error(`[competitions] ${worker} startup deferred`, error),
+})
+
 
 server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const)), () => {
   const ai = aiEnabled() ? `on (${config.ai.model})` : 'off'
@@ -329,11 +346,7 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
    * занял бы единственное место тем, что сейчас всё равно придётся поднять
    * заново.
    */
-  void reclaimCompetitionQueue()
-    .catch((err) => console.error('[competitions] не удалось поднять очередь', err))
-    .then(() => pinLegacySubmissions().catch((err) => console.error('[dependencies] legacy pinning failed', err)))
-    .then(() => startCompetitionPump())
-  void startDependencyPump().catch((err) => console.error('[dependencies] preparation queue startup failed', err))
+  void workerStartup.start()
 })
 
 /**
@@ -452,6 +465,7 @@ async function shutdown(signal: string): Promise<void> {
    * следующая жизнь сервера.
    */
   try {
+    await workerStartup.stop()
     await stopDependencyPump()
     await stopCompetitionPump()
   } catch (err) {

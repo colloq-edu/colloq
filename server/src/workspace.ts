@@ -5,7 +5,7 @@ import { createAnchoredFilesystem } from './secure-files.js'
 import path from 'node:path'
 import { config } from './config.js'
 import type { FileEntry, FilesDelta } from '@shared/protocol'
-import { MAX_DEPTH, MAX_PATH, MAX_SEGMENT, baseOf, kindOf, normalizePath, parentOf } from '@shared/paths'
+import { MAX_DEPTH, MAX_PATH, MAX_SEGMENT, MAX_SEGMENT_BYTES, segmentBytes, baseOf, kindOf, normalizePath, parentOf } from '@shared/paths'
 
 export const workspaceFs = createAnchoredFilesystem(config.workspaceDir, {
   allowUnsafeDevelopment: process.env.NODE_ENV !== 'production' &&
@@ -535,6 +535,7 @@ function whyFailed(err: unknown): TreeResult {
   if (code === 'EEXIST' || code === 'ENOTEMPTY') return 'exists'
   if (code === 'ENOTDIR' || code === 'EISDIR') return 'not-a-folder'
   if (code === 'ENOENT') return 'missing'
+  if (code === 'ENAMETOOLONG') return 'too-long'
   return 'busy'
 }
 
@@ -790,7 +791,7 @@ export function copyFile(sessionId: string, from: string, to: string): TreeResul
     // символическая ссылка и исчезнувший путь — всё это «копировать нечего».
     return 'missing'
   }
-  const tmp = path.join(path.dirname(target), `.${baseOf(to)}.saving-${randomUUID()}`)
+  const tmp = path.join(path.dirname(target), `.colloq.saving-${randomUUID()}`)
   let out: number | null = null
   try {
     out = workspaceFs.openSync(tmp, 'wx')
@@ -953,7 +954,7 @@ export function writeText(sessionId: string, rel: string, text: string): boolean
   if (!full) return false
   const tmp = path.join(
     path.dirname(full),
-    `.${baseOf(rel)}.saving-${randomUUID()}`,
+    `.colloq.saving-${randomUUID()}`,
   )
   try {
     workspaceFs.mkdirSync(path.dirname(full), { recursive: true })
@@ -1031,7 +1032,8 @@ export function freeCopyName(sessionId: string, rel: string): string {
    */
   const room = (suffix: string): string => {
     const left = MAX_SEGMENT - suffix.length - 1 - ext.length
-    const head = left > 0 ? stem.slice(0, left).trimEnd() : ''
+    let head = left > 0 ? stem.slice(0, left).trimEnd() : ''
+    while(head && segmentBytes(`${head} ${suffix}${ext}`)>MAX_SEGMENT_BYTES) head=Array.from(head).slice(0,-1).join('').trimEnd()
     // Головы не осталось вовсе — значит имя состоит из одного расширения;
     // тогда копия зовётся просто словом.
     const name = head ? `${head} ${suffix}${ext}` : `${suffix}${ext}`
