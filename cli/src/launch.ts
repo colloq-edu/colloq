@@ -26,6 +26,7 @@ import {
   type LaunchReceipt,
 } from './launch-state.js'
 import { prepare } from './launch-prepare.js'
+import { logTail, renderBanner, teacherLink } from './launch-banner.js'
 import { devFrontendReady } from './launch-readiness.js'
 import { ensureCloudflared } from './launch-cloudflared.js'
 import {
@@ -136,10 +137,24 @@ function openBrowser(url: string): void {
   child.on('error', () => console.log(`Open in your browser: ${url}`))
   child.unref()
 }
-function banner(receipt: LaunchReceipt): void {
+async function banner(receipt: LaunchReceipt, detachedRun: boolean): Promise<void> {
+  const version = (await health(receipt.port))?.version
   console.log(
-    `\nColloq is running\n\nLocal:  ${receipt.url}\nPanel:  ${receipt.url}/admin\nData:   ${receipt.dataDir}\nFiles:  ${receipt.workspaceDir}\n\nCtrl+C — save and stop the server and the local kernels\n`,
+    renderBanner({
+      link: teacherLink(receipt.url, receipt.dataDir),
+      workspaceDir: receipt.workspaceDir,
+      logFile,
+      detached: detachedRun,
+      version: typeof version === 'string' ? version : undefined,
+    }).join('\n'),
   )
+}
+/** Хвост журнала при сбое тихого запуска: то, что раньше было «в логе выше». */
+function showLogTail(): void {
+  const tail = logTail(logFile)
+  if (tail.length === 0) return
+  console.error(`\nThe last lines of the log (${logFile}):\n`)
+  for (const line of tail) console.error(`  ${line}`)
 }
 /**
  * Блок ссылки --share (launch-share.ts · renderShareBlock).
@@ -343,9 +358,7 @@ async function detached(options: LaunchOptions): Promise<number> {
         receipt.phase === 'ready' &&
         (!publishing || publicUrl || receipt.hosting === 'failed')
       ) {
-        console.log(
-          `Colloq is running in the background: ${receipt.url}\nLogs: colloq logs\nStop: colloq stop`,
-        )
+        await banner(receipt, true)
         if (publicUrl && options.share)
           await announceShare(
             publicUrl,
@@ -357,13 +370,14 @@ async function detached(options: LaunchOptions): Promise<number> {
         else if (publicUrl) console.log(`Public address: ${publicUrl}`)
         else if (publishing)
           console.log(`The tunnel did not come up; local work continues. Details: ${logFile}`)
-        if (options.open) openBrowser(`${receipt.url}/admin`)
+        if (options.open) openBrowser(teacherLink(receipt.url, receipt.dataDir))
         child.unref()
         return 0
       }
       await delay(150)
     }
     if (cancelled) return cancelled
+    if (!failure) showLogTail()
     throw new Error(failure || `The background start failed. Log: ${logFile}`)
   } finally {
     process.off('SIGINT', onInt)
@@ -375,11 +389,11 @@ async function runSession(options: LaunchOptions): Promise<number> {
   const prior = readReceipt(receiptFile)
   if (prior && (await supervisorOwned(prior))) {
     console.log(
-      `Colloq is already ${prior.phase === 'ready' ? 'running' : 'starting'}: ${prior.url}`,
+      `Colloq is already ${prior.phase === 'ready' ? 'running' : 'starting'}: ${teacherLink(prior.url, prior.dataDir)}`,
     )
     if (options.host) console.log(`For public access: colloq host ${options.host}`)
     if (options.share) console.log('For a public link: colloq host')
-    if (options.open && prior.phase === 'ready') openBrowser(`${prior.url}/admin`)
+    if (options.open && prior.phase === 'ready') openBrowser(teacherLink(prior.url, prior.dataDir))
     return 0
   }
   if (options.detach && !options.child) return await detached(options)
@@ -518,7 +532,9 @@ async function runSession(options: LaunchOptions): Promise<number> {
           '--clear-screen=false',
           'server/src/index.ts',
         ])
-      : processes.start('Server', process.execPath, ['server/dist/server.js'])
+      : // Сервер говорит в журнал, а не на экран: его строки — для того, кто
+        // чинит, а преподавателю нужен итог ниже (launch-banner.ts).
+        processes.start('Server', process.execPath, ['server/dist/server.js'], !options.child)
     started = true
     receipt.serverPid = server.child.pid
     writeJson(receiptFile, receipt)
@@ -546,14 +562,18 @@ async function runSession(options: LaunchOptions): Promise<number> {
     while (!stopping) {
       if (server.settled || frontend?.settled)
         throw new Error(
-          'The server or the frontend exited before it was ready. Check the log above.',
+          dev
+            ? 'The server or the frontend exited before it was ready. Check the log above.'
+            : `The server exited before it was ready. Log: ${logFile}`,
         )
       const status = await health(config.port)
       const uiReady = !dev || (await devFrontendReady(config.url))
       if (status?.localRunId === runId && uiReady) break
       if (Date.now() > deadline)
         throw new Error(
-          'The server did not become ready in 90 seconds. Check Docker and the log above.',
+          dev
+            ? 'The server did not become ready in 90 seconds. Check Docker and the log above.'
+            : `The server did not become ready in 90 seconds. Check Docker. Log: ${logFile}`,
         )
       await delay(150)
     }
@@ -561,8 +581,8 @@ async function runSession(options: LaunchOptions): Promise<number> {
     receipt.phase = 'ready'
     if (publishing) receipt.hosting = 'starting'
     writeJson(receiptFile, receipt)
-    banner(receipt)
-    if (options.open) openBrowser(`${config.url}/admin`)
+    if (!options.child) await banner(receipt, false)
+    if (options.open) openBrowser(teacherLink(config.url, config.dataDir))
     if (publishing) {
       /*
        * Путь до скрипта проверяется до запуска, потому что его отсутствие
@@ -663,11 +683,15 @@ async function runSession(options: LaunchOptions): Promise<number> {
     const ended = await Promise.race([server.done, ...(frontend ? [frontend.done] : [])])
     if (!stopping) {
       exitCode = ended || 1
+      if (!dev) showLogTail()
       console.error('The local server or frontend exited. Stopping the remaining processes.')
     }
     return exitCode
   } catch (error) {
-    if (!stopping) console.error(error instanceof Error ? error.message : String(error))
+    if (!stopping) {
+      if (log !== undefined && options.action !== 'dev') showLogTail()
+      console.error(error instanceof Error ? error.message : String(error))
+    }
     return stopping ? exitCode : 1
   } finally {
     stopping = true

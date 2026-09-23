@@ -46,6 +46,7 @@ async function buildKernelImage(
   viaMake: boolean,
   name: string,
   parentImage: string,
+  quiet: boolean,
 ): Promise<void> {
   if (viaMake) {
     const target = ['--no-print-directory', 'env-build', `NAME=${name}`]
@@ -64,7 +65,7 @@ async function buildKernelImage(
     `colloq-kernel:${name}`,
     kernel,
   ]
-  const build = processes.start('Python build', 'docker', args, false, {
+  const build = processes.start('Python build', 'docker', args, quiet, {
     DOCKER_BUILDKIT: '1',
     BUILDKIT_PROGRESS: 'plain',
   })
@@ -206,8 +207,19 @@ export async function prepare(
         (stamp.parentId ?? '') === parentId
       : freshImage
     if (!image || ancestorRebuilt || !current) {
-      console.log(`Preparing the Python environment: ${item.name}`)
-      await buildKernelImage(processes, kernelFrom, viaMake, item.name, parentImage)
+      /*
+       * Лог docker build — в журнал, на экран только начало и конец: сотня
+       * строк «#7 CACHED» преподавателю ничего не говорит, а при сбое хвост
+       * журнала покажет launch.ts. Под make dev лог остаётся на экране.
+       */
+      const quiet = options.action !== 'dev'
+      const began = Date.now()
+      console.log(
+        `Preparing the Python environment "${item.name}"` +
+          (quiet ? ' (the first start takes a few minutes)…' : ''),
+      )
+      await buildKernelImage(processes, kernelFrom, viaMake, item.name, parentImage, quiet)
+      if (quiet) console.log(`  ready in ${Math.max(1, Math.round((Date.now() - began) / 1000))} s`)
       image = await inspect(item.name)
       if (!image) throw new Error('The build finished, but the kernel image is not there.')
       ancestorRebuilt = true
