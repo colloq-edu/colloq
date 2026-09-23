@@ -13,6 +13,14 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.4.1](https://github.com/colloq-edu/colloq/compare/v0.4.0...v0.4.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **admin:** writes from the --share tunnel address are our own, though Host says 127.0.0.1 ([748d257](https://github.com/colloq-edu/colloq/commit/748d257b7511a25a27ec0ed917e200f088414732))
+* **pip:** the one-time npm install stays quiet unless it fails ([8a9970e](https://github.com/colloq-edu/colloq/commit/8a9970e093ff769c0b113e4b44031a4008e4bc5e))
+
 ## [0.4.0](https://github.com/colloq-edu/colloq/compare/v0.3.0...v0.4.0) (2026-09-23)
 
 
