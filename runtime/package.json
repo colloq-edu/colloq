@@ -1,7 +1,7 @@
 {
   "name": "@colloq/runtime",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/runtime.js && esbuild src/export-sidecar.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/export-sidecar.js && esbuild src/competition-proxy.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/competition-proxy.js",

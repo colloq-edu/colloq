@@ -1,7 +1,7 @@
 {
   "name": "colloq",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "One link, one live notebook, one AI. Self-hosted workspace for technical seminars.",
   "license": "MIT",
   "homepage": "https://colloq.ru",

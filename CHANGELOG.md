@@ -13,6 +13,18 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.3.0](https://github.com/colloq-edu/colloq/compare/v0.2.0...v0.3.0) (2026-09-23)
+
+
+### Features
+
+* **cli:** one sign-in link with the token, like Jupyter, and the logs go to the log file ([b7155a4](https://github.com/colloq-edu/colloq/commit/b7155a4bc3b38250412e041201529be2ed3f5f84))
+
+
+### Bug Fixes
+
+* **cli:** name the port that is actually taken, and say how to start on another ([e42f2ae](https://github.com/colloq-edu/colloq/commit/e42f2ae12935e7833f85f785b8ee9b002e1029ef))
+
 ## [0.2.0](https://github.com/colloq-edu/colloq/compare/v0.1.0...v0.2.0) (2026-09-23)
 
 
