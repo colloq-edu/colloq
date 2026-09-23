@@ -1,7 +1,7 @@
 {
   "name": "@colloq/shared",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "//": "Not a workspace and nothing installs from it. This file exists for one reason: to mark these .ts files as ESM. Without it Node treats them as CommonJS (the root has no \"type\"), so shared/notebook.ts loads yjs.cjs while an ESM caller loads yjs.mjs — two Yjs instances, and every instanceof check between them fails with 'Unexpected content type in insert operation'. The bundlers already treat this directory as ESM; this only tells the loaders that run it unbundled.",
   "type": "module"
 }
