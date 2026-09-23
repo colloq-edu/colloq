@@ -287,6 +287,49 @@ test('the dev server on its own port is not somebody else', async () => {
   assert.equal(dev.status, 201)
 })
 
+test('the share tunnel is our own address, though it arrives as 127.0.0.1', async () => {
+  /*
+   * `colloq start --share`: cloudflared приходит с Host 127.0.0.1:<порт>
+   * (scripts/host.sh подменяет его), а страница шлёт Origin адреса туннеля.
+   * До починки каждый POST оттуда получал «другой адрес сервера», и ссылка
+   * входа с токеном на публичном адресе не входила. Свой адрес — тот, который
+   * сервер сам раздаёт как публичный (config.publicUrl).
+   */
+  const owner = oldestOwner()
+  assert.ok(owner)
+  const cookie = mintCookie(owner)
+  const saved = { session: process.env.COLLOQ_LOCAL_SESSION, url: process.env.COLLOQ_LOCAL_URL }
+  process.env.COLLOQ_LOCAL_SESSION = '1'
+  process.env.COLLOQ_LOCAL_URL = 'https://plug-catalog.trycloudflare.com'
+  try {
+    const tunnel = await call('POST', '/api/admin/teachers', {
+      cookie,
+      origin: 'https://plug-catalog.trycloudflare.com',
+      body: { name: 'Tunnel', email: 'tunnel.routes@example.edu' },
+    })
+    assert.equal(tunnel.status, 201)
+    // Другой туннель — уже чужой сайт.
+    const other = await call('POST', '/api/admin/teachers', {
+      cookie,
+      origin: 'https://other.trycloudflare.com',
+      body: { name: 'Other', email: 'other.routes@example.edu' },
+    })
+    assert.equal(other.status, 403)
+  } finally {
+    if (saved.session === undefined) delete process.env.COLLOQ_LOCAL_SESSION
+    else process.env.COLLOQ_LOCAL_SESSION = saved.session
+    if (saved.url === undefined) delete process.env.COLLOQ_LOCAL_URL
+    else process.env.COLLOQ_LOCAL_URL = saved.url
+  }
+  // Без туннеля адрес *.trycloudflare.com снова чужой.
+  const after = await call('POST', '/api/admin/teachers', {
+    cookie,
+    origin: 'https://plug-catalog.trycloudflare.com',
+    body: { name: 'Late', email: 'late.routes@example.edu' },
+  })
+  assert.equal(after.status, 403)
+})
+
 test('the number of files on a card follows the folder', async () => {
   /*
    * Число на карточке считается с кешем — иначе список обходил дерево каждой

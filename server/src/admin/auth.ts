@@ -293,10 +293,30 @@ export function sameOrigin(req: Request, res: Response, next: NextFunction): voi
     return deny(res, 403, 'forbidden', tr("server.requestBlockedThisPageUsesADifferent.dd9b4b"))
   }
   // req.host отбрасывает порт, а он здесь значимый: 5173 и 8080 — разные сайты.
-  if (host !== req.get('host') && !(thisMachine(host) && thisMachine(req.get('host') ?? ''))) {
+  const reqHost = req.get('host') ?? ''
+  if (host !== reqHost && !(thisMachine(reqHost) && (thisMachine(host) || host === tunnelHost()))) {
     return deny(res, 403, 'forbidden', tr("server.requestBlockedThisPageUsesADifferent.dd9b4b"))
   }
   next()
+}
+
+/**
+ * Публичный адрес локального занятия, если туннель его сейчас держит.
+ *
+ * Туннель `colloq start --share` приходит к серверу с Host 127.0.0.1:<порт>
+ * (scripts/host.sh · --http-host-header), а страница шлёт Origin своего
+ * адреса *.trycloudflare.com. Без этой строки каждый POST с публичного адреса
+ * получал «другой адрес сервера» — и ссылка входа с токеном не входила.
+ * Чужой сайт этим не пройдёт: Origin должен совпасть с тем адресом, который
+ * сервер сам раздаёт как свой (config.publicUrl — аренда туннеля).
+ */
+function tunnelHost(): string | null {
+  try {
+    const url = new URL(config.publicUrl)
+    return thisMachine(url.host) ? null : url.host
+  } catch {
+    return null
+  }
 }
 
 /**
