@@ -72,7 +72,7 @@ DOMAIN=${DOMAIN:-colloq.ru}
 # машину. Нет адреса — нет и записи: об этом сказано вслух ниже.
 RELAY="${RELAY_ADDR:-$(read_env RELAY_ADDR)}"
 # Чья страница на GitHub Pages — цель CNAME для www.
-PAGES_HOST=${PAGES_HOST:-sleep3r.github.io}
+PAGES_HOST=${PAGES_HOST:-colloq-edu.github.io}
 
 if [[ -z "${CF_TOKEN_COLLOQ:-}" ]]; then
   # `|| true` внутри read_env: файл есть, а строки в нём нет — это «нужен

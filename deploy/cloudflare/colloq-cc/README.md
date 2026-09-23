@@ -21,7 +21,7 @@ routes that put it in front of the domain.
 **GitHub Pages serves one custom domain per site.** `site/CNAME` says
 `colloq.ru`, and Pages dispatches on the `Host` header: a request that arrives
 as `Host: colloq.cc` is answered with *"There isn't a GitHub Pages site here"*.
-A plain `CNAME colloq.cc -> sleep3r.github.io` therefore cannot work, proxied
+A plain `CNAME colloq.cc -> colloq-edu.github.io` therefore cannot work, proxied
 or not. Something has to rewrite `Host` to `colloq.ru` on the way to the
 origin, and that is the Worker's entire job.
 

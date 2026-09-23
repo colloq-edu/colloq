@@ -3,7 +3,7 @@
 // Зачем здесь вообще код, а не вторая запись в DNS. GitHub Pages отдаёт сайт
 // по ОДНОМУ собственному имени: в site/CNAME написано colloq.ru, и запрос с
 // заголовком `Host: colloq.cc` Pages встречает своей страницей «There isn't a
-// GitHub Pages site here». CNAME на sleep3r.github.io — хоть серый, хоть
+// GitHub Pages site here». CNAME на colloq-edu.github.io — хоть серый, хоть
 // оранжевый — даёт ровно это, потому что Pages разбирает именно Host. Значит,
 // между посетителем и Pages нужен кто-то, кто подменит Host на colloq.ru;
 // этим воркер и занят, и в этом вся его работа.
