@@ -176,7 +176,7 @@ test('блок установки на месте и обещает ровно �
     assert.match(html, /<code>pip install colloq<\/code>/, `${name}: нет команды установки`)
     assert.match(html, /<code>colloq start<\/code>/, `${name}: нет команды запуска`)
     assert.match(html, /<code>colloq start --share<\/code>/, `${name}: нет команды со ссылкой`)
-    assert.match(html, /https:\/\/github\.com\/sleep3r\/colloq/, `${name}: нет ссылки на GitHub`)
+    assert.match(html, /https:\/\/github\.com\/colloq-edu\/colloq/, `${name}: нет ссылки на GitHub`)
     assert.match(html, /https:\/\/pypi\.org\/project\/colloq\//, `${name}: нет ссылки на PyPI`)
     assert.match(html, /Node\.js 22\+/, `${name}: требования не названы`)
   }
