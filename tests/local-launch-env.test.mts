@@ -184,6 +184,54 @@ test('make .env, затем launch.ts dev: доходит до проверки 
   }
 })
 
+/**
+ * Занятый порт по умолчанию — не отказ: берётся ближайший свободный, как у
+ * Jupyter. Названный явно (--port) — отказ, как и был. Docker здесь нарочно не
+ * найти (PATH только с node): запуск останавливается на «Docker is not
+ * responding», ничего не собрав, — строка про порт к этому времени уже сказана.
+ */
+test('run: a busy default port moves to the nearest free one, a busy --port is refused', async () => {
+  const dir = checkout()
+  const blocker = net.createServer()
+  await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve))
+  const busy = (blocker.address() as net.AddressInfo).port
+  const launch = async (args: string[]): Promise<{ code: number | null; out: string }> => {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      COLLOQ_HOME: dir,
+      PORT: String(busy),
+      PATH: path.dirname(process.execPath),
+    }
+    for (const key of ['KERNEL_BACKEND', 'COLLOQ_CLUSTER', 'COLLOQ_APP_DIR', 'DATA_DIR', 'WORKSPACE_DIR'])
+      delete env[key]
+    const child = spawn(process.execPath, ['--import', 'tsx', 'cli/src/launch.ts', 'run', '--no-open', ...args], {
+      cwd: repo,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    child.stdout.on('data', (chunk) => (out += chunk))
+    child.stderr.on('data', (chunk) => (out += chunk))
+    const code = await new Promise<number | null>((resolve) => child.on('exit', resolve))
+    return { code, out }
+  }
+  try {
+    assert.equal(make(dir, '.env').code, 0)
+    const moved = await launch([])
+    assert.match(moved.out, new RegExp(`Port ${busy} is taken; using ${busy + 1}\\.`), moved.out)
+    assert.doesNotMatch(moved.out, /already taken/, moved.out)
+    assert.match(moved.out, /Docker is not responding/, moved.out)
+
+    const named = await launch(['--port', String(busy)])
+    assert.equal(named.code, 1, named.out)
+    assert.match(named.out, new RegExp(`Port ${busy} is already taken`), named.out)
+    assert.doesNotMatch(named.out, /using/, named.out)
+  } finally {
+    await new Promise<void>((resolve) => blocker.close(() => resolve()))
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 /*
  * env-use на свежем клоне. Цель переливала .env через grep -v и дописывала
  * KERNEL_ENV — а когда файла ещё не было, получался .env из одной этой строки.

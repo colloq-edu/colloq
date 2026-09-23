@@ -95,6 +95,12 @@ async function health(port: number): Promise<Record<string, unknown> | null> {
     return null
   }
 }
+/** Ближайший свободный порт от `from`, не дальше сотни; нет такого — null. */
+async function nearestFreePort(from: number): Promise<number | null> {
+  for (let port = from; port < Math.min(from + 100, 65536); port++)
+    if (!(await portOccupied(port))) return port
+  return null
+}
 async function portOccupied(port: number): Promise<boolean> {
   return await new Promise((resolve) => {
     const socket = net.connect(port, '127.0.0.1')
@@ -456,15 +462,23 @@ async function runSession(options: LaunchOptions): Promise<number> {
       fs.writeFileSync(envFile, localClassEnv(dist), { flag: 'wx', mode: 0o600 })
       console.log(`Created ${envFile}: the settings for this machine.`)
     }
-    const config = launchConfig(
-      root,
-      options,
-      {
-        ...parseEnv(fs.readFileSync(envFile)),
-        ...process.env,
-      },
-      home,
-    )
+    const settings = { ...parseEnv(fs.readFileSync(envFile)), ...process.env }
+    let config = launchConfig(root, options, settings, home)
+    /*
+     * Порт по умолчанию занят — берём ближайший свободный, как Jupyter.
+     * Только когда порт никто не называл: `--port 3000` — это просьба именно о
+     * нём, и на занятый отвечает отказ ниже. Под make dev порт сервера живёт в
+     * .env, а --port — это порт Vite, так что там ничего не подбирается.
+     */
+    if (options.action !== 'dev' && options.port === undefined && (await portOccupied(config.port))) {
+      const taken = config.port
+      const free = await nearestFreePort(taken + 1)
+      if (free !== null) {
+        options.port = free
+        config = launchConfig(root, options, settings, home)
+        console.log(`Port ${taken} is taken; using ${free}.`)
+      }
+    }
     config.env.COLLOQ_LOCAL_RUN_ID = runId
     /*
      * Назвать тот порт, который правда занят, и выход из положения. Было
