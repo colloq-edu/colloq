@@ -5,8 +5,9 @@
 #                   число во всех копиях (release-please-config.json, extra-files)
 #                   и раздел CHANGELOG.md. Когда этот PR слит, тот же шаг
 #                   ставит тег vX.Y.Z и создаёт GitHub Release с заметками из PR;
-#   publish         только если выпуск создан в этом прогоне: publish.yml с этим
-#                   тегом — колесо к выпуску, PyPI и GHCR за переменными.
+#   publish         только если выпуск создан в этом прогоне: запускает
+#                   publish.yml с этого тега — колесо к выпуску, PyPI и GHCR
+#                   за переменными.
 #
 # Токен — личный токен владельца (секрет RELEASE_PLEASE_TOKEN), и без него
 # задача падает, а не берёт GITHUB_TOKEN. Причин две, обе про то, чего с
@@ -17,10 +18,10 @@
 #     владелец хочет быть единственным автором в истории. С его токеном автор и
 #     коммитер — он сам, без трейлеров Co-Authored-By.
 #
-# Почему publish зовётся отсюда, а не по тегу. Тег, созданный личным токеном,
+# Почему publish запускается отсюда, а не по тегу. Тег, созданный личным токеном,
 # запустил бы и `push: tags`, и вышло бы два пути к одной публикации — с двумя
 # запросами одобрения PyPI. Путь оставлен один: у publish.yml нет триггера по
-# тегу, есть только этот вызов и ручной перезапуск.
+# тегу, есть только этот запуск и ручной перезапуск.
 #
 # Токен release-please ходит только в API: checkout здесь нет, npm и чужой код
 # рядом с токеном не исполняются. Подробно — RELEASING.md.
@@ -100,16 +101,24 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish:
-    name: Publish
+    name: Start Publish from the tag
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
-    # Потолок для вызванного publish.yml: вызванный workflow права только
-    # сужает. Каждая его задача берёт своё — contents: write только задаче с
-    # колесом, id-token только pypi, packages только image.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Запуск, а не вызов `uses:`. PyPI Trusted Publishing не признаёт
+    # переиспользуемые workflow: у вызванного publish.yml workflow_ref остаётся
+    # release-please.yml, и первый же выпуск (v0.2.0) PyPI отказал с
+    # `invalid-publisher`. Запущенный с тега publish.yml — самостоятельный
+    # прогон, и его claims совпадают с издателем на PyPI. workflow_dispatch —
+    # одно из немногих событий, которые GITHUB_TOKEN запускать может.
     permissions:
-      contents: write
-      id-token: write
-      packages: write
-    uses: ./.github/workflows/publish.yml
-    with:
-      tag: ${{ needs.release-please.outputs.tag_name }}
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          gh workflow run publish.yml --ref "$TAG" -f tag="$TAG"
+          echo "Publish for $TAG started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/publish.yml" >> "$GITHUB_STEP_SUMMARY"

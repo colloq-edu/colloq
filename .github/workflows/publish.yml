@@ -1,9 +1,7 @@
-# Публикация выпуска vX.Y.Z, который уже создал release-please. Два входа,
-# одни и те же задачи:
-#
-#   workflow_call      из release-please.yml, в том же прогоне, что создал
-#                      выпуск, — обычный путь: слили PR выпуска, и всё едет само;
-#   workflow_dispatch  перезапуск недостающих частей для существующего тега.
+# Публикация выпуска vX.Y.Z, который уже создал release-please. Вход один —
+# workflow_dispatch с тегом, и запускают его двое: release-please.yml сразу
+# после выпуска (обычный путь: слили PR выпуска, и всё едет само) и человек,
+# когда нужно дослать недостающие части для существующего тега.
 #
 # Триггера `push: tags` нет нарочно. release-please создаёт тег личным токеном
 # владельца, а такой тег запускает workflow: с этим триггером выпуск
@@ -32,21 +30,13 @@
 # пропускается. Запускать его — с самого тега («Use workflow from: vX.Y.Z»):
 # см. шаг сверки в build.
 #
-# При вызове из release-please.yml ссылка прогона — main, а не тег. Поэтому
-# окружение pypi должно пускать и ветку main, а не только теги v*
-# (RELEASING.md). Trusted Publishing PyPI сверяет job_workflow_ref, то есть
-# этот файл, publish.yml, но официально вызов из другого workflow PyPI пока не
-# поддерживает (pypa/gh-action-pypi-publish предупреждает об этом). Откажет —
-# перезапуск с тега выше публикует недостающее отдельным прогоном.
+# Не workflow_call, и это измерено: вызванный из release-please.yml, этот
+# файл нёс в OIDC-токене workflow_ref = release-please.yml, и PyPI отказал
+# v0.2.0 с `invalid-publisher` — переиспользуемые workflow Trusted Publishing
+# не поддерживает. Самостоятельный прогон с тега совпадает с издателем.
 name: Publish
 
 on:
-  workflow_call:
-    inputs:
-      tag:
-        description: Tag vX.Y.Z that release-please has just released
-        type: string
-        required: true
   workflow_dispatch:
     inputs:
       tag:

@@ -7,7 +7,7 @@
  *
  *   · токен — только личный RELEASE_PLEASE_TOKEN, без тихого отката на
  *     GITHUB_TOKEN: с ним PR выпуска был бы от бота и без CI;
- *   · публикация — ровно одним путём: вызов из release-please.yml, без
+ *   · публикация — ровно одним путём: запуск с тега из release-please.yml, без
  *     `push: tags` (тег от личного токена запустил бы его второй раз), и
  *     GitHub Release создаёт только release-please;
  *   · конфиг: тег vX.Y.Z без имени компонента, каждый путь extra-files
@@ -78,21 +78,24 @@ test('release-please runs on main with the owner token, and fails rather than fa
   assert.match(rp, /if: \$\{\{ !github\.event\.repository\.fork \}\}/)
 })
 
-test('a release publishes exactly once: the call from release-please, never a tag push', () => {
+test('a release publishes exactly once: started from release-please on the tag, never a tag push', () => {
   const rp = read('.github/workflows/release-please.yml')
   const publish = job(rp, 'publish')
   assert.match(publish, /needs: release-please/)
   assert.match(publish, /if: needs\.release-please\.outputs\.release_created == 'true'/)
-  assert.match(publish, /uses: \.\/\.github\/workflows\/publish\.yml/)
-  assert.match(publish, /tag: \$\{\{ needs\.release-please\.outputs\.tag_name \}\}/)
-  // Личного токена в publish.yml не передаём: там npm ci и вся сюита.
-  assert.doesNotMatch(publish, /secrets:/)
+  // Запуск с тега, а не `uses:`: вызванный переиспользуемым, publish.yml нёс
+  // workflow_ref = release-please.yml, и PyPI отказал v0.2.0 (invalid-publisher).
+  assert.doesNotMatch(publish, /uses: \.\/\.github\/workflows\/publish\.yml/)
+  assert.match(publish, /gh workflow run publish\.yml --ref "\$TAG" -f tag="\$TAG"/)
+  assert.match(publish, /TAG: \$\{\{ needs\.release-please\.outputs\.tag_name \}\}/)
+  // Личного токена рядом не держим: запускает GITHUB_TOKEN.
+  assert.doesNotMatch(publish, /secrets\./)
   assert.match(job(rp, 'release-please'), /release_created: \$\{\{ steps\.release\.outputs\.release_created \}\}/)
 
   const text = read('.github/workflows/publish.yml')
   const on = text.slice(text.indexOf('\non:\n'), text.indexOf('\npermissions:'))
   assert.doesNotMatch(on, /\n {2}push:/)
-  assert.match(on, /\n {2}workflow_call:/)
+  assert.doesNotMatch(on, /\n {2}workflow_call:/)
   assert.match(on, /\n {2}workflow_dispatch:/)
   // Ни один workflow не заводит выпуск сам: заметки пишет release-please.
   for (const file of workflows) {

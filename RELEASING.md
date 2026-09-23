@@ -240,18 +240,16 @@ accident.
 
    The first successful publish creates the project and claims the name.
 
-   `release-please.yml` calls `publish.yml` as a reusable workflow. PyPI matches
-   the OIDC `job_workflow_ref` claim, which still names `publish.yml`, so the
-   same publisher applies. PyPI does not yet officially support reusable
-   workflows, though, and the publish action prints a warning about it. If an
-   upload is ever refused with `invalid-publisher`, publish from the tag as
-   described in [When something goes wrong](#when-something-goes-wrong). That
-   run is not a reusable-workflow call.
+   `release-please.yml` does not call `publish.yml` as a reusable workflow: it
+   starts it from the new tag with `workflow_dispatch`. PyPI Trusted Publishing
+   does not support reusable workflows, and the one attempt (v0.2.0) was
+   refused with `invalid-publisher`, because the token named
+   `release-please.yml` as the workflow. A dispatched run is `publish.yml` on
+   its own, so the publisher above matches.
 3. **GitHub environment `pypi`** (Settings → Environments). Add yourself as a
    required reviewer, so every PyPI upload waits for your approval. Under
-   *Deployment branches and tags*, allow the tag pattern `v*` **and the branch
-   `main`**. A publish called from *Release Please* runs on `main`, not on the
-   tag.
+   *Deployment branches and tags*, allow the tag pattern `v*`. Every publish
+   runs on the tag.
 4. **GHCR visibility.** The first image push creates the package
    `ghcr.io/<owner>/colloq-vast`. If vast.ai should pull it without credentials,
    make the package public in its package settings. Otherwise, add registry
@@ -288,7 +286,7 @@ contributors by commit author. In this flow:
 | Job | What it does | Permissions |
 | --- | --- | --- |
 | `release-please` | Fails early if `RELEASE_PLEASE_TOKEN` is missing. Runs `googleapis/release-please-action` (v4, pinned by SHA) with that token. If a release pull request was just merged, it tags `vX.Y.Z` and creates the GitHub Release. Otherwise it opens or updates the release pull request. Skipped in forks. | none for `GITHUB_TOKEN` |
-| `publish` | Only when a release was created in this run: calls `publish.yml` with the new tag. | `contents: write`, `id-token: write`, `packages: write` as a ceiling; each called job narrows it |
+| `publish` | Only when a release was created in this run: starts `publish.yml` on the new tag (`workflow_dispatch`). | `actions: write` |
 
 The runs queue up and are never cancelled half-way (concurrency group
 `release-please`).
