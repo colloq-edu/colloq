@@ -441,12 +441,20 @@ async function runSession(options: LaunchOptions): Promise<number> {
       home,
     )
     config.env.COLLOQ_LOCAL_RUN_ID = runId
-    if (
-      (await portOccupied(config.port)) ||
-      (config.uiPort !== config.port && (await portOccupied(config.uiPort)))
-    )
+    /*
+     * Назвать тот порт, который правда занят, и выход из положения. Было
+     * «Port 3000 or 3000 is already taken» — при одном порте фраза повторяла
+     * число и не говорила, что делать.
+     */
+    const busy = (await portOccupied(config.port))
+      ? config.port
+      : config.uiPort !== config.port && (await portOccupied(config.uiPort))
+        ? config.uiPort
+        : null
+    if (busy !== null)
       throw new Error(
-        `Port ${config.port} or ${config.uiPort} is already taken. The running process was left alone.`,
+        `Port ${busy} is already taken by another program; it was left alone. ` +
+          'Stop that program, or pick another port with --port, for example --port 3100.',
       )
     /*
      * Замок публикации по настройкам — до сборки и до сервера. Отказ здесь
