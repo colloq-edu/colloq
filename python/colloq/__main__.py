@@ -205,13 +205,22 @@ def _install(npm: str, wanted: dict) -> None:
     # напечатав: при выводе в файл или в конвейер обе эти строки пропадали
     # целиком, и разовая минута ожидания выглядела зависанием без объяснений.
     print("Installing Colloq's Node environment — once, a minute or two.", flush=True)
-    print("Directory: %s" % APP, flush=True)
+    # Вывод npm — только при сбое. Его прогресс-крутилка и предупреждения
+    # (install-scripts, устаревшие пакеты) преподавателю ничего не говорят, а
+    # первым экраном после `pip install` оказывались именно они.
     done = subprocess.run(
-        [npm, "install", "--omit=dev", "--no-audit", "--no-fund"],
+        [npm, "install", "--omit=dev", "--no-audit", "--no-fund", "--no-progress", "--loglevel=error"],
         cwd=str(APP),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
     )
     if done.returncode != 0:
+        tail = [line for line in (done.stdout or "").splitlines() if line.strip()][-25:]
         fail(
+            "",
+            *tail,
             "",
             "Could not install the Node environment (npm exited with %d)." % done.returncode,
             "Run it by hand: cd %s && npm install --omit=dev" % APP,
