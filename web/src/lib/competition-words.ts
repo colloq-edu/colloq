@@ -386,6 +386,7 @@ export function rowWords(input: RowInput): RowWords {
       return {
         title: file,
         lines: [
+          live?.resourcePending ? tr('competitions.runtime.resourcesWaiting') : '',
           queueNote({
             place: live?.place ?? null,
             aheadNumber: live?.aheadNumber ?? null,

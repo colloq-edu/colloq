@@ -129,6 +129,8 @@ export interface SubmissionLive {
   place: number | null
   /** «≈ 6 мин»; null — мерить не по чему, соревнование ещё ничего не считало. */
   etaMs: number | null
+  /** Планировщик пока не нашёл ресурсы для запуска Pod; повтор произойдёт автоматически. */
+  resourcePending?: boolean
   /** Когда взяли в работу; null — ещё ждёт. */
   startedAt: number | null
   /** Правая половина «01:12 из 10:00». */

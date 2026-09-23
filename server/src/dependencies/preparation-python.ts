@@ -104,6 +104,29 @@ def fail(code, message, line=None):
     raise PreparationFailure(code, message, line)
 
 def emit(value):
+    if os.environ.get('COMP_RESULT') == '/out':
+        target = pathlib.Path('/out')
+        for field in ('resolved', 'verified'):
+            if field in value:
+                body = json.dumps(value[field], separators=(',', ':')).encode('utf-8')
+                if len(body) > 1024 * 1024: fail('invalid_output', 'Package manifest is too large.')
+                temp = target / (field + '.json.tmp')
+                temp.write_bytes(body)
+                temp.replace(target / (field + '.json'))
+        if 'state' in value or 'error' in value:
+            progress = target / 'progress.ndjson'
+            if 'error' in value:
+                error = value['error']
+                event = {'error': {'code': str(error.get('code', 'preparation_failed'))[:50],
+                                   'message': str(error.get('message', 'Package preparation failed.'))[:500],
+                                   'line': error.get('line')}}
+            else:
+                event = {'state': value['state'], 'log': str(value.get('log', ''))[:500]}
+                for field in ('downloadBytes', 'installedBytes'):
+                    if field in value: event[field] = value[field]
+            body = (json.dumps(event, separators=(',', ':')) + '\n').encode('utf-8')
+            if not progress.exists() or progress.stat().st_size + len(body) <= 128 * 1024:
+                with progress.open('ab') as output: output.write(body)
     print('__COLLOQ_DEP__' + json.dumps(value, separators=(',', ':')), flush=True)
 
 def parse_requirements(text, base):

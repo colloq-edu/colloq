@@ -308,6 +308,19 @@ test('идущая посылка на телефоне: одна фраза в�
   assert.deepEqual(words.lines, ['Выполняется ячейка 9 из 14'])
 })
 
+test('нехватка ресурсов объясняется в ожидающей посылке без ложной оценки времени', () => {
+  const words = rowWords({
+    submission: submission({ state: 'queued' }),
+    live: live({ resourcePending: true, etaMs: 42_000 }),
+    best: false,
+    paused: false,
+    now: NOW,
+  })
+  assert.equal(words.title, 'lgbm_lags_v3.ipynb')
+  assert.match(words.lines.join(' '), /не хватает ресурсов/)
+  assert.match(words.lines.join(' '), /очереди/)
+})
+
 test('готовая посылка: лучшая — без слова «выполнена», прочие — с ним', () => {
   const best = rowWords({ submission: submission(), live: null, best: true, paused: false, now: NOW })
   assert.equal(best.lines[0], `Сегодня в ${clockOf(NOW - 3 * MINUTE)} · 2 мин 51 с · лучший результат`)

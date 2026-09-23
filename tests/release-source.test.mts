@@ -36,6 +36,27 @@ with tempfile.TemporaryDirectory() as tmp:
   assert.equal(result.stdout.trim(), '127.0.0.1:5000/colloq-app@sha256:' + 'b'.repeat(64))
 })
 
+test('default release catalog publishes the lightweight CPU Kaggle environment', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-catalog-default-'))
+  try {
+    const output = path.join(dir, 'release.json')
+    const code = `import importlib.util,sys,json,pathlib
+s=importlib.util.spec_from_file_location('builder',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+m.archive_source=lambda repo,commit,dest: repo
+m.pinned=lambda base: base+'@sha256:'+'0'*64
+m.release.tooling_hashes=lambda root: {f:'0'*64 for f in m.release.TOOLING_FILES}
+m.build=lambda tag,*args: tag.rsplit(':',1)[0]+'@sha256:'+'1'*64
+out=sys.argv[2]
+sys.argv=['release-build.py','--registry','ghcr.io/example/colloq','--k3s-version','v1.36.4+k3s1','--source-commit','a'*40,'--output',out]
+m.main()
+print(json.dumps([e['name'] for e in json.load(open(out))['catalog']['environments']]))
+`
+    const result = spawnSync('python3', ['-c', code, path.join(root, 'scripts/release-build.py'), output], { encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout.trim().split('\n').pop()!), ['base', 'kaggle-base'])
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('archived build context excludes untracked inputs and uses committed content despite working-tree edits', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-source-'))
   try {

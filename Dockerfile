@@ -77,7 +77,10 @@ ENV NODE_ENV=development KERNEL_BACKEND=docker
 FROM ${NODE_IMAGE} AS broker
 WORKDIR /app
 ENV NODE_ENV=production
+COPY runtime/package.json ./package.json
 COPY --from=build /app/runtime/dist/runtime.js ./runtime.js
+COPY --from=build /app/runtime/dist/export-sidecar.js ./export-sidecar.js
+COPY --from=build /app/runtime/dist/competition-proxy.js ./competition-proxy.js
 COPY LICENSE ./
 USER node
 EXPOSE 8787

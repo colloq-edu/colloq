@@ -9,11 +9,14 @@ import {
 } from '../../shared/runtime.js'
 import { RuntimeError, type RuntimeController } from './controller.js'
 import { KubernetesError } from './kubernetes.js'
+import { COMPETITION_JOB_ID, parseCompetitionJobIntent } from '../../shared/competition-runtime.js'
+import type { CompetitionJobs } from './competition-jobs.js'
 
 interface Options {
   token: () => string
   catalog: () => RuntimeCatalog
   controller: Pick<RuntimeController, 'ensure' | 'remove' | 'list' | 'health' | 'resize'>
+  jobs?: Pick<CompetitionJobs, 'start' | 'status' | 'collect' | 'cancel' | 'list' | 'health'>
 }
 const digest = (value: string) => createHash('sha256').update(value).digest()
 const reply = (res: ServerResponse, status: number, value: unknown) => {
@@ -58,7 +61,11 @@ export function createRuntimeServer(options: Options) {
         const path = permanent ? rawPath.slice(0, -RUNTIME_RETIRE_QUERY.length) : rawPath
         if (path === '/v1/health' && req.method === 'GET') {
           const health = await options.controller.health()
-          reply(res, health.ok ? 200 : 503, health)
+          const competition = options.jobs ? await options.jobs.health() : {
+            execution: { available: false, code: 'broker_unavailable', reason: 'Competition broker is not configured' },
+            preparation: { available: false, code: 'broker_unavailable', reason: 'Competition broker is not configured' },
+          }
+          reply(res, health.ok ? 200 : 503, { ...health, competition })
           return
         }
         if (path === '/v1/catalog' && req.method === 'GET') {
@@ -68,6 +75,43 @@ export function createRuntimeServer(options: Options) {
         if (path === '/v1/rooms' && req.method === 'GET') {
           reply(res, 200, { rooms: await options.controller.list() })
           return
+        }
+        if (path === '/v1/competition-jobs') {
+          if (req.method !== 'GET') throw new RuntimeError('Method not allowed', 405)
+          if (!options.jobs) throw new RuntimeError('Competition broker is not configured', 503)
+          reply(res, 200, { jobs: await options.jobs.list() })
+          return
+        }
+        if (path.startsWith('/v1/competition-jobs/')) {
+          const rest = path.slice('/v1/competition-jobs/'.length)
+          const collect = rest.endsWith('/collect')
+          const id = collect ? rest.slice(0, -'/collect'.length) : rest
+          if (!COMPETITION_JOB_ID.test(id)) throw new RuntimeError('Invalid competition job ID', 400)
+          if (!options.jobs) throw new RuntimeError('Competition broker is not configured', 503)
+          if (collect) {
+            if (req.method !== 'POST') throw new RuntimeError('Method not allowed', 405)
+            if (req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0)
+              throw new RuntimeError('Collect does not accept a request body', 400)
+            reply(res, 200, await options.jobs.collect(id))
+            return
+          }
+          if (req.method === 'POST') {
+            let intent
+            try { intent = parseCompetitionJobIntent(await body(req)) }
+            catch (err) { if (err instanceof RuntimeError) throw err
+              throw new RuntimeError(err instanceof Error ? err.message : 'Invalid competition intent', 400) }
+            reply(res, 200, await options.jobs.start(id, intent))
+            return
+          }
+          if (req.method === 'GET') { reply(res, 200, await options.jobs.status(id)); return }
+          if (req.method === 'DELETE') {
+            if (req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0)
+              throw new RuntimeError('DELETE does not accept a request body', 400)
+            await options.jobs.cancel(id)
+            reply(res, 200, { ok: true })
+            return
+          }
+          throw new RuntimeError('Method not allowed', 405)
         }
         if (path.startsWith('/v1/rooms/')) {
           const id = path.slice('/v1/rooms/'.length)

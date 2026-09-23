@@ -237,7 +237,10 @@ def render(value, node_name, state_dir, runtime_env=None):
     # keeps the room's Python. It cannot alter image, command, mounts or security.
     items.append(resource('Role', 'colloq-runtime', rules=[{'apiGroups': [''],
         'resources': ['pods', 'services'], 'verbs': ['get', 'list', 'create', 'delete']},
-        {'apiGroups': [''], 'resources': ['pods/resize'], 'verbs': ['patch']}]))
+        {'apiGroups': [''], 'resources': ['pods/resize'], 'verbs': ['patch']},
+        {'apiGroups': [''], 'resources': ['pods/log'], 'verbs': ['get']},
+        {'apiGroups': [''], 'resources': ['persistentvolumeclaims'], 'verbs': ['get']},
+        {'apiGroups': ['networking.k8s.io'], 'resources': ['networkpolicies'], 'verbs': ['get']}]))
     items.append(resource('RoleBinding', 'colloq-runtime', roleRef={'apiGroup': 'rbac.authorization.k8s.io',
         'kind': 'Role', 'name': 'colloq-runtime'}, subjects=[{'kind': 'ServiceAccount',
         'name': 'colloq-runtime', 'namespace': NAMESPACE}]))
@@ -275,6 +278,9 @@ def render(value, node_name, state_dir, runtime_env=None):
             env.update({'RUNTIME_PORT': '8787', 'RUNTIME_TOKEN_FILE': '/etc/colloq-runtime-auth/runtime-token',
                 'RUNTIME_ROOM_SECRET_FILE': '/run/room-secret/room-secret', 'RUNTIME_CATALOG_FILE': '/etc/colloq/catalog.json',
                 'RUNTIME_NAMESPACE': NAMESPACE, 'RUNTIME_WORKSPACE_CLAIM': 'colloq-workspace',
+                'RUNTIME_COMPETITION_EXPORTER_IMAGE': value['runtimeImage'],
+                'RUNTIME_COMPETITION_INSTANCE_ID': NAMESPACE,
+                'RUNTIME_COMPETITION_DATA_CLAIM': 'colloq-data',
                 'RUNTIME_IMAGE_PULL_SECRET': 'colloq-registry',
                 'RUNTIME_KUBE_URL': 'https://kubernetes.default.svc',
                 'RUNTIME_KUBE_TOKEN_FILE': '/var/run/secrets/kubernetes.io/serviceaccount/token',
@@ -282,6 +288,8 @@ def render(value, node_name, state_dir, runtime_env=None):
             env.update(runtime_env or {})
             volumes.append({'name': 'room-secret', 'secret': {'secretName': 'colloq-room-secret', 'defaultMode': 0o440}})
             mounts.append({'name': 'room-secret', 'mountPath': '/run/room-secret', 'readOnly': True})
+            volumes.append({'name': 'data', 'persistentVolumeClaim': {'claimName': 'colloq-data'}})
+            mounts.append({'name': 'data', 'mountPath': '/data'})
         container = {'name': role, 'image': value['appImage' if app else 'runtimeImage'],
             'imagePullPolicy': 'IfNotPresent', 'ports': [{'containerPort': port, 'name': 'http'}],
             'env': [{'name': k, 'value': v} for k, v in env.items()], 'volumeMounts': mounts,
@@ -310,6 +318,31 @@ def render(value, node_name, state_dir, runtime_env=None):
                 'to': [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'kube-system'}},
                         'podSelector': {'matchLabels': {'k8s-app': 'kube-dns'}}}],
                 'ports': [{'protocol': 'UDP', 'port': 53}, {'protocol': 'TCP', 'port': 53}]}]}))
+    dns = {'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'kube-system'}},
+           'podSelector': {'matchLabels': {'k8s-app': 'kube-dns'}}}
+    dns_ports = [{'protocol': 'UDP', 'port': 53}, {'protocol': 'TCP', 'port': 53}]
+    exporter_ingress = [{'from': [select('runtime')], 'ports': [{'protocol': 'TCP', 'port': 8765}]}]
+    items.append(resource('NetworkPolicy', 'competition-job-isolation', {
+        'podSelector': {'matchLabels': {'colloq.dev/role': 'competition-job'}},
+        'policyTypes': ['Ingress', 'Egress'], 'ingress': exporter_ingress, 'egress': []}))
+    items.append(resource('NetworkPolicy', 'competition-resolver-isolation', {
+        'podSelector': {'matchLabels': {'colloq.dev/role': 'competition-resolver'}},
+        'policyTypes': ['Ingress', 'Egress'], 'ingress': exporter_ingress,
+        'egress': [{'to': [select('competition-proxy')], 'ports': [{'protocol': 'TCP', 'port': 3128}]},
+                   {'to': [dns], 'ports': dns_ports}]}))
+    # NetworkPolicy restricts destination port and routable address ranges;
+    # the trusted CONNECT proxy also checks host allowlist and resolved IPs.
+    public_ipv4 = {'ipBlock': {'cidr': '0.0.0.0/0', 'except': [
+        '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
+        '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24',
+        '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24',
+        '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4']}}
+    items.append(resource('NetworkPolicy', 'competition-proxy-isolation', {
+        'podSelector': {'matchLabels': {'colloq.dev/role': 'competition-proxy'}},
+        'policyTypes': ['Ingress', 'Egress'],
+        'ingress': [{'from': [select('competition-resolver')], 'ports': [{'protocol': 'TCP', 'port': 3128}]}],
+        'egress': [{'to': [dns], 'ports': dns_ports},
+                   {'to': [public_ipv4], 'ports': [{'protocol': 'TCP', 'port': 443}]}]}))
     items.append(resource('NetworkPolicy', 'runtime-ingress', {'podSelector': {'matchLabels': {'colloq.dev/role': 'runtime'}},
         'policyTypes': ['Ingress'], 'ingress': [{'from': [select('app')], 'ports': [{'protocol': 'TCP', 'port': 8787}]}]}))
     items.append(resource('NetworkPolicy', 'app-ingress', {'podSelector': {'matchLabels': {'colloq.dev/role': 'app'}},

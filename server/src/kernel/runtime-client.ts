@@ -1,4 +1,5 @@
 import { tr } from '@shared/i18n'
+import { COMPETITION_JOB_ID, parseCompetitionJobIntent, parseCompetitionJobStatus, parseCompetitionJobCollection, type CompetitionJobCollection, type CompetitionJobIntent, type CompetitionJobStatus } from '@shared/competition-runtime'
 /** The web process sends room intent; it never forwards a container specification. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -72,6 +73,17 @@ const cpusField = (value: unknown): boolean =>
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RuntimeRequestError(tr("server.invalidKernelRuntimeResponse.110f37"))
   return value as Record<string, unknown>
+}
+function competitionStatus(value: unknown, expected?: string): CompetitionJobStatus {
+  try {
+    const row=parseCompetitionJobStatus(value)
+    if (expected && row.jobId!==expected) throw new Error('identity')
+    return row
+  } catch { throw new RuntimeRequestError('Invalid competition job status or identity') }
+}
+function competitionCollection(value: unknown): CompetitionJobCollection {
+  try { return parseCompetitionJobCollection(value) }
+  catch { throw new RuntimeRequestError('Invalid competition job collection') }
 }
 function runtimeUrl(raw: string): string {
   let url: URL
@@ -208,16 +220,46 @@ export class RuntimeClient {
       const recovery = value.recovery as RuntimeHealth['recovery']
       const validRecovery = recovery && ['rollbackRetries', 'rollbackFailures', 'rollbacksApplied'].every((key) =>
         Number.isSafeInteger(recovery[key as keyof typeof recovery]) && recovery[key as keyof typeof recovery] >= 0)
+      const capability=(raw:unknown):raw is {available:boolean;code:string;reason:string|null} => {
+        if(!raw||typeof raw!=='object'||Array.isArray(raw))return false
+        const row=raw as Record<string,unknown>
+        return typeof row.available==='boolean'&&typeof row.code==='string'&&row.code.length<=100&&(row.reason===null||typeof row.reason==='string'&&row.reason.length<=500)
+      }
+      const competition=value.competition as Record<string,unknown>|undefined
+      const validCompetition=competition&&capability(competition.execution)&&capability(competition.preparation)
       return {
         ok:value.ok,reason:value.ok ? null : value.reason as string | null,
         ...(typeof cpus === 'number' ? {defaultCpus:cpus} : {}),
         ...(typeof value.defaultMemoryMb === 'number' ? {defaultMemoryMb:value.defaultMemoryMb} : {}),
         ...(typeof value.maxMemoryMb === 'number' ? {maxMemoryMb:value.maxMemoryMb} : {}),
         ...(validRecovery ? { recovery } : {}),
+        ...(validCompetition ? {competition:competition as unknown as NonNullable<RuntimeHealth['competition']>} : {}),
       }
     } catch(error) { return {ok:false,reason:error instanceof Error ? error.message : tr("server.kernelRuntimeIsUnavailable.44455e")} }
   }
   async catalog(): Promise<RuntimeCatalog> { return parseRuntimeCatalog(await this.request('GET','/v1/catalog')) }
+  async startCompetitionJob(intent: CompetitionJobIntent): Promise<CompetitionJobStatus> {
+    const valid = parseCompetitionJobIntent(intent)
+    return competitionStatus(await this.request('POST',`/v1/competition-jobs/${valid.jobId}`,valid,180000), valid.jobId)
+  }
+  async competitionJob(jobId: string): Promise<CompetitionJobStatus> {
+    if (!COMPETITION_JOB_ID.test(jobId)) throw new RuntimeRequestError('Invalid competition job identity')
+    return competitionStatus(await this.request('GET',`/v1/competition-jobs/${jobId}`,undefined,30000),jobId)
+  }
+  async collectCompetitionJob(jobId: string): Promise<CompetitionJobCollection> {
+    if (!COMPETITION_JOB_ID.test(jobId)) throw new RuntimeRequestError('Invalid competition job identity')
+    return competitionCollection(await this.request('POST',`/v1/competition-jobs/${jobId}/collect`,undefined,180000))
+  }
+  async cancelCompetitionJob(jobId: string): Promise<void> {
+    if (!COMPETITION_JOB_ID.test(jobId)) throw new RuntimeRequestError('Invalid competition job identity')
+    const result = object(await this.request('DELETE',`/v1/competition-jobs/${jobId}`,undefined,90000))
+    if (result.ok !== true) throw new RuntimeRequestError('Competition job cancellation was not confirmed')
+  }
+  async competitionJobs(): Promise<CompetitionJobStatus[]> {
+    const result = object(await this.request('GET','/v1/competition-jobs',undefined,30000))
+    if (!Array.isArray(result.jobs) || result.jobs.length > 10000) throw new RuntimeRequestError('Invalid competition job list')
+    return result.jobs.map(value => competitionStatus(value))
+  }
   async rooms(): Promise<RuntimeRoom[]> {
     const value=object(await this.request('GET','/v1/rooms'))
     if (!Array.isArray(value.rooms) || value.rooms.length>10000) throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))

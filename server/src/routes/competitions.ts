@@ -276,7 +276,7 @@ function liveOf(competition: Competition, me: Entrant, now = Date.now()): Submis
   const rows = queueRows()
   const running = rows.filter((row) => row.state === 'running')
   const ordered = fairOrder(
-    rows.filter((row) => row.state === 'waiting'),
+    rows.filter((row) => row.state === 'waiting' && row.notBefore <= now),
     new Set(running.map((row) => row.entrantId)),
   )
   const limitMs = competition.limits.wallSeconds * 1000
@@ -292,6 +292,7 @@ function liveOf(competition: Competition, me: Entrant, now = Date.now()): Submis
   })
   return mine.map((submission): SubmissionLive => {
     const at = ordered.findIndex((row) => row.submissionId === submission.id)
+    const waiting = rows.find((row) => row.submissionId === submission.id && row.state === 'waiting')
     /*
      * Чья посылка идёт прямо передо мной — и только МОЯ: «запуск после
      * завершения посылки #12» про чужой номер не говорит ничего, а сам номер
@@ -306,6 +307,7 @@ function liveOf(competition: Competition, me: Entrant, now = Date.now()): Submis
       submissionId: submission.id,
       place: at < 0 ? null : at + 1,
       etaMs: at < 0 ? null : (etas[at] ?? null),
+      resourcePending: (waiting?.resourceRetries ?? 0) > 0,
       startedAt: running.find((row) => row.submissionId === submission.id)?.startedAt ?? null,
       limitMs,
       aheadNumber: ahead ? (getSubmission(ahead.submissionId)?.number ?? null) : null,

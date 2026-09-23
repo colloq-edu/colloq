@@ -33,6 +33,8 @@ import { verifyBundleFiles } from '../dependencies/files.js'
 import {
   BOOT,
   enqueue,
+  deferResourceAttempt,
+  discardUnstartedRun,
   finishRun,
   finishQueueAttempt,
   ownsQueueAttempt,
@@ -72,6 +74,7 @@ import {
   SUBMISSION_FILE,
 } from './storage.js'
 import { METRIC_NAME, competitionDockerDiagnostics } from './docker-runner.js'
+import { CompetitionResourcePending } from './broker-runner.js'
 import {
   competitionBackend,
   competitionRunner,
@@ -98,6 +101,7 @@ import {
  */
 import './docker-runner.js'
 import './fake-runner.js'
+import './broker-runner.js'
 
 /**
  * Имя контейнера — по нему его убивают и по нему же ищут в журнале docker.
@@ -187,9 +191,8 @@ export function enoughMemory(availableMb: number | null, needMb: number): boolea
  * своей тетради, и в журнале это будет выглядеть как «тетрадь не нашла
  * train.csv».
  *
- * Отсюда, а не из storage.ts: режим меняется не потому, что так правильно
- * хранить, а потому, что этого требует docker. Каталог всё равно лежит внутри
- * DATA_DIR, куда чужому не войти.
+ * Отсюда, а не из storage.ts: режим меняется для изолированного исполнителя
+ * (Docker локально или Pod в k3s). Каталог остаётся внутри DATA_DIR.
  */
 function letContainerRead(dir: string): void {
   try {
@@ -415,6 +418,14 @@ async function runJob(row: QueueRow): Promise<void> {
     if (row.kind === 'metric') await scoreOnly(competition, submission, row, provenance)
     else await runNotebookThenScore(competition, submission, row, provenance)
   } catch (err) {
+    if (err instanceof CompetitionResourcePending && ownsQueueAttempt(row)) {
+      const reason=tr('competitions.runtime.resourcesWaiting')
+      const after=deferResourceAttempt(row,reason,Date.now(),`Competition Pod unschedulable (${err.resource}); retrying automatically.`,err.kind)
+      if (after!==null) {
+        updateSubmission(submission.id,{cellsDone:submission.cellsDone,cellsTotal:submission.cellsTotal,durationMs:submission.durationMs})
+        return
+      }
+    }
     /*
      * Сюда попадает только наша собственная поломка — не падение тетради и не
      * падение метрики, у тех есть свои исходы. Участник в ней не виноват, и
@@ -453,14 +464,14 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
   const data = openDir(competition.id)
   const input = inputDir(competition.id, submission.id)
   const result = attemptDir(competition.id, submission.id, row.attemptId!)
-  if (runner.backend === 'docker') {
+  if (runner.backend !== 'test') {
     letContainerRead(data)
     letContainerRead(input)
   }
 
   let dependenciesDir: string | undefined
   let preflightError: unknown = null
-  if (runner.backend === 'docker') {
+  if (runner.backend !== 'test') {
     try {
       if (!binding?.revision) throw new Error('This legacy submission has no available pinned environment. Submit the notebook again.')
       if (binding.bundle) {
@@ -476,7 +487,8 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
       teacherError: 'Cancelled before container start' })
     return
   }
-  const outcome: RunOutcome = preflightError ? {
+  let outcome: RunOutcome
+  try { outcome = preflightError ? {
     status: 'dependency_error', cell: -1, cells: 0, wall: 0, submission: null,
     detail: preflightError instanceof Error ? preflightError.message : String(preflightError), log: '',
     diagnostics: { exit: null, oomKilled: false, backend: runner.backend },
@@ -500,7 +512,10 @@ async function runNotebookThenScore(competition: Competition, submission: Submis
         cellsTotal: progress.cells,
       })
     },
-  })
+  }) } catch(error) {
+    if(error instanceof CompetitionResourcePending)discardUnstartedRun(run.id,row.attemptId!)
+    throw error
+  }
   finishRun(run.id, {
     finishedAt: Date.now(),
     verdict: outcome.status,
@@ -619,7 +634,7 @@ async function scoreStep(
   updateSubmission(submission.id, { stage: 'score' })
 
   const imageDigest = getBinding(submission.id)?.revision?.imageDigest
-  if (runner.backend === 'docker' && !imageDigest) {
+  if (runner.backend !== 'test' && !imageDigest) {
     updateSubmission(submission.id, {
       state: 'metricFailed', stage: 'score', durationMs: notebookWall,
       teacherError: 'This legacy submission has no pinned environment. Submit the notebook again before scoring.',
@@ -651,7 +666,7 @@ async function scoreStep(
   const scoreInput = attemptDir(competition.id, submission.id, row.attemptId!, 'score')
   competitionsFs.writeFileSync(path.join(scoreInput, SUBMISSION_FILE), answer, { mode: 0o600 })
   const outDir = attemptDir(competition.id, submission.id, row.attemptId!, 'score-out')
-  if (runner.backend === 'docker') {
+  if (runner.backend !== 'test') {
     letContainerRead(secrets)
     letContainerRead(scoreInput)
   }
@@ -670,6 +685,9 @@ async function scoreStep(
       outDir,
       limits: limitsFor(competition, 'metric'),
     })
+  } catch(error) {
+    if(error instanceof CompetitionResourcePending)discardUnstartedRun(run.id,row.attemptId!)
+    throw error
   } finally {
     /*
      * Вторая копия ответа и json метрики живут ровно на время подсчёта. Держать

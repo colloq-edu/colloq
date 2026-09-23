@@ -74,7 +74,7 @@
     if (queued) {
       return {
         kind: 'clock' as const,
-        text: live?.etaMs === null || live?.etaMs === undefined
+        text: live?.resourcePending || live?.etaMs === null || live?.etaMs === undefined
           ? '—'
           : tr('competitions.p.eta', { duration: spellDuration(live.etaMs) }),
         tone: 'text-ink',

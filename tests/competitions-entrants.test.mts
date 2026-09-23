@@ -576,7 +576,7 @@ for (const scoring of ['bestPublic', 'last'] as const) test(`API refuses manual 
   assert.match((await response.json()).error, /автоматически|automatically/)
 })
 
-test('public page explains unsupported execution and upload refuses before parsing its body', async () => {
+test('public page explains unavailable broker execution and upload refuses before parsing its body', async () => {
   const c = createCompetition({ slug: 'no-public-runtime', title: 'No runtime' })!
   setCompetitionState(c.id, 'live')
   const joined = await call(`/api/k/competitions/${c.slug}/join`, { method: 'POST', body: JSON.stringify({ name: 'Waiting entrant' }) })
@@ -584,7 +584,7 @@ test('public page explains unsupported execution and upload refuses before parsi
   const previous = { kernel: process.env.KERNEL_BACKEND, competition: process.env.COMPETITION_BACKEND }
   try {
     process.env.KERNEL_BACKEND = 'broker'
-    process.env.COMPETITION_BACKEND = 'docker'
+    process.env.COMPETITION_BACKEND = 'broker'
     const page = await (await call(`/api/k/competitions/${c.slug}`, { cookie })).json()
     assert.equal(page.capabilities.execution.available, false)
     const response = await call(`/api/k/competitions/${c.slug}/submissions`, { method: 'POST', cookie, body: JSON.stringify({ definitely: 'not a notebook upload' }) })

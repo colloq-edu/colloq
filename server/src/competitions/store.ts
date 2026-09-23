@@ -272,6 +272,8 @@ db.exec(`
     enqueued_at    INTEGER NOT NULL,
     started_at     INTEGER,
     attempts       INTEGER NOT NULL DEFAULT 0,
+    resource_retries INTEGER NOT NULL DEFAULT 0,
+    not_before     INTEGER NOT NULL DEFAULT 0,
     /*
      * Который по счёту заход ЭТОГО человека — считается в момент постановки в
      * очередь и больше не меняется. Ради него столбец и заведён: без него
@@ -326,6 +328,8 @@ function ensureColumn(table: string, column: string, definition: string): void {
 ensureColumn('competition_queue', 'turn', 'turn INTEGER NOT NULL DEFAULT 0')
 ensureColumn('competition_queue', 'attempt_id', 'attempt_id TEXT')
 ensureColumn('competition_queue', 'pending_kind', 'pending_kind TEXT')
+ensureColumn('competition_queue', 'resource_retries', 'resource_retries INTEGER NOT NULL DEFAULT 0')
+ensureColumn('competition_queue', 'not_before', 'not_before INTEGER NOT NULL DEFAULT 0')
 
 // Revisions are durable database state, so direct runner/queue mutations cannot
 // bypass the live feed invalidation contract. Legacy scores have unknown inputs
@@ -1566,6 +1570,11 @@ export function listRuns(submissionId: string): SubmissionRun[] {
   return (selectRuns.all(submissionId) as RunRow[]).map(toRun)
 }
 
+/** A broker Pod that never scheduled did not execute code or earn a run verdict. */
+export function discardUnstartedRun(id:string,attemptId:string):boolean {
+  return db.prepare('DELETE FROM submission_runs WHERE id=? AND attempt_id=? AND finished_at IS NULL').run(id,attemptId).changes>0
+}
+
 /** Последний прогон этого вида — то, что показывает строка посылки. */
 export function lastRun(submissionId: string, kind?: RunKind): SubmissionRun | null {
   const runs = listRuns(submissionId).filter((run) => !kind || run.kind === kind)
@@ -1583,6 +1592,8 @@ export interface QueueRow {
   enqueuedAt: number
   startedAt: number | null
   attempts: number
+  resourceRetries: number
+  notBefore: number
   /** Который по счёту заход этого человека — см. порядок выборки. */
   turn: number
   /** Жизнь процесса, которая начала прогон. Чужая — значит прогон осиротел. */
@@ -1601,6 +1612,8 @@ interface QueueRowRaw {
   enqueued_at: number
   started_at: number | null
   attempts: number
+  resource_retries: number
+  not_before: number
   turn: number
   boot: string | null
   container: string | null
@@ -1618,6 +1631,8 @@ function toQueueRow(row: QueueRowRaw): QueueRow {
     enqueuedAt: row.enqueued_at,
     startedAt: row.started_at,
     attempts: row.attempts,
+    resourceRetries: row.resource_retries,
+    notBefore: row.not_before,
     turn: row.turn,
     boot: row.boot,
     container: row.container,
@@ -1637,6 +1652,8 @@ const upsertQueue = db.prepare(`
     turn = excluded.turn,
     started_at = NULL,
     attempts = 0,
+    resource_retries = 0,
+    not_before = 0,
     boot = NULL,
     container = NULL,
     attempt_id = NULL,
@@ -1662,7 +1679,7 @@ const markRunning = db.prepare(`
 `)
 const markWaiting = db.prepare(`
   UPDATE competition_queue
-  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL
+  SET state = 'waiting', started_at = NULL, boot = NULL, container = NULL, attempt_id = NULL, not_before = 0
   WHERE submission_id = ?
 `)
 const noteContainer = db.prepare(
@@ -1737,7 +1754,7 @@ export function waitingCount(): number {
  */
 const selectNext = db.prepare(`
   SELECT q.* FROM competition_queue q
-  WHERE q.state = 'waiting'
+  WHERE q.state = 'waiting' AND q.not_before <= @at
   ORDER BY
     (SELECT COUNT(*) FROM competition_queue r
       WHERE r.state = 'running' AND r.entrant_id = q.entrant_id) ASC,
@@ -1747,8 +1764,8 @@ const selectNext = db.prepare(`
   LIMIT 1
 `)
 
-export function nextQueueRow(): QueueRow | null {
-  const row = selectNext.get() as QueueRowRaw | undefined
+export function nextQueueRow(at=Date.now()): QueueRow | null {
+  const row = selectNext.get({at}) as QueueRowRaw | undefined
   return row ? toQueueRow(row) : null
 }
 
@@ -1767,9 +1784,9 @@ export const takeNext = db.transaction(
     if (queuePaused()) return null
     const slots = opts.slots ?? 1
     if ((selectRunning.all() as QueueRowRaw[]).length >= slots) return null
-    const row = selectNext.get() as QueueRowRaw | undefined
-    if (!row) return null
     const at = opts.at ?? Date.now()
+    const row = selectNext.get({at}) as QueueRowRaw | undefined
+    if (!row) return null
     markRunning.run({
       submission_id: row.submission_id,
       at,
@@ -1793,11 +1810,27 @@ export function ownsQueueAttempt(row: QueueRow): boolean {
   return !!row.attemptId && current?.state === 'running' && current.attemptId === row.attemptId
 }
 
+/** A Pod denied by the scheduler has not executed user code. Keep the durable
+ * queue row, postpone its next claim, and leave restart attempt accounting
+ * unchanged. A newly requested pending kind starts immediately. */
+export const deferResourceAttempt=db.transaction((row:QueueRow,reason:string,at=Date.now(),teacherReason=reason,nextKind:RunKind=row.kind):number|null=>{
+  if(!ownsQueueAttempt(row))return null
+  const current=queueRow(row.submissionId)!
+  const fresh=!!current.pendingKind
+  const delay=fresh?0:Math.min(60_000,5_000*2**Math.min(4,current.resourceRetries))
+  const notBefore=at+delay
+  db.prepare(`UPDATE competition_queue SET kind=COALESCE(pending_kind,?),pending_kind=NULL,state='waiting',
+    started_at=NULL,boot=NULL,container=NULL,attempt_id=NULL,attempts=?,resource_retries=?,not_before=?
+    WHERE submission_id=? AND attempt_id=?`).run(nextKind,fresh?0:Math.max(0,current.attempts-1),fresh?0:current.resourceRetries+1,notBefore,row.submissionId,row.attemptId)
+  updateSubmission(row.submissionId,{state:'queued',stage:'queue',participantError:reason,teacherError:teacherReason})
+  return notBefore
+})
+
 export const finishQueueAttempt = db.transaction((row: QueueRow): boolean => {
   if (!ownsQueueAttempt(row)) return false
   const current = queueRow(row.submissionId)!
   if (current.pendingKind) {
-    db.prepare("UPDATE competition_queue SET kind = pending_kind, pending_kind = NULL, state = 'waiting', started_at = NULL, container = NULL, boot = NULL, attempt_id = NULL, attempts = 0 WHERE submission_id = ? AND attempt_id = ?").run(row.submissionId, row.attemptId)
+    db.prepare("UPDATE competition_queue SET kind = pending_kind, pending_kind = NULL, state = 'waiting', started_at = NULL, container = NULL, boot = NULL, attempt_id = NULL, attempts = 0,resource_retries=0,not_before=0 WHERE submission_id = ? AND attempt_id = ?").run(row.submissionId, row.attemptId)
     updateSubmission(row.submissionId, { state: 'queued', stage: 'queue', publicScore: null, privateScore: null })
   } else db.prepare('DELETE FROM competition_queue WHERE submission_id = ? AND attempt_id = ?').run(row.submissionId, row.attemptId)
   return true

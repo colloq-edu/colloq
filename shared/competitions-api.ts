@@ -119,10 +119,11 @@ export interface WaitingRow {
   entrantId: string
   entrantName: string
   number: number
-  /** Место в очереди, начиная с 1 — то, что нарисовано в колонке 16 px. */
-  place: number
+  /** Delayed resource retries have no claimable place yet. */
+  place: number | null
   /** «≈ 3 мин»; null — оценить не из чего (ещё ничего не исполнялось). */
   etaMs: number | null
+  resourcePending: boolean
   baseline: boolean
 }
 

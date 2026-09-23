@@ -13,6 +13,7 @@ import http from 'node:http'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ENTRANT_COOKIE } from '../shared/competitions.js'
+import { db } from '../server/src/db.js'
 import type { EntrantLeaderboard, EntrantSubmissions } from '../shared/competitions-entrant.js'
 import {
   acceptSubmission,
@@ -179,6 +180,21 @@ test('в списке посылок место и оценка ожидания
   assert.ok(live.etaMs !== null && live.etaMs >= 0, 'оценка ожидания не посчитана')
   assert.equal(live.limitMs, 600_000)
   assert.equal(live.startedAt, null)
+})
+
+test('отложенный из-за ресурсов Pod не получает ложное место и время в очереди', async () => {
+  const person = await join('Ожидание ресурсов')
+  const deferred = queue(person.id, 'deferred.ipynb')
+  db.prepare('UPDATE competition_queue SET resource_retries=1, not_before=? WHERE submission_id=?')
+    .run(Date.now() + 60_000, deferred.id)
+  const res = await call('/api/k/competitions/live-k/submissions', { cookie: person.cookie })
+  assert.equal(res.status, 200)
+  const body = (await res.json()) as EntrantSubmissions
+  const live = body.live.find((row) => row.submissionId === deferred.id)
+  assert.ok(live)
+  assert.equal(live.resourcePending, true)
+  assert.equal(live.place, null)
+  assert.equal(live.etaMs, null)
 })
 
 /* -------------------------------------------------------------- отмена */

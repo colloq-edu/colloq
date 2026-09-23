@@ -1,0 +1,64 @@
+name: Competition k3s isolation smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_kaggle:
+        description: Build the larger CPU Kaggle environment when disk allows
+        type: boolean
+        default: false
+      prepare:
+        description: Probe inventory and run package resolve/verify through the proxy
+        type: boolean
+        default: true
+  schedule:
+    - cron: '17 2 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: competition-k3s-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  isolated-k3d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Install scoped k3d binary
+        run: |
+          mkdir -p scratchpad/k3d
+          curl --fail --silent --show-error --location https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-amd64 --output scratchpad/k3d/k3d-linux-amd64
+          curl --fail --silent --show-error --location https://github.com/k3d-io/k3d/releases/download/v5.9.0/checksums.txt --output scratchpad/k3d/checksums.txt
+          expected="$(awk '$2 == "k3d-linux-amd64" { print $1 }' scratchpad/k3d/checksums.txt)"
+          test "${#expected}" -eq 64
+          printf '%s  %s\n' "$expected" scratchpad/k3d/k3d-linux-amd64 | sha256sum --check --status
+          chmod 0755 scratchpad/k3d/k3d-linux-amd64
+          scratchpad/k3d/k3d-linux-amd64 version
+      - name: Check fixture isolation without creating resources
+        run: node --import tsx --test tests/competition-k3s-smoke.test.mts
+      - name: Run disposable local-registry k3d smoke
+        env:
+          SMOKE_INCLUDE_KAGGLE: ${{ inputs.include_kaggle }}
+          SMOKE_PREPARE: ${{ github.event_name == 'schedule' || inputs.prepare }}
+        run: |
+          args=(--run)
+          if [[ "$SMOKE_INCLUDE_KAGGLE" == true ]]; then args+=(--include-kaggle); fi
+          if [[ "$SMOKE_PREPARE" == true ]]; then args+=(--prepare); fi
+          node --import tsx scripts/competition-k3s-smoke.mts "${args[@]}"
+      - name: Save smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: competition-k3s-smoke-report
+          path: scratchpad/k3d/fixture-*/report.json
+          if-no-files-found: ignore

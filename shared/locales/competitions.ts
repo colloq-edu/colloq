@@ -29,6 +29,11 @@ export const competitionsMessages: MessageCatalog = {
    */
   'competitions.entrant.running': { ru: 'ВЫПОЛНЯЕТСЯ', en: 'RUNNING' },
   'competitions.entrant.queued': { ru: 'В ОЧЕРЕДИ', en: 'IN QUEUE' },
+  'competitions.runtime.resourcesWaiting': {
+    ru: 'Сейчас не хватает ресурсов для запуска. Посылка остаётся в очереди и запустится автоматически.',
+    en: 'There are not enough resources to start yet. Your submission remains queued and will retry automatically.',
+  },
+  'competitions.runtime.retrying': { ru: 'ЖДЁТ РЕСУРСЫ', en: 'WAITING FOR RESOURCES' },
   'competitions.entrant.scored': { ru: 'ГОТОВО', en: 'DONE' },
   'competitions.entrant.notebookFailed': { ru: 'ОШИБКА В ТЕТРАДИ', en: 'NOTEBOOK ERROR' },
   'competitions.entrant.rejected': { ru: 'ОТВЕТ НЕ ПРИНЯТ', en: 'ANSWER REJECTED' },

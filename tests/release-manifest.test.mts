@@ -65,10 +65,16 @@ test('render confines broker privileges and isolates credentials and persistent 
   assert.equal(JSON.stringify(app).includes('KUBE_TOKEN'), false)
   const broker = find('Deployment', 'colloq-runtime').spec.template.spec
   assert.equal(broker.serviceAccountName, 'colloq-runtime')
-  assert.equal(broker.volumes.some((x: any) => x.persistentVolumeClaim), false)
+  assert.deepEqual(broker.volumes.filter((x: any) => x.persistentVolumeClaim), [
+    { name: 'data', persistentVolumeClaim: { claimName: 'colloq-data' } },
+  ])
   const brokerEnv = Object.fromEntries(broker.containers[0].env.map((e: any) => [e.name, e.value]))
   assert.equal(brokerEnv.RUNTIME_IMAGE_PULL_SECRET, 'colloq-registry')
   assert.equal(brokerEnv.RUNTIME_KUBE_URL, 'https://kubernetes.default.svc')
+  assert.equal(brokerEnv.RUNTIME_COMPETITION_EXPORTER_IMAGE, image('c'))
+  assert.equal(brokerEnv.RUNTIME_COMPETITION_DATA_CLAIM, 'colloq-data')
+  assert.equal(brokerEnv.RUNTIME_COMPETITION_INSTANCE_ID, 'colloq')
+  assert.ok(broker.containers[0].volumeMounts.some((mount: any) => mount.name === 'data' && mount.mountPath === '/data'))
   const brokerAuth = broker.containers[0].volumeMounts.find((v: any) => v.name === 'runtime-token')
   const projectedTokenDirectory = '/run/secrets/kubernetes.io/serviceaccount'
   assert.equal(projectedTokenDirectory.startsWith(brokerAuth.mountPath + '/'), false,
@@ -79,6 +85,9 @@ test('render confines broker privileges and isolates credentials and persistent 
   assert.deepEqual(find('Role', 'colloq-runtime').rules, [
     { apiGroups: [''], resources: ['pods', 'services'], verbs: ['get', 'list', 'create', 'delete'] },
     { apiGroups: [''], resources: ['pods/resize'], verbs: ['patch'] },
+    { apiGroups: [''], resources: ['pods/log'], verbs: ['get'] },
+    { apiGroups: [''], resources: ['persistentvolumeclaims'], verbs: ['get'] },
+    { apiGroups: ['networking.k8s.io'], resources: ['networkpolicies'], verbs: ['get'] },
   ])
   assert.equal(find('PersistentVolume', 'colloq-data').spec.persistentVolumeReclaimPolicy, 'Retain')
   assert.equal(find('PersistentVolume', 'colloq-workspace').spec.local.path, '/var/lib/colloq/workspace')
@@ -87,6 +96,35 @@ test('render confines broker privileges and isolates credentials and persistent 
     namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
     podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
   }], ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] }])
+})
+test('competition network policies isolate jobs and constrain the resolver proxy', () => {
+  const rendered = run('render')
+  assert.equal(rendered.status, 0, rendered.stderr)
+  const items = JSON.parse(rendered.stdout).items as any[]
+  const policy = (name: string) => items.find(x => x.kind === 'NetworkPolicy' && x.metadata.name === name)?.spec
+  const broker = { podSelector: { matchLabels: { 'colloq.dev/role': 'runtime' } } }
+  const resolver = { podSelector: { matchLabels: { 'colloq.dev/role': 'competition-resolver' } } }
+  const proxy = { podSelector: { matchLabels: { 'colloq.dev/role': 'competition-proxy' } } }
+  const dns = { namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } }, podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } } }
+  assert.deepEqual(policy('competition-job-isolation'), {
+    podSelector: { matchLabels: { 'colloq.dev/role': 'competition-job' } }, policyTypes: ['Ingress', 'Egress'],
+    ingress: [{ from: [broker], ports: [{ protocol: 'TCP', port: 8765 }] }], egress: [],
+  })
+  assert.deepEqual(policy('competition-resolver-isolation'), {
+    podSelector: { matchLabels: { 'colloq.dev/role': 'competition-resolver' } }, policyTypes: ['Ingress', 'Egress'],
+    ingress: [{ from: [broker], ports: [{ protocol: 'TCP', port: 8765 }] }],
+    egress: [
+      { to: [proxy], ports: [{ protocol: 'TCP', port: 3128 }] },
+      { to: [dns], ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] },
+    ],
+  })
+  const proxyPolicy = policy('competition-proxy-isolation')
+  assert.deepEqual(proxyPolicy.policyTypes, ['Ingress', 'Egress'])
+  assert.deepEqual(proxyPolicy.ingress, [{ from: [resolver], ports: [{ protocol: 'TCP', port: 3128 }] }])
+  assert.deepEqual(proxyPolicy.egress[0], { to: [dns], ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] })
+  assert.deepEqual(proxyPolicy.egress[1].ports, [{ protocol: 'TCP', port: 443 }])
+  assert.deepEqual(proxyPolicy.egress[1].to[0].ipBlock.cidr, '0.0.0.0/0')
+  assert.ok(proxyPolicy.egress[1].to[0].ipBlock.except.includes('10.0.0.0/8'))
 })
 test('update catalog retains old revisions while selecting new current revision', () => {
   const previous = release(); previous.version = '0.1.0'; previous.catalog.release = '0.1.0'

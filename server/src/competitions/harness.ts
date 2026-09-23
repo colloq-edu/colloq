@@ -763,6 +763,18 @@ const FILES: ReadonlyArray<readonly [string, string]> = [
   ['export_files.py', EXPORT_FILES],
   ['colloq_metric.py', COLLOQ_METRIC],
   ['colloq_split.py', COLLOQ_SPLIT],
+  ['broker_score.py', String.raw`import json, os, runpy
+from pathlib import Path
+config = json.loads(Path('/config/request.json').read_text(encoding='utf-8'))
+assert set(config) == {'idColumn', 'publicPercent', 'splitSeed'}
+assert config['idColumn'] == 'id'
+assert isinstance(config['publicPercent'], int) and 0 <= config['publicPercent'] <= 100
+assert isinstance(config['splitSeed'], str) and len(config['splitSeed']) <= 256
+os.environ['COMP_ID_COLUMN'] = config['idColumn']
+os.environ['COMP_PUBLIC_PERCENT'] = str(config['publicPercent'])
+os.environ['COMP_SPLIT_SEED'] = config['splitSeed']
+runpy.run_path('/harness/score_metric.py', run_name='__main__')
+`],
 ]
 
 /** Исходник модуля деления — сюите, которая сверяет его с `@shared/competitions`. */
@@ -801,6 +813,22 @@ export function harnessDir(): string {
     competitionsFs.writeFileSync(file, Buffer.from(body, 'utf8'), { mode: 0o644 })
   }
   materialized = dir
+  return dir
+}
+
+/** Stable PVC subPath used by the private broker's fixed Pod template. */
+export function brokerHarnessDir(): string {
+  const dir=path.join(competitionsDir,'harness')
+  competitionsFs.mkdirSync(dir,{recursive:true})
+  competitionsFs.chmodSync(dir,0o755)
+  for(const [name,body] of FILES) {
+    const file=path.join(dir,name)
+    const hash=createHash('sha256').update(body).digest('hex')
+    if(competitionsFs.existsSync(file) && createHash('sha256').update(competitionsFs.readFileSync(file) as Buffer).digest('hex')===hash)continue
+    const temp=path.join(dir,`.${name}-${HARNESS_REVISION}.tmp`)
+    competitionsFs.writeFileSync(temp,Buffer.from(body,'utf8'),{mode:0o644})
+    competitionsFs.renameSync(temp,file)
+  }
   return dir
 }
 

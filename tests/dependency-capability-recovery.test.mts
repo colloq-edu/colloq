@@ -28,17 +28,17 @@ async function broker(task: (log: string) => Promise<void>) {
  const log = path.join(dir, 'calls')
  fs.writeFileSync(path.join(dir, 'docker'), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2))+'\\n')\n`, { mode: 0o755 })
  process.env.PATH = dir + path.delimiter + process.env.PATH
- process.env.KERNEL_BACKEND = 'broker'; process.env.COMPETITION_BACKEND = 'docker'
+ process.env.KERNEL_BACKEND = 'broker'; process.env.COMPETITION_BACKEND = 'broker'
  try { await task(log) } finally {
   await service.stopDependencyPump()
   for (const [key,value] of [['PATH',previous.path],['KERNEL_BACKEND',previous.backend],['COMPETITION_BACKEND',previous.competition]] as const) { if(value===undefined)delete process.env[key];else process.env[key]=value }
  }
 }
 
-test('unsupported broker revision capture refuses before Docker and overview retains known metadata', async () => {
+test('unavailable broker revision capture refuses before Docker and overview retains known metadata', async () => {
  const { c, e, first } = fixture()
  await broker(async log => {
-  await assert.rejects(service.executionRevision(c), { code: 'unsupported_backend' })
+  await assert.rejects(service.executionRevision(c), { code: 'broker_unavailable' })
   const overview = await service.dependencyOverview(c, e.id)
   assert.equal(overview.revision?.id, first.id)
   assert.equal(overview.capabilities?.preparation.available, false)
@@ -50,7 +50,7 @@ test('unsupported broker revision capture refuses before Docker and overview ret
  })
 })
 
-test('unsupported broker startup performs no Docker cleanup', async () => {
+test('unavailable broker startup performs no Docker cleanup', async () => {
  await broker(async log => {
   await service.startDependencyPump()
   await service.stopDependencyPump()
@@ -76,7 +76,7 @@ test('all Python splitlines separators count before preparation quota and normal
  }
 })
 
-test('unsupported broker leaves durable preparation work queued and unclaimed', async () => {
+test('unavailable broker leaves durable preparation work queued and unclaimed', async () => {
  const { c, e, first } = fixture()
  store.setPolicy(c.id, { enabled: true })
  const bundle = store.createBundle(c.id, e.id, first.id, 'example')
@@ -89,7 +89,7 @@ test('unsupported broker leaves durable preparation work queued and unclaimed', 
  })
 })
 
-test('admin refresh-base refuses unsupported runtime before revision capture', async () => {
+test('admin refresh-base refuses unavailable runtime before revision capture', async () => {
  const { c } = fixture()
  const { default: express } = await import('express')
  const { dependencyRoutes } = await import('../server/src/dependencies/routes.js')
@@ -106,7 +106,7 @@ test('admin refresh-base refuses unsupported runtime before revision capture', a
    const origin=`http://127.0.0.1:${(server.address() as {port:number}).port}`
    const response=await fetch(`${origin}/api/admin/competitions/${c.id}/dependencies/refresh-base`,{method:'POST',headers:{cookie}})
    assert.equal(response.status,503)
-   assert.equal((await response.json()).reason,'unsupported_backend')
+   assert.equal((await response.json()).reason,'broker_unavailable')
    assert.equal(fs.existsSync(log),false)
   } finally {server.closeAllConnections();server.close()}
  })

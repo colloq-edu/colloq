@@ -78,6 +78,8 @@ export interface RuntimeEndpoint {
 export interface RuntimeHealth {
   ok: boolean
   reason: string | null
+  /** Broker competition job capability; absent means that executor is unavailable. */
+  competition?: import('./capabilities.js').CompetitionCapabilities
   defaultCpus?: number
   /** Сколько памяти получает комната, которой ничего не задали. */
   defaultMemoryMb?: number

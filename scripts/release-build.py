@@ -87,7 +87,7 @@ def main():
     parser.add_argument('--version', help='release tag; defaults to v<package.json version> at --source-commit')
     parser.add_argument('--registry', required=True, help='repository prefix, e.g. ghcr.io/owner/colloq')
     parser.add_argument('--k3s-version', required=True)
-    parser.add_argument('--environments', default='base,cv,gpu')
+    parser.add_argument('--environments', default='base,kaggle-base')
     parser.add_argument('--default-environment', default='base')
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--gpu-toolkit-version')

@@ -230,9 +230,9 @@ test('failed container removal blocks admission until the orphan cleanup succeed
   } finally { removable = true; await competitionRunner().capacity(); useDockerForCompetitions(null); delete process.env.COMPETITION_BACKEND; forgetCompetitionRunner() }
 })
 
-test('unsupported broker competition runtime leaves queued jobs unclaimed', async () => {
+test('unavailable broker competition runtime leaves queued jobs unclaimed', async () => {
   const { send } = setup(), submission = send(), before = { ...process.env }
-  process.env.KERNEL_BACKEND = 'broker'; process.env.COMPETITION_BACKEND = 'docker'
+  process.env.KERNEL_BACKEND = 'broker'; process.env.COMPETITION_BACKEND = 'broker'
   useCompetitionRunner(new FakeCompetitionRunner())
   try {
     assert.equal(await pumpOnce(), 0)

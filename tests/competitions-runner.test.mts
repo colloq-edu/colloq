@@ -417,12 +417,10 @@ test('имя контейнера не повторяется у повтора 
 test('путь исполнения выбирается переменной, как у ядер', () => {
   assert.equal(competitionBackend({ NODE_ENV: 'test' } as NodeJS.ProcessEnv), 'test')
   assert.equal(competitionBackend({ NODE_ENV: 'development' } as NodeJS.ProcessEnv), 'docker')
-  assert.equal(
-    competitionBackend({ NODE_ENV: 'production', COMPETITION_BACKEND: 'docker' } as NodeJS.ProcessEnv),
-    'docker',
-  )
+  assert.equal(competitionBackend({ NODE_ENV: 'production' } as NodeJS.ProcessEnv), 'broker')
+  assert.throws(() => competitionBackend({ NODE_ENV: 'production', COMPETITION_BACKEND: 'docker' } as NodeJS.ProcessEnv))
   assert.throws(() => competitionBackend({ NODE_ENV: 'production', COMPETITION_BACKEND: 'test' } as NodeJS.ProcessEnv))
-  assert.throws(() => competitionBackend({ NODE_ENV: 'test', COMPETITION_BACKEND: 'broker' } as NodeJS.ProcessEnv))
+  assert.equal(competitionBackend({ NODE_ENV: 'test', COMPETITION_BACKEND: 'broker' } as NodeJS.ProcessEnv), 'broker')
 })
 
 /* ------------------------------------------------- подставной прогонщик */

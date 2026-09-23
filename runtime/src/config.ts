@@ -27,6 +27,9 @@ export interface RuntimeConfig extends WorkloadConfig {
   kubeUrl: string
   kubeTokenFile: string
   kubeCaFile: string
+  competitionExporterImage: string
+  competitionInstanceId: string
+  competitionDataClaim: string
 }
 export function readBoundedFile(file: string, maxBytes: number): string {
   if (statSync(file).size > maxBytes)
@@ -140,5 +143,8 @@ export function loadRuntimeConfig(
     kubeTokenFile:
       env.RUNTIME_KUBE_TOKEN_FILE ?? '/var/run/secrets/kubernetes.io/serviceaccount/token',
     kubeCaFile: env.RUNTIME_KUBE_CA_FILE ?? '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt',
+    competitionExporterImage: env.RUNTIME_COMPETITION_EXPORTER_IMAGE ?? '',
+    competitionInstanceId: env.RUNTIME_COMPETITION_INSTANCE_ID ?? '',
+    competitionDataClaim: env.RUNTIME_COMPETITION_DATA_CLAIM ?? '',
   }
 }

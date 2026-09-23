@@ -357,3 +357,13 @@ export function fairOrder<T extends QueueOrderRow>(
     return a.submissionId < b.submissionId ? -1 : a.submissionId > b.submissionId ? 1 : 0
   })
 }
+
+/** Delayed resource retries remain visible, but cannot claim a queue slot yet. */
+export function waitingEligibilityOrder<T extends QueueOrderRow & {notBefore:number}>(
+  waiting:readonly T[],busyEntrants:ReadonlySet<string>,now=Date.now(),
+):{eligible:T[];deferred:T[]} {
+  return {
+    eligible:fairOrder(waiting.filter(row=>row.notBefore<=now),busyEntrants),
+    deferred:fairOrder(waiting.filter(row=>row.notBefore>now),busyEntrants),
+  }
+}

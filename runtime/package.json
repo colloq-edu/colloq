@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/runtime.js",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/runtime.js && esbuild src/export-sidecar.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/export-sidecar.js && esbuild src/competition-proxy.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/competition-proxy.js",
     "start": "node dist/runtime.js",
     "typecheck": "tsc --noEmit"
   }

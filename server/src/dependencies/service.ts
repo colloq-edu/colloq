@@ -6,7 +6,9 @@ import { submissionsOpen, type Competition, type Submission } from '@shared/comp
 import { DEPENDENCY_LIMITS, dependencyActive, type AdminDependencyOverview, type DependencyBundle, type DependencyOverview, type EnvironmentRevision } from '@shared/dependencies'
 import { getCompetition, getEntrant, joinedAt, listEntrantSubmissions, acceptSubmission, inFlightCount, leftToday } from '../competitions/store.js'
 import { competitionBackend, competitionRunner } from '../competitions/runner-port.js'
+import '../competitions/broker-runner.js'
 import { prepareDependencies, cleanupPreparationResources } from './preparation.js'
+import { prepareBrokerDependencies } from './broker-preparation.js'
 import { DependencyPreparationError } from './preparation-contract.js'
 import type { PreparationRequest, PreparationResult } from './preparation-contract.js'
 import { ensureCompetitionRevision } from './revisions.js'
@@ -36,19 +38,19 @@ function retainedRevision(c:Competition):EnvironmentRevision|null {
 }
 export async function executionRevision(c:Competition):Promise<EnvironmentRevision|null>{
  const retained=retainedRevision(c)
- await assertCompetitionCapability('execution',c.environment,retained?.imageDigest)
+ await assertCompetitionCapability('execution',c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest)
  if(competitionBackend()==='test')return retained
  return ensureCompetitionRevision(c)
 }
 export async function dependencyOverview(c:Competition,eid:string):Promise<DependencyOverview>{
  const retained=retainedRevision(c)
- const capabilities=await competitionCapabilities(c.environment,retained?.imageDigest)
+ const capabilities=await competitionCapabilities(c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest)
  const revision=capabilities.execution.available?await executionRevision(c).catch(()=>retained):retained
  return {capabilities,policy:store.policyOf(c.id),revision,draft:store.draftOf(c.id,eid),bundles:store.listBundles(c.id,eid),joined:hasJoined(c.id,eid)}
 }
 export async function adminDependencyOverview(c:Competition):Promise<AdminDependencyOverview>{
  const retained=retainedRevision(c)
- const capabilities=await competitionCapabilities(c.environment,retained?.imageDigest)
+ const capabilities=await competitionCapabilities(c.environment,competitionBackend()==='broker'?undefined:retained?.imageDigest)
  const revision=capabilities.execution.available?await executionRevision(c).catch(()=>retained):retained
  return {capabilities,policy:store.policyOf(c.id),revision,bundles:store.listBundles(c.id).map(b=>({...b,entrantName:getEntrant(b.entrantId)?.name??'—'}))}
 }
@@ -61,7 +63,7 @@ export async function prepareBundle(c:Competition,eid:string,text:string):Promis
  if(!hasJoined(c.id,eid))throw new store.DependencyStoreError('dependency_join',403)
  if(!store.policyOf(c.id).enabled)throw new store.DependencyStoreError('dependency_disabled',403)
  store.checkRequirements(text)
- await assertCompetitionCapability('preparation',c.environment,store.competitionRevision(c.id)?.imageDigest)
+ await assertCompetitionCapability('preparation',c.environment,competitionBackend()==='broker'?undefined:store.competitionRevision(c.id)?.imageDigest)
  const revision=await executionRevision(c)
  if(!revision)throw new store.DependencyStoreError('dependency_image',503)
  if(competitionBackend()!=='test')await startDependencyPump()
@@ -98,7 +100,7 @@ export const acceptPinnedSubmission=db.transaction((c:Competition,eid:string,fil
 function sanitizedLog(line:string,stage:string):string {
  return line.split(stage).join('[work]').replace(/https?:\/\/\S+/g,'[registry URL]').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').slice(0,1000)
 }
-export async function processNextPreparation(prepare:(request:PreparationRequest)=>Promise<PreparationResult>=prepareDependencies):Promise<boolean>{
+export async function processNextPreparation(prepare:(request:PreparationRequest)=>Promise<PreparationResult>=competitionBackend()==='broker'?prepareBrokerDependencies:prepareDependencies):Promise<boolean>{
  if(!(await competitionCapabilities()).preparation.available)return false
  const bundle=store.claimNextBundle();if(!bundle)return false
  const controller=new AbortController();controllers.set(bundle.id,controller)
@@ -167,7 +169,7 @@ export async function startDependencyPump():Promise<boolean>{
  starting=(async()=>{
   stopping=false
   if(!(await competitionCapabilities()).preparation.available)return false
-  if(competitionBackend()!=='test')await cleanupPreparationResources()
+  if(competitionBackend()==='docker')await cleanupPreparationResources()
   if(stopping)return false
   store.recoverPreparations()
   files.ensureDependencyStorage()

@@ -111,7 +111,7 @@ export function resultDir(id: string, submissionId: string): string {
 
 /** Every execution owns its directories; previous results are never inputs to
  * a new notebook attempt. Only validated host exports are promoted to out/. */
-export function attemptDir(id: string, submissionId: string, attemptId: string, part: 'result' | 'score' | 'score-out' | 'secret' = 'result'): string {
+export function attemptDir(id: string, submissionId: string, attemptId: string, part: 'result' | 'score' | 'score-out' | 'score-config' | 'secret' = 'result'): string {
   return ensureDir(path.join(submissionDir(id, submissionId), 'attempts', checkId(attemptId), part))
 }
 

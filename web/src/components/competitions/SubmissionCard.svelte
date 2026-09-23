@@ -60,7 +60,7 @@
         limit: elapsedClock(live.limitMs || limitMs),
       })
     }
-    if (queued && live?.etaMs != null) {
+    if (queued && !live?.resourcePending && live?.etaMs != null) {
       return tr('competitions.p.eta', { duration: spellDuration(live.etaMs) })
     }
     return ''

@@ -678,11 +678,11 @@
           </div>
           {#each waiting as row (row.submissionId)}
             <div class="flex items-center gap-2.5">
-              <span class="w-4 shrink-0 font-mono text-micro text-muted">{row.place}</span>
+              <span class="w-4 shrink-0 font-mono text-micro text-muted">{row.place ?? '—'}</span>
               <span class="min-w-0 flex-1 truncate text-2xs text-ink">
                 {row.baseline ? tr('competitions.baselineEntrant') : row.entrantName} · #{row.number}
               </span>
-              <span class="shrink-0 font-mono text-micro text-muted">{etaWords(row.etaMs)}</span>
+              <span class="shrink-0 font-mono text-micro text-muted">{row.resourcePending ? tr('competitions.runtime.retrying') : etaWords(row.etaMs)}</span>
             </div>
           {:else}
             <p class="text-2xs text-muted">{tr('admin.competitions.queueEmpty')}</p>

@@ -23,6 +23,23 @@ test('malformed Docker versions fail package preparation closed', async () => {
  }
 })
 
+test('broker readiness requires broker report, catalog binding and writable storage',async()=>{
+ const {createCapabilityReader}=await import('../server/src/competitions/capabilities.js')
+ const ready={execution:{available:true,code:'available',reason:null},preparation:{available:true,code:'available',reason:null}}
+ let image=true
+ const read=createCapabilityReader({backend:()=> 'broker',brokerCapabilities:async()=>ready,catalogAvailable:()=>image,storageAvailable:()=>true,
+  run:async()=>{throw new Error('broker readiness must not invoke Docker')}})
+ assert.equal((await read('base','registry/base@sha256:'+'a'.repeat(64))).execution.available,true)
+ image=false
+ assert.equal((await read('base','sha256:'+'a'.repeat(64))).execution.code,'image_unavailable')
+ const missing=createCapabilityReader({backend:()=> 'broker',brokerCapabilities:async()=>null,catalogAvailable:()=>true,storageAvailable:()=>true})
+ assert.equal((await missing('base')).preparation.available,false)
+ const split=createCapabilityReader({backend:()=> 'broker',brokerCapabilities:async()=>({...ready,execution:{available:false,code:'notebook_unavailable',reason:'Exporter unavailable'}}),catalogAvailable:()=>true,storageAvailable:()=>true})
+ const separate=await split('base')
+ assert.equal(separate.execution.available,false)
+ assert.equal(separate.preparation.available,true)
+})
+
 test('image probes coalesce and expired negative results recover', async () => {
  const module=await import('../server/src/competitions/capabilities.js')
  assert.equal(typeof module.createCapabilityReader,'function')

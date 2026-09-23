@@ -926,15 +926,15 @@ test('metric changes invalidate readiness and baseline replacement retains servi
   assert.equal(feed.rows[0].baseline, true)
 })
 
-test('unsupported execution is exposed and baseline check refuses before queueing', async () => {
+test('unavailable broker execution is exposed and baseline check refuses before queueing', async () => {
   const c = createCompetition({ slug: 'unsupported-execution', title: 'Unavailable' })!
   const previous = { kernel: process.env.KERNEL_BACKEND, competition: process.env.COMPETITION_BACKEND }
   try {
     process.env.KERNEL_BACKEND = 'broker'
-    process.env.COMPETITION_BACKEND = 'docker'
+    process.env.COMPETITION_BACKEND = 'broker'
     const view = await (await call('GET', `/api/admin/competitions/${c.id}`, { cookie: teacher })).json()
     assert.equal(view.capabilities.execution.available, false)
-    assert.equal(view.capabilities.execution.code, 'unsupported_backend')
+    assert.equal(view.capabilities.execution.code, 'broker_unavailable')
     const check = await call('POST', `/api/admin/competitions/${c.id}/baseline/check`, { cookie: teacher })
     assert.equal(check.status, 503)
     assert.match((await check.json()).error, /.+/)

@@ -4,13 +4,14 @@
  * Узко нарочно. Очередь (runner.ts) не должна знать ни одного слова про
  * docker: она решает, чья работа идёт следующей, что записать в строку посылки
  * и когда убить контейнер, — а «как именно исполнить тетрадь» за этой дверью
- * бывает двух видов. Настоящий прогонщик (docker-runner.ts) поднимает два
- * одноразовых контейнера; подставной (fake-runner.ts) не исполняет ни строки
+ * бывает трёх видов. Локальный прогонщик (docker-runner.ts) поднимает два
+ * одноразовых контейнера, production broker поднимает Pod; подставной
+ * (fake-runner.ts) не исполняет ни строки
  * чужого кода и нужен не тестам ради тестов: стенд и вся сюита живут без
  * docker, а соревнование без прогонщика — страница, где нельзя нажать ни одной
  * кнопки.
  *
- * ФОРМА ОТВЕТА ОДНА НА ОБА, иначе подмена ничего не доказывает: тест, который
+ * ФОРМА ОТВЕТА ОДНА НА ВСЕХ, иначе подмена ничего не доказывает: тест, который
  * зелен на подставном и падает на настоящем, — это не тест, а украшение.
  *
  * И главное, ради чего здесь два отдельных поля вместо одного: `message`
@@ -22,7 +23,7 @@
 import type { Competition, RunVerdict } from '@shared/competitions'
 
 /** Каким путём исполняется посылка. Читается из окружения, как KERNEL_BACKEND. */
-export type CompetitionBackend = 'docker' | 'test'
+export type CompetitionBackend = 'docker' | 'broker' | 'test'
 
 /**
  * Пределы ОДНОГО захода в контейнер — уже в тех числах, которыми говорит docker.
@@ -185,24 +186,25 @@ export function forgetCompetitionRunner(): void {
 /**
  * Каким путём идут посылки.
  *
- * Отдельная переменная, а не `KERNEL_BACKEND`: у комнат есть третий путь
- * (брокер), которого у соревнований нет и в ближайшее время не будет, а
- * `KERNEL_BACKEND=broker` на боевой машине не означает, что соревнованиям
- * нельзя поднять docker рядом. Умолчание выводится из того же места, откуда
- * его берут комнаты, чтобы `NODE_ENV=test` не требовал второй строки в .env.
+ * Явный COMPETITION_BACKEND нужен тестам и локальной разработке. Без него
+ * сервер выбирает тот же частный брокер, что и комнаты; в production Docker
+ * для посылок не допускается. Тестовое умолчание остаётся подставным.
  */
 export function competitionBackend(env: NodeJS.ProcessEnv = process.env): CompetitionBackend {
   const asked = (env.COMPETITION_BACKEND ?? '').trim()
   if (asked) {
-    if (asked !== 'docker' && asked !== 'test') {
+    if (asked !== 'docker' && asked !== 'broker' && asked !== 'test') {
       throw new Error(`Unknown competition backend: ${asked}`)
     }
     if (asked === 'test' && env.NODE_ENV !== 'test') {
       throw new Error('The test competition backend requires NODE_ENV=test')
     }
+    if (asked === 'docker' && env.NODE_ENV === 'production') {
+      throw new Error('Production competition execution requires the private runtime broker')
+    }
     return asked
   }
-  return env.NODE_ENV === 'test' ? 'test' : 'docker'
+  return env.NODE_ENV === 'test' ? 'test' : env.NODE_ENV === 'production' || env.KERNEL_BACKEND === 'broker' || env.KERNEL_RUNTIME_URL ? 'broker' : 'docker'
 }
 
 /**
@@ -216,13 +218,15 @@ export function competitionBackend(env: NodeJS.ProcessEnv = process.env): Compet
 export function competitionRunner(): CompetitionRunner {
   if (injected) return injected
   if (chosen) return chosen
-  chosen = competitionBackend() === 'docker' ? dockerRunner() : fakeRunner()
+  const backend=competitionBackend()
+  chosen = backend === 'docker' ? dockerRunner() : backend === 'broker' ? brokerRunner() : fakeRunner()
   return chosen
 }
 
 /* Разорвать круг импорта: оба прогонщика импортируют типы отсюда. */
 let dockerFactory: (() => CompetitionRunner) | null = null
 let fakeFactory: (() => CompetitionRunner) | null = null
+let brokerFactory: (() => CompetitionRunner) | null = null
 
 /** Зарегистрировать себя — зовётся из самих прогонщиков при загрузке модуля. */
 export function registerCompetitionRunner(
@@ -230,6 +234,7 @@ export function registerCompetitionRunner(
   factory: () => CompetitionRunner,
 ): void {
   if (kind === 'docker') dockerFactory = factory
+  else if (kind === 'broker') brokerFactory = factory
   else fakeFactory = factory
 }
 
@@ -241,6 +246,10 @@ function dockerRunner(): CompetitionRunner {
 function fakeRunner(): CompetitionRunner {
   if (!fakeFactory) throw new Error('The test competition runner is not registered')
   return fakeFactory()
+}
+function brokerRunner(): CompetitionRunner {
+  if (!brokerFactory) throw new Error('The broker competition runner is not registered')
+  return brokerFactory()
 }
 
 /* ------------------------------------------------------------------ числа */

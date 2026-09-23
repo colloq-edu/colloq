@@ -90,7 +90,7 @@ import {
 } from '../competitions/storage.js'
 import {
   executedToday,
-  fairOrder,
+  waitingEligibilityOrder,
   medianOf,
   openRefusal,
   parseCompetitionInput,
@@ -426,13 +426,14 @@ function queueSnapshot(now = Date.now()): QueueSnapshot {
 function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now: number): WaitingRow[] {
   const waiting = queueRows().filter((row) => row.state === 'waiting')
   const busy = new Set(snapshot.running.map((row) => row.entrantId))
-  const ordered = fairOrder(waiting, busy)
+  const {eligible,deferred}=waitingEligibilityOrder(waiting,busy,now)
+  const ordered=[...eligible,...deferred]
   const left = snapshot.running.map((row) => {
     const elapsed = now - row.startedAt
     const guess = snapshot.averageMs === null ? row.limitMs : Math.min(snapshot.averageMs, row.limitMs)
     return Math.max(0, guess - elapsed)
   })
-  const etas = waitEtas(ordered.length, {
+  const etas = waitEtas(eligible.length, {
     runningLeftMs: left,
     averageMs: snapshot.averageMs,
     slots: snapshot.slots,
@@ -450,8 +451,9 @@ function waitingRows(competitionId: string | null, snapshot: QueueSnapshot, now:
       entrantName: getEntrant(queued.entrantId)?.name ?? '',
       number: submission.number,
       // Место — по ВСЕЙ очереди: «вы первая среди своих» не значит ничего.
-      place: index + 1,
-      etaMs: etas[index] ?? null,
+      place: index<eligible.length?index+1:null,
+      etaMs: index<eligible.length?etas[index]??null:null,
+      resourcePending: queued.notBefore>now,
       baseline: queued.entrantId === baselineEntrantOf(competition),
     })
   })
