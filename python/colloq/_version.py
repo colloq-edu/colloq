@@ -2,4 +2,4 @@
 # Число поднимает release-please в PR выпуска (по пометке в конце строки),
 # а scripts/pack.mts переписывает файл тем же текстом при упаковке. Руками
 # не править: `make version` сверяет число с корневым package.json.
-__version__ = "0.3.0"  # x-release-please-version
+__version__ = "0.4.0"  # x-release-please-version
