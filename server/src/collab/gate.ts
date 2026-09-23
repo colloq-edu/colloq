@@ -141,18 +141,41 @@ export const MAX_SYNC_FRAME_BYTES = 256 * 1024
  * У комнаты, прожившей семестр, он один занимает сотни килобайт при нуле новых
  * структур — и потолок правки отказывал бы ей в каждом переподключении, то
  * есть навсегда. Восемь мегабайт — половина `MAX_WS_PAYLOAD`; цена разбора
- * ограничена не байтами, а `MAX_WALK` ниже.
+ * ограничена не байтами, а бюджетом обхода ниже (`MAX_WALK`).
  */
 export const MAX_SYNC_STEP2_BYTES = 8 * 1024 * 1024
 
 /**
- * Сколько элементов классификатор согласен обойти в одном кадре.
+ * Сколько шагов классификатор согласен сделать в одном кадре — сверх того, что
+ * он заведомо обязан сделать для документа такого размера.
  *
  * Задел от вырожденного набора удалений: диапазон длиной в миллиард стоит
  * несколько байт на проводе. Настоящее удаление, даже «выделить всё в большой
  * ячейке», не даёт и тысячи. Упереться в потолок — отказ, а не пропуск.
+ *
+ * Постоянным потолок быть не может, и это измерено 23.09 на живой комнате
+ * zxrrsac6 (35 тыс. структур, снимок 750 КБ): step2 полностью синхронной
+ * вкладки стоил 55 тыс. шагов — набор удалений проходится по структуре, а он
+ * растёт с каждым занятием, — а вкладка, заново предложившая весь документ,
+ * упиралась в сто тысяч и получала «кадр слишком велик» при каждом входе.
+ * Обход и так ограничен числом структур: шаг набора удалений перепрыгивает
+ * структуру целиком, у сервера или в кадре. Поэтому к заделу добавляется
+ * `WALK_PER_STRUCT` на каждую структуру документа и кадра.
  */
 const MAX_WALK = 100_000
+
+/**
+ * Шагов на одну структуру: конструктор, сплошность, приговор, поиск в кадре,
+ * путь до корня. На той комнате выходило меньше двух — запас вчетверо.
+ */
+const WALK_PER_STRUCT = 8
+
+/** Число структур в хранилище документа — без обхода самих структур. */
+function storeSize(doc: Y.Doc): number {
+  let n = 0
+  for (const structs of doc.store.clients.values()) n += structs.length
+  return n
+}
 
 /** Ключи ячейки, которые пишет только сервер. Клиенту они закрыты всегда. */
 const SERVER_OWNED = new Set([
@@ -281,11 +304,13 @@ class Frame {
   private readonly byClient = new Map<number, Y.Item[]>()
   private readonly placeMemo = new Map<Y.Item, Place>()
   private walked = 0
+  private readonly budget: number
 
   constructor(
     private readonly doc: Y.Doc,
     private readonly dec: { structs: Struct[]; ds: DeleteSet },
   ) {
+    this.budget = MAX_WALK + WALK_PER_STRUCT * (storeSize(doc) + dec.structs.length)
     // Logical ranges can encode many clocks in a handful of bytes. Charge
     // constructor work before indexing and retain intervals, never each clock.
     for (const struct of this.dec.structs) {
@@ -320,7 +345,7 @@ class Frame {
 
   private step(path: string): void {
     this.walked += 1
-    if (this.walked > MAX_WALK) throw new Refusal(tr("server.theFrameIsTooLargeToRead.4cb416"), path)
+    if (this.walked > this.budget) throw new Refusal(tr("server.theFrameIsTooLargeToRead.4cb416"), path)
   }
 
   /**
