@@ -310,8 +310,8 @@ test('Location редиректа переписывается на зеркал
   // Чужой адрес — чужой: замена подстроки в лоб отправила бы человека на
   // несуществующую страницу зеркала.
   const foreign = await ask('https://colloq.cc/x', () =>
-    new Response(null, { status: 302, headers: { location: 'https://github.com/sleep3r/colloq' } }))
-  assert.equal(foreign.response.headers.get('location'), 'https://github.com/sleep3r/colloq')
+    new Response(null, { status: 302, headers: { location: 'https://github.com/colloq-edu/colloq' } }))
+  assert.equal(foreign.response.headers.get('location'), 'https://github.com/colloq-edu/colloq')
 })
 
 // Настоящий подвал лендинга и настоящий адрес курса, слово в слово из site/.
@@ -324,7 +324,7 @@ const LANDING = [
   // Подпись с тем же классом, но в шапке: сюда замена дотянуться не должна.
   '<span class="host">colloq.ru</span>',
   '</head><body>',
-  '<a href="https://github.com/sleep3r/colloq">GitHub</a>',
+  '<a href="https://github.com/colloq-edu/colloq">GitHub</a>',
   '<a class="host" href="mailto:sleep3r@icloud.com">sleep3r@icloud.com</a>',
   '<span class="host">colloq.ru</span>',
   '<p class="note">Семинар открывается на hse.colloq.ru</p>',
@@ -339,7 +339,7 @@ test('видимый домен становится зеркалом, а гол
   const out = await response.text()
 
   // Подпись в подвале — единственное, что поменялось.
-  assert.ok(out.includes('<body>\n<a href="https://github.com/sleep3r/colloq">GitHub</a>'))
+  assert.ok(out.includes('<body>\n<a href="https://github.com/colloq-edu/colloq">GitHub</a>'))
   assert.ok(out.includes('<span class="host">colloq.cc</span>'), 'подвал должен звать зеркало')
 
   // Голова не тронута ни в одной строке: поисковику полагается видеть ОДИН
@@ -352,7 +352,7 @@ test('видимый домен становится зеркалом, а гол
   assert.ok(head.includes('<span class="host">colloq.ru</span>'), 'в <head> замены быть не должно')
 
   // Ссылки не трогаются: они либо от корня, либо абсолютные нарочно.
-  assert.ok(out.includes('href="https://github.com/sleep3r/colloq"'))
+  assert.ok(out.includes('href="https://github.com/colloq-edu/colloq"'))
   // Почта автора носит тот же класс, но домена в её тексте нет — и она
   // остаётся собой целиком, вместе с адресом.
   assert.ok(out.includes('<a class="host" href="mailto:sleep3r@icloud.com">sleep3r@icloud.com</a>'))

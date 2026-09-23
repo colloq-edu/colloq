@@ -59,9 +59,9 @@ colloq = "colloq.__main__:main"
 [project.urls]
 Homepage = "https://colloq.ru"
 Documentation = "https://colloq.ru/docs/en/"
-Source = "https://github.com/sleep3r/colloq"
-Issues = "https://github.com/sleep3r/colloq/issues"
-Changelog = "https://github.com/sleep3r/colloq/blob/main/CHANGELOG.md"
+Source = "https://github.com/colloq-edu/colloq"
+Issues = "https://github.com/colloq-edu/colloq/issues"
+Changelog = "https://github.com/colloq-edu/colloq/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "colloq/_version.py"

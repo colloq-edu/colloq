@@ -12,15 +12,15 @@
   Students join from a browser with just a name.
 </p>
 <p align="center">
-  <a href="https://github.com/sleep3r/colloq/actions/workflows/ci.yml"><img src="https://github.com/sleep3r/colloq/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/colloq-edu/colloq/actions/workflows/ci.yml"><img src="https://github.com/colloq-edu/colloq/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0f2d69" alt="License: MIT"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/github/package-json/v/sleep3r/colloq?label=version&color=0fa0d7" alt="Version"></a>
-  <a href="https://colloq.ru/docs/en/"><img src="https://img.shields.io/badge/docs-colloq.ru-374b9b" alt="Documentation"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/github/package-json/v/colloq-edu/colloq?label=version&color=0fa0d7" alt="Version"></a>
+  <a href="https://colloq.cc/docs/en/"><img src="https://img.shields.io/badge/docs-colloq.cc-374b9b" alt="Documentation"></a>
 </p>
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-a-class-runs">How a class runs</a> ·
-  <a href="https://colloq.ru/docs/en/">Documentation</a> ·
+  <a href="https://colloq.cc/docs/en/">Documentation</a> ·
   <a href="#contributing">Contributing</a>
 </p>
 
@@ -38,9 +38,9 @@ Installing needs **Python 3.9 or newer**; running a class needs
 server, the web app and the room image come with the package, and your classes
 live in `~/.colloq`.
 
-**[Documentation](https://colloq.ru/docs/en/)** ·
-[Your first class](https://colloq.ru/docs/en/getting-started.html) ·
-[Releases](https://github.com/sleep3r/colloq/releases) ·
+**[Documentation](https://colloq.cc/docs/en/)** ·
+[Your first class](https://colloq.cc/docs/en/getting-started.html) ·
+[Releases](https://github.com/colloq-edu/colloq/releases) ·
 [From source](#from-source)
 
 ## What Colloq is
@@ -150,9 +150,9 @@ private. Adding a teacher does not send an email.
 
 </details>
 
-Guides: [room rules](https://colloq.ru/docs/en/room-rules.html) ·
-[council](https://colloq.ru/docs/en/council.html) ·
-[lectures](https://colloq.ru/docs/en/lectures.html)
+Guides: [room rules](https://colloq.cc/docs/en/room-rules.html) ·
+[council](https://colloq.cc/docs/en/council.html) ·
+[lectures](https://colloq.cc/docs/en/lectures.html)
 
 ## An AI the class can follow
 
@@ -192,7 +192,7 @@ support. Changes apply to the next request.
 
 </details>
 
-Guide: [the Oracle](https://colloq.ru/docs/en/oracle.html)
+Guide: [the Oracle](https://colloq.cc/docs/en/oracle.html)
 
 ## Everything else in the room
 
@@ -204,7 +204,7 @@ Guide: [the Oracle](https://colloq.ru/docs/en/oracle.html)
 | **Notebooks in and out** | Several notebooks per room and `.ipynb` export. Start a class from a `.ipynb` file (outputs are not imported) or from a GitHub link to a notebook or folder in a public repository. |
 | **End class, resume later** | **End class** makes the room read-only for students and keeps its notebook, files and discussion. **Resume class** brings back the previous rules. |
 | **Courses and published pages** | Publish chosen notebook versions as a read-only page that keeps its link, and group classes on a course page. |
-| **Russian or English** | The owner switches the interface for the whole instance from `/admin`. Open rooms switch live, keeping code, cursors and drafts. [Language settings](https://colloq.ru/docs/en/language.html). |
+| **Russian or English** | The owner switches the interface for the whole instance from `/admin`. Open rooms switch live, keeping code, cursors and drafts. [Language settings](https://colloq.cc/docs/en/language.html). |
 | **Python environments** | An environment is a requirements file; each class picks one at creation. GPU environments give each room an exclusive GPU slice. |
 
 ## Competitions
@@ -247,7 +247,7 @@ default one submission runs at a time, the queue is fair per person (a person's
 second submission queues behind everyone else's first), and the teacher can pause
 it or kill the run in progress.
 
-Guide: [competitions](https://colloq.ru/docs/en/competitions.html)
+Guide: [competitions](https://colloq.cc/docs/en/competitions.html)
 
 ## Quick start
 
@@ -311,7 +311,7 @@ relay ([Give the room an address](#give-the-room-an-address)).
 You need **Node.js 22 or newer**, npm, **Docker** (running) and Make.
 
 ```bash
-git clone https://github.com/sleep3r/colloq.git
+git clone https://github.com/colloq-edu/colloq.git
 cd colloq
 npm ci
 make dev
@@ -399,7 +399,7 @@ and require a real CUDA preflight.
 | [Runtime boundary](runtime/README.md) | Broker API, credentials, room lifecycle and isolation limits. |
 | [Vast VM with k3s](docs/deployment-vast.md) | Renting a VM, registry credentials, named backups and recovery. Rental and disk destruction require confirmation. |
 | [Vast VM with one image](deploy/vast/README.md) | The `colloq-vast` image, its template and on-start script. |
-| [Guides at colloq.ru](https://colloq.ru/docs/en/) | Installing, networking, environments, backups and updates, for operators and teachers. |
+| [Guides at colloq.cc](https://colloq.cc/docs/en/) | Installing, networking, environments, backups and updates, for operators and teachers. |
 
 ### Give the room an address
 
@@ -546,10 +546,10 @@ described in [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
-The guides at **[colloq.ru/docs](https://colloq.ru/docs/en/)** cover installing,
+The guides at **[colloq.cc/docs](https://colloq.cc/docs/en/)** cover installing,
 running a class, room rules, lectures, council, the Oracle, competitions,
 environments, publishing, networking, backups and updates, in
-[English](https://colloq.ru/docs/en/) and [Russian](https://colloq.ru/docs/).
+[English](https://colloq.cc/docs/en/) and [Russian](https://colloq.cc/docs/).
 Operator and developer references live next to the code: [deploy/k3s](deploy/k3s/README.md),
 [deploy/vast](deploy/vast/README.md), [runtime](runtime/README.md),
 [tests](tests/README.md), [cli](cli/README.md) and [python](python/README.md).
@@ -640,6 +640,6 @@ you already use.
 
 <p align="center">
   MIT © 2026 Aleksandr Kalashnikov ·
-  <a href="https://colloq.ru/docs/en/">Documentation</a> ·
+  <a href="https://colloq.cc/docs/en/">Documentation</a> ·
   <a href="https://colloq.ru">colloq.ru</a>
 </p>

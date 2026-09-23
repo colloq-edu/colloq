@@ -3,7 +3,7 @@
 blank_issues_enabled: true
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/sleep3r/colloq/security/advisories/new
+    url: https://github.com/colloq-edu/colloq/security/advisories/new
     about: Report privately. Never open a public issue for a vulnerability.
   - name: Documentation
     url: https://colloq.ru/docs/en/

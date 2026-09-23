@@ -9,7 +9,7 @@ seriously. Please report them privately.
 
 Report it through GitHub's private vulnerability reporting: open the
 repository's **Security** tab and choose **Report a vulnerability**. You can
-also go straight to <https://github.com/sleep3r/colloq/security/advisories/new>.
+also go straight to <https://github.com/colloq-edu/colloq/security/advisories/new>.
 Only the maintainers can see the report, and we can work on a fix together in a
 private fork.
 

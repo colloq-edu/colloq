@@ -36,7 +36,7 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement privately through the repository's private reporting form: open the **Security** tab and choose **Report a vulnerability** (<https://github.com/sleep3r/colloq/security/advisories/new>), and start the title with "Conduct:". It is the one private channel into this repository that GitHub provides; only the maintainers can read it. For content on GitHub itself you can also use GitHub's [Report content](https://docs.github.com/en/communities/maintaining-your-safety-on-github/reporting-abuse-or-spam) feature. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement privately through the repository's private reporting form: open the **Security** tab and choose **Report a vulnerability** (<https://github.com/colloq-edu/colloq/security/advisories/new>), and start the title with "Conduct:". It is the one private channel into this repository that GitHub provides; only the maintainers can read it. For content on GitHub itself you can also use GitHub's [Report content](https://docs.github.com/en/communities/maintaining-your-safety-on-github/reporting-abuse-or-spam) feature. All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 

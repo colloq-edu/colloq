@@ -7,10 +7,10 @@
   "homepage": "https://colloq.ru",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sleep3r/colloq.git"
+    "url": "git+https://github.com/colloq-edu/colloq.git"
   },
   "bugs": {
-    "url": "https://github.com/sleep3r/colloq/issues"
+    "url": "https://github.com/colloq-edu/colloq/issues"
   },
   "workspaces": [
     "server",

@@ -29,7 +29,7 @@
 
 [Unit]
 Description=Colloq — семинары на этой машине
-Documentation=https://github.com/sleep3r/colloq
+Documentation=https://github.com/colloq-edu/colloq
 # Ядро комнаты поднимает сам сервер, docker'ом, — значит демон должен быть
 # раньше нас. Wants, а не Requires, и это разница в цене: Requires уносит
 # службу вместе с docker при каждом его перезапуске (а его перезапускает,

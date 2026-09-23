@@ -12,9 +12,9 @@
   Студент входит из браузера, назвав только имя.
 </p>
 <p align="center">
-  <a href="https://github.com/sleep3r/colloq/actions/workflows/ci.yml"><img src="https://github.com/sleep3r/colloq/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/colloq-edu/colloq/actions/workflows/ci.yml"><img src="https://github.com/colloq-edu/colloq/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/%D0%BB%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-0f2d69" alt="Лицензия: MIT"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/github/package-json/v/sleep3r/colloq?label=%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F&color=0fa0d7" alt="Версия"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/github/package-json/v/colloq-edu/colloq?label=%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F&color=0fa0d7" alt="Версия"></a>
   <a href="https://colloq.ru/docs/"><img src="https://img.shields.io/badge/%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D0%B0%D1%86%D0%B8%D1%8F-colloq.ru-374b9b" alt="Документация"></a>
 </p>
 <p align="center">
@@ -40,7 +40,7 @@ colloq start --share  # …и одна ссылка, которую можно �
 
 **[Документация](https://colloq.ru/docs/)** ·
 [Первое занятие](https://colloq.ru/docs/getting-started.html) ·
-[Выпуски](https://github.com/sleep3r/colloq/releases) ·
+[Выпуски](https://github.com/colloq-edu/colloq/releases) ·
 [Из исходников](#из-исходников)
 
 ## Что такое Colloq
@@ -352,7 +352,7 @@ Linux; в Windows — через WSL 2.
 Нужны **Node.js 22 или новее**, npm, запущенный **Docker** и Make.
 
 ```bash
-git clone https://github.com/sleep3r/colloq.git
+git clone https://github.com/colloq-edu/colloq.git
 cd colloq
 npm ci
 make dev

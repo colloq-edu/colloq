@@ -179,7 +179,7 @@ RUN chmod 0755 /usr/local/bin/colloq-vast ./deploy/vast/colloq-host ./deploy/vas
 
 ARG COLLOQ_VERSION=0.0.0-dev
 ARG GIT_SHA=unknown
-ARG SOURCE_URL=https://github.com/sleep3r/colloq
+ARG SOURCE_URL=https://github.com/colloq-edu/colloq
 LABEL org.opencontainers.image.title="colloq-vast" \
       org.opencontainers.image.description="Colloq for a rented GPU machine: server, tunnels and kernel build context; room kernels run as sibling containers on the host Docker daemon." \
       org.opencontainers.image.source="${SOURCE_URL}" \

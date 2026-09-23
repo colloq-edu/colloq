@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for taking the time. **Security problems do not belong here**: see
-        [SECURITY.md](https://github.com/sleep3r/colloq/blob/main/SECURITY.md).
+        [SECURITY.md](https://github.com/colloq-edu/colloq/blob/main/SECURITY.md).
 
         Before posting, remove secrets from everything you paste: API keys,
         `SESSION_SECRET`, the setup token, teacher sign-in links, relay/cloud

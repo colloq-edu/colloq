@@ -20,15 +20,15 @@
 This repository has one maintainer and no chat or mailing list. Use GitHub
 issues:
 
-- **Bug:** open a [bug report](https://github.com/sleep3r/colloq/issues/new?template=bug_report.yml).
+- **Bug:** open a [bug report](https://github.com/colloq-edu/colloq/issues/new?template=bug_report.yml).
   Include `colloq --version`, how you installed Colloq, and logs with tokens
   removed.
-- **Idea or missing feature:** open a [feature request](https://github.com/sleep3r/colloq/issues/new?template=feature_request.yml).
+- **Idea or missing feature:** open a [feature request](https://github.com/colloq-edu/colloq/issues/new?template=feature_request.yml).
   Describe the class situation it is for.
-- **Question:** open a [blank issue](https://github.com/sleep3r/colloq/issues/new)
+- **Question:** open a [blank issue](https://github.com/colloq-edu/colloq/issues/new)
   and say what you tried and which guide you read.
 
-Please search [existing issues](https://github.com/sleep3r/colloq/issues?q=is%3Aissue)
+Please search [existing issues](https://github.com/colloq-edu/colloq/issues?q=is%3Aissue)
 first. Issues and pull requests are welcome in English or Russian.
 
 **Security problems never go into issues.** See [SECURITY.md](SECURITY.md).
