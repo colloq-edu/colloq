@@ -13,6 +13,14 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.4.0](https://github.com/colloq-edu/colloq/compare/v0.3.0...v0.4.0) (2026-09-23)
+
+
+### Features
+
+* **cli:** --share opens the tunnel's sign-in link with the token, never localhost ([91bc12a](https://github.com/colloq-edu/colloq/commit/91bc12adfdbe805b14fdf90a5a4721ef9090675a))
+* **cli:** a busy default port moves to the nearest free one ([682fbd0](https://github.com/colloq-edu/colloq/commit/682fbd03c7fbda5d5c9567681633aa8a7c089c7b))
+
 ## [0.3.0](https://github.com/colloq-edu/colloq/compare/v0.2.0...v0.3.0) (2026-09-23)
 
 
