@@ -32,7 +32,7 @@ test('k3d smoke dry run requires explicit flag for large Kaggle image', () => {
   assert.equal(fs.existsSync(plan.fixture), false)
 })
 
-test('k3d smoke accepts a named Colima profile without changing Docker context', () => {
+test('k3d smoke accepts a named Colima profile without changing Docker context', { skip: process.platform !== 'darwin' }, () => {
   const result = spawnSync('node', ['--import', 'tsx', script, '--dry-run', '--json', '--colima-profile', 'colloq-smoke'], { cwd: root, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   const plan = JSON.parse(result.stdout)
@@ -41,4 +41,10 @@ test('k3d smoke accepts a named Colima profile without changing Docker context',
   assert.equal(fs.existsSync(plan.fixture), false)
   const invalid = spawnSync('node', ['--import', 'tsx', script, '--dry-run', '--colima-profile', '../default'], { cwd: root, encoding: 'utf8' })
   assert.notEqual(invalid.status, 0)
+})
+
+test('k3d smoke rejects a Colima profile on non-macOS hosts', { skip: process.platform === 'darwin' }, () => {
+  const result = spawnSync('node', ['--import', 'tsx', script, '--dry-run', '--colima-profile', 'colloq-smoke'], { cwd: root, encoding: 'utf8' })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /requires a simple profile name on macOS/)
 })
