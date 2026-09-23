@@ -39,7 +39,7 @@ jobs:
           mkdir -p scratchpad/k3d
           curl --fail --silent --show-error --location https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-amd64 --output scratchpad/k3d/k3d-linux-amd64
           curl --fail --silent --show-error --location https://github.com/k3d-io/k3d/releases/download/v5.9.0/checksums.txt --output scratchpad/k3d/checksums.txt
-          expected="$(awk '$2 == "k3d-linux-amd64" { print $1 }' scratchpad/k3d/checksums.txt)"
+          expected="$(awk '$2 == "_dist/k3d-linux-amd64" { print $1 }' scratchpad/k3d/checksums.txt)"
           test "${#expected}" -eq 64
           printf '%s  %s\n' "$expected" scratchpad/k3d/k3d-linux-amd64 | sha256sum --check --status
           chmod 0755 scratchpad/k3d/k3d-linux-amd64
