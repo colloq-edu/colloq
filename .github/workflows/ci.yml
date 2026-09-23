@@ -95,6 +95,19 @@ jobs:
           got="$(COLLOQ_HOME="$RUNNER_TEMP/colloq-home" NO_COLOR=1 "$RUNNER_TEMP/venv/bin/colloq" --version)"
           echo "package.json: $want · colloq --version: $got"
           test "$got" = "$want"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/colloq/node
+          key: node-runtime-${{ hashFiles('scripts/node-runtime.json') }}
+      # Platform wheels: Node and node_modules inside. All four are built here;
+      # Linux x64 also runs here, the other three in wheel-smoke.
+      - name: Platform wheels with Node inside
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          python3 scripts/platform-wheels.py build
+      - name: The Linux x64 wheel runs here without a Node of its own
+        run: python3 scripts/platform-wheels.py smoke --wheel python/dist/*-manylinux_2_28_x86_64.whl
       - name: Python sources compile
         run: python3 -m py_compile python/colloq/*.py scripts/*.py
       # Сборка переписывает два отслеживаемых файла — _version.py и воркер
@@ -108,6 +121,32 @@ jobs:
           path: python/dist/*.whl
           retention-days: 7
           if-no-files-found: error
+
+  wheel-smoke:
+    name: Platform wheel on ${{ matrix.target }}
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: darwin-arm64, os: macos-15, tag: macosx_14_0_arm64 }
+          - { target: darwin-x64, os: macos-15-intel, tag: macosx_14_0_x86_64 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm, tag: manylinux_2_28_aarch64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - name: Install and run the wheel
+        run: python3 scripts/platform-wheels.py smoke --wheel dist/*-${{ matrix.tag }}.whl
 
   docker:
     name: Build Docker images (no push)

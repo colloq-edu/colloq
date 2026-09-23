@@ -6,7 +6,7 @@ and everything built from it also contain third-party work under other licenses:
 - the web bundle (`web/dist`);
 - the server bundle;
 - the Docker images;
-- the pip wheel;
+- the pip wheels;
 - the colloq.ru site.
 
 This file lists the assets that are committed to the repository and the
@@ -76,6 +76,16 @@ them there.
 
 Every other runtime npm dependency is MIT or ISC, per `package-lock.json`.
 The KaTeX fonts in the web bundle are part of KaTeX (MIT).
+
+## The platform pip wheels
+
+The macOS and Linux wheels (`scripts/platform-wheels.py`) carry the server's
+production `node_modules` from the table above, each package with its own
+license file, and a Node.js binary:
+
+| Component | License | Where it ends up |
+| --- | --- | --- |
+| Node.js (version and sha256 pinned in `scripts/node-runtime.json`) | MIT, plus the licenses of the libraries it bundles | `colloq/_app/bin/node`, with its full license text in `colloq/_app/bin/node.LICENSE` |
 
 ## The vast.ai image
 

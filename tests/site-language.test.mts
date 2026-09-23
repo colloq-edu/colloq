@@ -178,7 +178,9 @@ test('блок установки на месте и обещает ровно �
     assert.match(html, /<code>colloq start --share<\/code>/, `${name}: нет команды со ссылкой`)
     assert.match(html, /https:\/\/github\.com\/colloq-edu\/colloq/, `${name}: нет ссылки на GitHub`)
     assert.match(html, /https:\/\/pypi\.org\/project\/colloq\//, `${name}: нет ссылки на PyPI`)
-    assert.match(html, /Node\.js 22\+/, `${name}: требования не названы`)
+    // Platform wheels bring Node.js: on the pages the requirements are Python and Docker.
+    assert.match(html, /<p class="install-req">Python · Docker<\/p>/, `${name}: the requirements are not named`)
+    assert.doesNotMatch(html, /Node\.js 22\+/, `${name}: still asks for Node.js`)
   }
   assert.match(ru, /href="\/docs\/"/, 'русская страница ведёт не в русскую документацию')
   assert.match(en, /href="\/docs\/en\/"/, 'английская страница ведёт не в английскую документацию')

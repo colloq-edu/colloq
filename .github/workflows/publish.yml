@@ -7,14 +7,18 @@
 # владельца, а такой тег запускает workflow: с этим триггером выпуск
 # публиковался бы дважды, с двумя запросами одобрения PyPI. Путь оставлен один.
 #
-#   build           тег = package.json = CHANGELOG (scripts/version.mts check),
-#                   typecheck, вся сюита, колесо pip;
-#   github-release  колесо и python-SHA256SUMS — к выпуску, который создал
-#                   release-please. Сам выпуск здесь не создаётся: его заметки
-#                   пишет release-please из PR выпуска, а второй писатель
-#                   разошёлся бы с ним;
-#   pypi            колесо на PyPI — только при vars.PUBLISH_PYPI == 'true';
-#   image           образ для vast.ai в GHCR — только при vars.PUBLISH_IMAGES == 'true'.
+#   build           tag = package.json = CHANGELOG (scripts/version.mts check),
+#                   typecheck, the whole suite, and the pip wheels: the
+#                   universal one and four platform wheels with Node inside
+#                   (scripts/platform-wheels.py);
+#   smoke           every platform wheel is installed into a clean venv and
+#                   run on its own OS; if one does not run, there is no release;
+#   github-release  the wheels and python-SHA256SUMS, attached to the release
+#                   release-please created. The release itself is not created
+#                   here: release-please writes its notes from the release PR,
+#                   and a second writer would drift from it;
+#   pypi            the wheels to PyPI, only when vars.PUBLISH_PYPI == 'true';
+#   image           the vast.ai image to GHCR, only when vars.PUBLISH_IMAGES == 'true'.
 #
 # PyPI и GHCR выключены, пока владелец не включит их переменными репозитория:
 # туда ничего нельзя перезалить, и первый выпуск не должен случайно занять имя
@@ -60,7 +64,6 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
       commit: ${{ steps.meta.outputs.commit }}
-      wheel: ${{ steps.files.outputs.wheel }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -127,24 +130,67 @@ jobs:
           got="$(COLLOQ_HOME="$RUNNER_TEMP/colloq-home" NO_COLOR=1 "$RUNNER_TEMP/venv/bin/colloq" --version)"
           test "$got" = "$VERSION"
           git diff --exit-code
+      # The Node archives are pinned by sha256 in scripts/node-runtime.json.
+      # The cache only saves the download; the check runs regardless.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/colloq/node
+          key: node-runtime-${{ hashFiles('scripts/node-runtime.json') }}
+      - name: Platform wheels with Node inside
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          python3 scripts/platform-wheels.py build
+      - name: The Linux x64 wheel runs here without a Node of its own
+        run: python3 scripts/platform-wheels.py smoke --wheel python/dist/*-manylinux_2_28_x86_64.whl
       - name: Release files
-        id: files
         run: |
           set -euo pipefail
           mkdir -p out
           cp python/dist/*.whl out/
-          wheel="$(cd out && ls -- *.whl)"
-          (cd out && sha256sum "$wheel" > python-SHA256SUMS)
-          echo "wheel=$wheel" >> "$GITHUB_OUTPUT"
+          (cd out && sha256sum -- *.whl > python-SHA256SUMS)
+          cat out/python-SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: release-files
           path: out/
           if-no-files-found: error
 
-  github-release:
-    name: Attach the wheel to the GitHub Release
+  # A platform wheel that does not run on its own OS never reaches PyPI: a
+  # version there cannot be replaced, only yanked. Linux x64 is already run in
+  # build; here are the other three targets, each on its own runner.
+  smoke:
+    name: Platform wheel on ${{ matrix.target }}
     needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: darwin-arm64, os: macos-15, tag: macosx_14_0_arm64 }
+          - { target: darwin-x64, os: macos-15-intel, tag: macosx_14_0_x86_64 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm, tag: manylinux_2_28_aarch64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: out
+      - name: Install and run the wheel
+        run: python3 scripts/platform-wheels.py smoke --wheel out/*-${{ matrix.tag }}.whl
+
+  github-release:
+    name: Attach the wheels to the GitHub Release
+    needs: [build, smoke]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -153,13 +199,12 @@ jobs:
         with:
           name: release-files
           path: out
-      - name: Add the wheel to the release release-please created
+      - name: Add the wheels to the release release-please created
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.build.outputs.tag }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
-          WHEEL: ${{ needs.build.outputs.wheel }}
         run: |
           set -euo pipefail
           # Выпуск создаёт release-please при слиянии PR выпуска, и заметки у
@@ -176,13 +221,17 @@ jobs:
             gh release edit "$TAG" --prerelease
           fi
           assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
-          if grep -qxF "$WHEEL" <<<"$assets"; then
-            echo "::notice::$TAG already carries $WHEEL; it stays the wheel of record."
+          upload=()
+          for file in out/*.whl out/python-SHA256SUMS; do
+            grep -qxF "$(basename "$file")" <<<"$assets" || upload+=("$file")
+          done
+          if [ "${#upload[@]}" -eq 0 ]; then
+            echo "::notice::$TAG already carries every wheel; they stay the files of record."
             exit 0
           fi
           # Без --clobber: файл с тем же именем (например, от release.yml) не
           # перепишется, а откажет.
-          gh release upload "$TAG" "out/$WHEEL" out/python-SHA256SUMS
+          gh release upload "$TAG" "${upload[@]}"
 
   pypi:
     name: Publish to PyPI
@@ -211,6 +260,14 @@ jobs:
           set -euo pipefail
           gh release download "$TAG" --pattern '*.whl' --pattern python-SHA256SUMS --dir "$RUNNER_TEMP/release"
           (cd "$RUNNER_TEMP/release" && sha256sum -c python-SHA256SUMS)
+          # sha256sum -c says nothing about files missing from the list, so
+          # every wheel has to be listed.
+          for wheel in "$RUNNER_TEMP/release/"*.whl; do
+            if ! grep -q "  $(basename "$wheel")\$" "$RUNNER_TEMP/release/python-SHA256SUMS"; then
+              echo "::error::$(basename "$wheel") is not listed in python-SHA256SUMS"
+              exit 1
+            fi
+          done
           mkdir -p dist
           cp "$RUNNER_TEMP/release/"*.whl dist/
       - uses: pypa/gh-action-pypi-publish@release/v1

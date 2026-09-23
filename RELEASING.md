@@ -295,14 +295,48 @@ it runs only when called from *Release Please*, or by hand for an existing tag.
 
 | Job | What it does | Gate |
 | --- | --- | --- |
-| `build` | Checks that the tag, `package.json`, every copy and the changelog agree. Checks that the workflow publishing the tag is the one committed in it (the same `.github` as the tag). Runs the typecheck and tests. Runs `make wheel` with `SOURCE_DATE_EPOCH` set to the commit time, installs the wheel in a clean venv, checks `colloq --version`, and checks that the build left the tree clean. | always |
-| `github-release` | Attaches the wheel and `python-SHA256SUMS` to the release that release-please created. Refuses if there is no release: it never creates one, because the notes are release-please's. Marks `-rc.N` versions as pre-releases. Keeps a wheel that is already attached. | always |
-| `pypi` | Downloads the wheel **attached to the release**, verifies its checksum and uploads it with the `pypi` environment secret `PYPI_API_TOKEN`. | `vars.PUBLISH_PYPI == 'true'`, plus approval in the `pypi` environment |
+| `build` | Checks that the tag, `package.json`, every copy and the changelog agree. Checks that the workflow publishing the tag is the one committed in it (the same `.github` as the tag). Runs the typecheck and tests. Runs `make wheel` with `SOURCE_DATE_EPOCH` set to the commit time, installs the wheel in a clean venv, checks `colloq --version`, and checks that the build left the tree clean. Then builds the four [platform wheels](#platform-wheels) and runs the Linux x64 one. | always |
+| `smoke` | Installs each of the other three platform wheels into a clean venv on its own runner (`macos-15`, `macos-15-intel`, `ubuntu-24.04-arm`) and runs it. | always |
+| `github-release` | Attaches every wheel and `python-SHA256SUMS` to the release that release-please created, once `smoke` has passed. Refuses if there is no release: it never creates one, because the notes are release-please's. Marks `-rc.N` versions as pre-releases. Keeps files that are already attached. | always |
+| `pypi` | Downloads the wheels **attached to the release**, checks that each one is listed in `python-SHA256SUMS` and matches it, and uploads them with the `pypi` environment secret `PYPI_API_TOKEN`. | `vars.PUBLISH_PYPI == 'true'`, plus approval in the `pypi` environment |
 | `image` | Builds `deploy/vast/Dockerfile` for linux/amd64, with provenance, an SBOM and OCI labels. Pushes `ghcr.io/<owner>/colloq-vast:X.Y.Z`, and also `:latest` for non-pre-releases. Skips the build if that version already exists. The only job with `packages: write`. | `vars.PUBLISH_IMAGES == 'true'` |
 
 `.github/workflows/pr-title.yml` (*PR title*) fails a pull request whose title
 is not a Conventional Commit with one of the types above. The release pull
 request's title passes it.
+
+### Platform wheels
+
+A release carries five wheels. The universal one, `py3-none-any`, needs Node.js
+22+ on the machine and installs the server's `node_modules` on the first run.
+The four platform wheels bring both with them, so after `pip install colloq`
+only Docker is needed:
+
+| Wheel tag | Who gets it |
+| --- | --- |
+| `macosx_14_0_arm64`, `macosx_14_0_x86_64` | macOS 14 or newer |
+| `manylinux_2_28_x86_64`, `manylinux_2_28_aarch64` | Linux with glibc 2.28 or newer (Ubuntu 20.04+, Debian 10+, RHEL 8+, WSL 2) |
+
+pip picks the most specific tag that fits, and falls back to the universal
+wheel everywhere else (macOS 13, Alpine, other architectures).
+
+`scripts/platform-wheels.py build` (or `make wheels`) builds all four on one
+machine from the universal wheel: Node.js from the archive pinned in
+`scripts/node-runtime.json` (checked by sha256), and `node_modules` from
+`npm ci --omit=dev -w @colloq/server --os --cpu --libc` against the root
+`package-lock.json`. No install script runs; every native binary is checked
+against the target's architecture before it goes into a wheel.
+`scripts/platform-wheels.py smoke --wheel <file>` installs a wheel into a clean
+venv, with the system Node kept off `PATH`, and runs it.
+
+To move to a newer Node.js, change `version` and the four archives in
+`scripts/node-runtime.json`, with the sums from that version's
+`SHASUMS256.txt`.
+
+Each platform wheel is about 60 MB, so a release adds about 250 MB to the
+project on PyPI. PyPI limits a project to 10 GB by default; ask for more
+(<https://github.com/pypi/support>) before the releases add up, or delete the
+files of old versions.
 
 ### Verify a release
 

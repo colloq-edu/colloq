@@ -18,17 +18,17 @@ prints help too, and `jupyter lab` is what starts a server.
 
 ## What the machine needs
 
-- **Node.js 22 or newer** — the server and the CLI run on it. `colloq` finds it
-  on its own, including under nvm, fnm, volta and asdf; if Node is missing, it
-  says so in words.
 - **Docker** — the room's Python lives in it. The kernel image is built here,
   from the Dockerfile that shipped with the package.
 
-On the first run `colloq` installs the server's dependencies once (`npm install
---omit=dev` inside its own directory) and says so out loud. They are kept out of
-the package deliberately: two of them are native, and a wheel carrying them
-would be one wheel per «operating system + Node ABI» pair instead of one for
-everyone.
+That is all on macOS 14+ and on Linux x64/arm64 (glibc 2.28+): pip installs a
+wheel for the platform with Node.js and the server's dependencies inside.
+
+Elsewhere (macOS 13, Alpine, other architectures) pip installs the universal
+wheel, which also needs **Node.js 22 or newer**. `colloq` finds it on its own,
+including under nvm, fnm, volta and asdf, and says so in words if Node is
+missing. On the first run it installs the server's dependencies once
+(`npm install --omit=dev` inside its own directory) and says so out loud.
 
 ## Where your things live
 

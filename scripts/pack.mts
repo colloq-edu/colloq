@@ -33,11 +33,13 @@
  * host.sh с тем, что он сорсит и запускает, и пара backup/restore со своими
  * помощниками — список и причины у SCRIPTS ниже.
  *
- * Чего в колесе НЕТ намеренно: node_modules. Две зависимости сервера нативные
- * (better-sqlite3 и @resvg/resvg-js), и колесо с ними стало бы платформенным —
- * своё на macOS arm64, своё на Linux x86_64, своё на каждую версию Node ABI.
- * Вместо этого рядом с приложением лежит package.json с production-зависимостями
- * сервера, и `colloq` ставит их сам при первом запуске (python/colloq/__main__.py).
+ * What this universal wheel deliberately lacks: node_modules. Two of the
+ * server's dependencies are native (better-sqlite3 and @resvg/resvg-js), and a
+ * wheel with them is a platform wheel. Instead, a package.json with the
+ * server's production dependencies sits next to the app, and `colloq` installs
+ * them on the first run (python/colloq/__main__.py). The platform wheels are
+ * built on top of this one by scripts/platform-wheels.py: they add Node and
+ * node_modules for macOS and Linux, and pip prefers them where they fit.
  *
  * node_modules нет и у самого CLI: бандлы собраны с --packages=external, и
  * снаружи им нужны только dotenv и better-sqlite3 (последний — одному

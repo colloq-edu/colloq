@@ -61,7 +61,7 @@ OFF  := \033[0m
         host host-direct relay-setup relay-page tunnel-setup site mirror readme-art site-icons site-og ui sync load course \
         vast-up vast-status vast-sync vast-logs vast-down vast-adopt \
         env-list env-show env-new env-use env-build env-freeze \
-        backup restore test check pack wheel version bump
+        backup restore test check pack wheel wheels version bump
 
 ## ------------------------------------------------------------------ запуск
 
@@ -762,6 +762,12 @@ wheel: pack ## Собрать колесо pip в python/dist (публикуе�
 	@python3 -m pip wheel ./python --no-deps --quiet --wheel-dir python/dist
 	@printf '$(BOLD)Колесо:$(OFF) %s\n' "$$(ls python/dist/*.whl)"
 	@printf '$(DIM)Проверить: python3 -m venv /tmp/colloq-venv && /tmp/colloq-venv/bin/pip install python/dist/*.whl$(OFF)\n'
+
+wheels: wheel ## Platform wheels with Node and node_modules inside (TARGET=darwin-arm64 for one)
+	@# Next to the universal wheel: macOS arm64/x64 and Linux x64/arm64, all
+	@# four built on this machine (scripts/platform-wheels.py). To run one here:
+	@# python3 scripts/platform-wheels.py smoke --wheel python/dist/<wheel>
+	@python3 scripts/platform-wheels.py build $(if $(TARGET),--target $(TARGET),)
 
 ## ------------------------------------------------------------------ версия
 

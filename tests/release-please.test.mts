@@ -101,7 +101,11 @@ test('a release publishes exactly once: started from release-please on the tag, 
   for (const file of workflows) {
     assert.doesNotMatch(read(`.github/workflows/${file}`), /gh release create/, `${file} creates a release`)
   }
-  assert.match(job(text, 'github-release'), /gh release upload "\$TAG" "out\/\$WHEEL" out\/python-SHA256SUMS/)
+  // Every wheel at once, universal and platform, with the list of sums.
+  const release = job(text, 'github-release')
+  assert.match(release, /for file in out\/\*\.whl out\/python-SHA256SUMS; do/)
+  assert.match(release, /gh release upload "\$TAG" "\$\{upload\[@\]\}"/)
+  assert.doesNotMatch(release, /gh release upload[^\n]*--clobber/)
   assert.match(read('.github/workflows/release.yml'), /gh release upload "\$VERSION" release\.json/)
 })
 

@@ -33,8 +33,9 @@ colloq start          # a class on this computer, in your browser
 colloq start --share  # …and one link to give your students
 ```
 
-Installing needs **Python 3.9 or newer**; running a class needs
-**Node.js 22 or newer** and **Docker** (macOS and Linux; on Windows, WSL 2). The
+Installing needs **Python 3.9 or newer**; running a class needs **Docker**
+(macOS and Linux; on Windows, WSL 2). On macOS 14+ and Linux x64/arm64 the
+package brings its own Node.js; elsewhere it needs **Node.js 22 or newer**. The
 server, the web app and the room image come with the package, and your classes
 live in `~/.colloq`.
 
@@ -262,13 +263,17 @@ pip install colloq     # Python 3.9+, into a virtualenv or with pipx
 colloq start           # a class on this computer, in your browser
 ```
 
-The machine needs **Node.js 22 or newer** and **Docker** running. `colloq` finds
-Node on its own, including under nvm, fnm, volta and asdf, and says so in words
-when it is missing; the first run installs the server's dependencies once, out
-loud. Ctrl+C saves the notebook and stops the class.
+The machine needs **Docker** running. On macOS 14+ and on Linux x64/arm64
+(glibc 2.28+) pip installs a wheel with Node.js and the server's dependencies
+inside, and that is all. Elsewhere (macOS 13, Alpine, other architectures) pip
+takes the universal wheel, which needs **Node.js 22 or newer**: `colloq` finds
+it on its own, including under nvm, fnm, volta and asdf, says so in words when
+it is missing, and installs the server's dependencies once on the first run.
+Ctrl+C saves the notebook and stops the class.
 
-1. Claim the instance at `/admin` with the token `colloq start` prints — it is
-   kept in `~/.colloq/data/setup-token`.
+1. Open the link `colloq start` prints. Like Jupyter's, it carries the setup
+   token (kept in `~/.colloq/data/setup-token`): the first time it makes you
+   the owner of the instance, and after that it signs you in.
 2. Create a class and choose its preset and Python environment.
 3. Share the class link, `/s/<id>`, and never a link with `/admin/` in it.
 

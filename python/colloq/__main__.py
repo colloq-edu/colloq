@@ -1,25 +1,30 @@
-"""Шим: найти Node, при первом запуске поставить node_modules, отдать управление CLI.
+"""Shim: find Node, install node_modules on the first run, hand over to the CLI.
 
-Больше здесь не происходит ничего, и это намеренно. Логика занятия — сборка,
-ядра, порты, туннель, остановка — живёт в CLI (_app/cli/colloq.mjs, собран из
-cli/src) и в супервизоре занятия, которым пользуется и `npm run dev` в
-репозитории. Второй, питонский, слой правил означал бы две программы на одно
-дело, и чинить пришлось бы обе.
+Nothing else happens here, on purpose. The class logic (building, kernels,
+ports, the tunnel, stopping) lives in the CLI (_app/cli/colloq.mjs, built from
+cli/src) and in the class supervisor, which `npm run dev` in the repository
+uses too. A second, Python layer of rules would mean two programs for one
+job, and both would need fixing.
 
-Что шим делает по шагам:
+What the shim does, step by step:
 
-  1. ищет node — сначала в PATH, потом там, где его кладут установщики;
-     проверяет, что версия не ниже 22 (better-sqlite3 13 заявляет node >=22, а
-     на 18 сервер и вовсе падает на ходу, а не при старте);
-  2. если рядом с приложением нет node_modules — ставит их один раз npm-ом и
-     говорит об этом вслух: молчаливая минута на первом запуске читается как
-     «зависло»;
-  3. выставляет COLLOQ_APP_DIR (где лежит приложение) и COLLOQ_CWD (откуда
-     позвали);
-  4. заменяет собой процесс Node через execve — чтобы Ctrl+C уходил прямо в
-     CLI, а код возврата приходил прямо от него. Прослойка-надзиратель здесь
-     сломала бы и то, и другое: Ctrl+C на паре означает «сохрани и останови
-     занятие», и он должен дойти до того, кто умеет это сделать.
+  1. takes the Node that came in the wheel: the macOS and Linux wheels carry
+     it in _app/bin/node together with ready node_modules
+     (scripts/platform-wheels.py). The universal wheel has none, and then it
+     looks for node — first in PATH, then where installers put it — and checks
+     the version is at least 22 (better-sqlite3 13 declares node >=22, and on
+     18 the server fails mid-class, not at start);
+  2. if there are no node_modules next to the app, installs them once with
+     npm and says so out loud: a silent minute on the first run reads as
+     "it hung". A platform wheel already has them, and npm is not needed;
+  3. sets COLLOQ_APP_DIR (where the app lives) and COLLOQ_CWD (where it was
+     called from), and puts the chosen node's directory first in PATH:
+     host.sh and the port probe call `node` by name, and a teacher with a
+     platform wheel may have no Node of their own;
+  4. replaces itself with the Node process via execve, so that Ctrl+C goes
+     straight to the CLI and the exit code comes straight from it. A
+     supervising middle layer would break both: Ctrl+C in class means "save
+     and stop the class", and it has to reach whoever can do that.
 """
 
 from __future__ import annotations
@@ -39,6 +44,8 @@ APP = Path(__file__).resolve().parent / "_app"
 ENTRY = APP / "cli" / "colloq.mjs"
 MARK = APP / ".colloq-dist.json"
 STAMP = APP / ".node-modules.json"
+#: Node from a platform wheel. The universal wheel has none.
+BUNDLED_NODE = APP / "bin" / ("node.exe" if os.name == "nt" else "node")
 LOCK = APP / ".node-modules.lock"
 
 #: Ниже 22 не бывает: better-sqlite3 13 заявляет node >=22 (server/package.json),
@@ -121,13 +128,36 @@ def _node_version(node: str) -> Optional[Tuple[int, int, int]]:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
+def _bundled_node() -> Optional[str]:
+    """The Node from the wheel, if there is one and it runs on this machine.
+
+    If it does not run (say, macOS is older than this Node needs and the
+    wheel was installed by hand past its tag), fall back to the system Node:
+    the node_modules in the wheel are N-API builds and work with it too.
+    """
+    if not BUNDLED_NODE.is_file():
+        return None
+    path = str(BUNDLED_NODE)
+    if not os.access(path, os.X_OK):
+        # An installer that dropped the executable bit is no reason to refuse.
+        try:
+            os.chmod(path, 0o755)
+        except OSError:
+            return None
+    version = _node_version(path)
+    return path if version and version[0] >= MIN_NODE else None
+
+
 def find_node() -> str:
-    """Первый работающий node не ниже MIN_NODE.
+    """The Node from the wheel, or else the first working node not older than MIN_NODE.
 
     Отдельно разбирается случай «node есть, но старый»: сказать такому человеку
     «Node не найден» — значит отправить его ставить второй раз то, что у него
     стоит, и удивляться, почему не помогает.
     """
+    bundled = _bundled_node()
+    if bundled:
+        return bundled
     seen = set()
     old: Optional[str] = None
     for candidate in _candidates():
@@ -232,10 +262,11 @@ def _install(npm: str, wanted: dict) -> None:
 def ensure_modules(node: str) -> None:
     """node_modules рядом с приложением — ставятся один раз, на этой машине.
 
-    Почему их нет в колесе: better-sqlite3 и @resvg/resvg-js — нативные, и
-    колесо с ними перестало бы быть одним на всех (своё на macOS arm64, своё на
-    Linux x86_64, своё на каждую версию Node ABI). Цена такого решения — одна
-    минута на первом запуске, и она названа вслух, а не проведена молча.
+    A platform wheel (macOS, Linux x64/arm64) ships them with the STAMP, and
+    nothing happens here. The universal wheel has none: better-sqlite3 and
+    @resvg/resvg-js are native, and with them it would stop being one wheel
+    for everyone. The price is a minute on the first run, said out loud
+    rather than spent in silence.
     """
     wanted = _wanted()
     if _ready(wanted):
@@ -303,6 +334,10 @@ def main() -> int:
     # Где лежит приложение. Всё остальное — состояние занятия — CLI ищет сам:
     # у него для этого COLLOQ_HOME.
     environment["COLLOQ_APP_DIR"] = str(APP)
+    # The chosen node goes first in PATH: host.sh and the port probe
+    # (cli/src/sh.ts) call `node` by name and would otherwise find another
+    # one, or none.
+    environment["PATH"] = os.path.dirname(node) + os.pathsep + environment.get("PATH", "")
     # Каталог, из которого позвали: относительные пути в аргументах
     # (`colloq restore --db backups/…`) должны считаться от него, а не от
     # приложения.
