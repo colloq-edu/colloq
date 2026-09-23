@@ -20,8 +20,6 @@
   ],
   "packages": {
     ".": {
-      "release-as": "0.2.0",
-      "pull-request-header": "First release after the history rewrite. Once this is merged and v0.2.0 is out, delete `release-as` and this `pull-request-header` from `release-please-config.json` (RELEASING.md, \"The first release\").",
       "extra-files": [
         { "type": "json", "path": "server/package.json", "jsonpath": "$.version" },
         { "type": "json", "path": "web/package.json", "jsonpath": "$.version" },
