@@ -30,10 +30,10 @@
 # пропускается. Запускать его — с самого тега («Use workflow from: vX.Y.Z»):
 # см. шаг сверки в build.
 #
-# Не workflow_call, и это измерено: вызванный из release-please.yml, этот
-# файл нёс в OIDC-токене workflow_ref = release-please.yml, и PyPI отказал
-# v0.2.0 с `invalid-publisher` — переиспользуемые workflow Trusted Publishing
-# не поддерживает. Самостоятельный прогон с тега совпадает с издателем.
+# Не workflow_call: вызванный из release-please.yml, этот файл нёс в
+# OIDC-токене workflow_ref = release-please.yml, а переиспользуемые workflow
+# Trusted Publishing PyPI не поддерживает. Самостоятельный прогон с тега
+# оставляет дорогу к нему открытой, даже пока выкладка идёт по токену.
 name: Publish
 
 on:
@@ -189,15 +189,16 @@ jobs:
     needs: [build, github-release]
     if: vars.PUBLISH_PYPI == 'true'
     runs-on: ubuntu-24.04
-    # Trusted Publishing: секрета нет, PyPI верит OIDC-токену этого workflow в
-    # этом окружении. Окружение `pypi` с обязательным ревьюером — последняя
-    # кнопка перед тем, что уже нельзя отозвать. id-token — только здесь.
+    # API-токен PyPI — секрет окружения `pypi`, а не репозитория: его видит
+    # только эта задача и только после одобрения. Окружение с обязательным
+    # ревьюером — последняя кнопка перед тем, что уже нельзя отозвать.
+    # Trusted Publishing отложен: v0.2.0 он отказал `invalid-publisher`, и
+    # первую версию выложили этим же токеном вручную.
     environment:
       name: pypi
       url: https://pypi.org/project/colloq/
     permissions:
       contents: read
-      id-token: write
     steps:
       # Колесо — то, что приложено к выпуску, а не пересобранное: на PyPI и на
       # странице выпуска должен лежать один и тот же файл.
@@ -215,6 +216,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
           # Версию на PyPI не перезалить; повторный запуск просто её пропускает.
           skip-existing: true
           print-hash: true

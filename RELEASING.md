@@ -227,25 +227,23 @@ accident.
    - `PUBLISH_IMAGES` = `true` turns on the vast.ai image job.
 
    If a variable is unset or has any other value, its job is skipped.
-2. **PyPI Trusted Publishing.** No token is stored anywhere. On pypi.org, go to
-   *Your projects → Publishing* and add a *pending publisher* for the project
-   `colloq`:
+2. **PyPI API token.** Create a token on pypi.org (*Account settings → API
+   tokens*), scoped to the project `colloq` once it exists, and store it as the
+   secret `PYPI_API_TOKEN` of the **`pypi` environment**, not of the
+   repository: only the approved PyPI job can read it.
 
-   | Field | Value |
-   | --- | --- |
-   | Owner | this repository's owner |
-   | Repository | `colloq` |
-   | Workflow | `publish.yml` |
-   | Environment | `pypi` |
+   ```
+   gh secret set PYPI_API_TOKEN -R colloq-edu/colloq --env pypi
+   ```
 
-   The first successful publish creates the project and claims the name.
-
-   `release-please.yml` does not call `publish.yml` as a reusable workflow: it
-   starts it from the new tag with `workflow_dispatch`. PyPI Trusted Publishing
-   does not support reusable workflows, and the one attempt (v0.2.0) was
-   refused with `invalid-publisher`, because the token named
-   `release-please.yml` as the workflow. A dispatched run is `publish.yml` on
-   its own, so the publisher above matches.
+   Trusted Publishing (no stored token) was the first plan and is still
+   possible: `release-please.yml` starts `publish.yml` from the new tag with
+   `workflow_dispatch` rather than calling it as a reusable workflow, which
+   PyPI does not support — the one reusable attempt (v0.2.0) was refused with
+   `invalid-publisher`. To switch, add a publisher on pypi.org with Owner
+   `colloq-edu` (the GitHub owner, not the PyPI login), Repository `colloq`,
+   Workflow `publish.yml`, Environment `pypi`; then give the job
+   `id-token: write` and drop `password:`.
 3. **GitHub environment `pypi`** (Settings → Environments). Add yourself as a
    required reviewer, so every PyPI upload waits for your approval. Under
    *Deployment branches and tags*, allow the tag pattern `v*`. Every publish
@@ -299,7 +297,7 @@ it runs only when called from *Release Please*, or by hand for an existing tag.
 | --- | --- | --- |
 | `build` | Checks that the tag, `package.json`, every copy and the changelog agree. Checks that the workflow publishing the tag is the one committed in it (the same `.github` as the tag). Runs the typecheck and tests. Runs `make wheel` with `SOURCE_DATE_EPOCH` set to the commit time, installs the wheel in a clean venv, checks `colloq --version`, and checks that the build left the tree clean. | always |
 | `github-release` | Attaches the wheel and `python-SHA256SUMS` to the release that release-please created. Refuses if there is no release: it never creates one, because the notes are release-please's. Marks `-rc.N` versions as pre-releases. Keeps a wheel that is already attached. | always |
-| `pypi` | Downloads the wheel **attached to the release**, verifies its checksum and uploads it through Trusted Publishing. The only job with `id-token: write`. | `vars.PUBLISH_PYPI == 'true'`, plus approval in the `pypi` environment |
+| `pypi` | Downloads the wheel **attached to the release**, verifies its checksum and uploads it with the `pypi` environment secret `PYPI_API_TOKEN`. | `vars.PUBLISH_PYPI == 'true'`, plus approval in the `pypi` environment |
 | `image` | Builds `deploy/vast/Dockerfile` for linux/amd64, with provenance, an SBOM and OCI labels. Pushes `ghcr.io/<owner>/colloq-vast:X.Y.Z`, and also `:latest` for non-pre-releases. Skips the build if that version already exists. The only job with `packages: write`. | `vars.PUBLISH_IMAGES == 'true'` |
 
 `.github/workflows/pr-title.yml` (*PR title*) fails a pull request whose title
