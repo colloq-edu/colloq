@@ -102,6 +102,7 @@ test('marker: only the exact line from host.sh is taken', () => {
 
 const BASE: ShareBlock = {
   url: 'https://orange-bird.trycloudflare.com',
+  teacher: 'https://orange-bird.trycloudflare.com/admin/t/Tok_en-1',
   local: 'http://localhost:3000',
   classes: [],
   total: 0,
@@ -115,10 +116,19 @@ const text = (block: Partial<ShareBlock>): string => renderShareBlock({ ...BASE,
 test('block: no class yet — the panel on the public address and what to do there', () => {
   const out = text({})
   assert.match(out, /Colloq is online at https:\/\/orange-bird\.trycloudflare\.com/)
-  assert.match(out, /There is no class yet\. Create one in the panel and copy its link/)
-  assert.match(out, /│ {3}https:\/\/orange-bird\.trycloudflare\.com\/admin$/m)
-  assert.match(out, /on this computer the panel is also at http:\/\/localhost:3000\/admin/)
+  assert.match(out, /There is no class yet\. Create one in the panel above and copy its link/)
   assert.doesNotMatch(out, /\/s\/[a-z0-9]/)
+})
+
+test('block: the teacher link on the public address carries the token, like Jupyter', () => {
+  for (const out of [text({}), text({ classes: [{ id: 'a', name: 'A' }], total: 1 })]) {
+    assert.match(out, /Your panel on this address \(the link signs you in — keep it to yourself\):/)
+    assert.match(out, /^ {2}│ {3}https:\/\/orange-bird\.trycloudflare\.com\/admin\/t\/Tok_en-1$/m)
+    // Ссылка входа — одна, и она выше ссылок для студентов.
+    assert.equal(out.match(/\/admin\/t\//g)?.length, 2, 'the link and the warning that names /admin/t/…')
+  }
+  const one = text({ classes: [{ id: 'k3mnp7qr', name: 'L' }], total: 1 })
+  assert.ok(one.indexOf('/admin/t/Tok_en-1') < one.indexOf('/s/k3mnp7qr'))
 })
 
 test('block: one class — exactly one link to give', () => {
@@ -153,8 +163,6 @@ test('block: always the /admin/ warning, the lifetime, the new address and Russi
     assert.match(out, /new address on every start: send the new link each time/)
     assert.match(out, /Cloudflare addresses do not open from Russia/)
     assert.match(out, /colloq start --host <name> with RELAY_\* in \.env/)
-    // Токена установки CLI не печатает никогда.
-    assert.doesNotMatch(out, /\/admin\/t\/[A-Za-z0-9]/)
     assert.doesNotMatch(out, /\u001b\[/, 'the block goes to the log too: no colours')
   }
 })

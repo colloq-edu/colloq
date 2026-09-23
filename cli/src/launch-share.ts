@@ -109,6 +109,11 @@ function printable(name: string): string {
 export interface ShareBlock {
   /** Публичный адрес туннеля, без / в конце. */
   url: string
+  /**
+   * Вход преподавателя на публичном адресе — с токеном установки, как у
+   * Jupyter (launch-banner.ts · teacherLink). Без токена на диске — /admin.
+   */
+  teacher: string
   /** Локальный адрес: панель на этом компьютере. */
   local: string
   /** Самые новые занятия, не больше трёх. */
@@ -132,7 +137,14 @@ export interface ShareBlock {
  * пролистывают целиком.
  */
 export function renderShareBlock(block: ShareBlock): string[] {
-  const out: string[] = ['', `  ┌ Colloq is online at ${block.url}`, '  │']
+  const out: string[] = [
+    '',
+    `  ┌ Colloq is online at ${block.url}`,
+    '  │',
+    '  │ Your panel on this address (the link signs you in — keep it to yourself):',
+    `  │   ${block.teacher}`,
+    '  │',
+  ]
   const link = (item: ShareClass): string =>
     `  │   ${block.url}/s/${encodeURIComponent(item.id)}   ${printable(item.name)}`
   if (block.classes.length === 1 && block.total === 1) {
@@ -144,10 +156,8 @@ export function renderShareBlock(block: ShareBlock): string[] {
     if (more > 0) out.push(`  │   … and ${more} more: the panel lists every class with its link`)
   } else {
     out.push(
-      '  │ There is no class yet. Create one in the panel and copy its link from',
-      '  │ the list — the list already gives links on this public address:',
-      `  │   ${block.url}/admin`,
-      `  │   (on this computer the panel is also at ${block.local}/admin)`,
+      '  │ There is no class yet. Create one in the panel above and copy its link',
+      '  │ from the list — the list already gives links on this public address.',
     )
   }
   out.push(

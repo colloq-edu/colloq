@@ -174,6 +174,7 @@ async function announceShare(
   console.log(
     renderShareBlock({
       url,
+      teacher: teacherLink(url, receipt.dataDir),
       local: receipt.url,
       classes,
       total,
@@ -370,7 +371,16 @@ async function detached(options: LaunchOptions): Promise<number> {
         else if (publicUrl) console.log(`Public address: ${publicUrl}`)
         else if (publishing)
           console.log(`The tunnel did not come up; local work continues. Details: ${logFile}`)
-        if (options.open) openBrowser(teacherLink(receipt.url, receipt.dataDir))
+        /*
+         * Под --share открывается ссылка туннеля: вход на публичном адресе
+         * кладёт куку туда, где преподаватель и возьмёт ссылки для студентов.
+         * Туннель не поднялся — не открываем ничего: localhost под --share
+         * человек не просил.
+         */
+        if (options.open) {
+          if (!options.share) openBrowser(teacherLink(receipt.url, receipt.dataDir))
+          else if (publicUrl) openBrowser(teacherLink(publicUrl, receipt.dataDir))
+        }
         child.unref()
         return 0
       }
@@ -393,7 +403,8 @@ async function runSession(options: LaunchOptions): Promise<number> {
     )
     if (options.host) console.log(`For public access: colloq host ${options.host}`)
     if (options.share) console.log('For a public link: colloq host')
-    if (options.open && prior.phase === 'ready') openBrowser(teacherLink(prior.url, prior.dataDir))
+    if (options.open && !options.share && prior.phase === 'ready')
+      openBrowser(teacherLink(prior.url, prior.dataDir))
     return 0
   }
   if (options.detach && !options.child) return await detached(options)
@@ -582,7 +593,8 @@ async function runSession(options: LaunchOptions): Promise<number> {
     if (publishing) receipt.hosting = 'starting'
     writeJson(receiptFile, receipt)
     if (!options.child) await banner(receipt, false)
-    if (options.open) openBrowser(teacherLink(config.url, config.dataDir))
+    // Под --share браузер ждёт ссылку туннеля (announceShare ниже).
+    if (options.open && !options.share) openBrowser(teacherLink(config.url, config.dataDir))
     if (publishing) {
       /*
        * Путь до скрипта проверяется до запуска, потому что его отсутствие
@@ -662,6 +674,7 @@ async function runSession(options: LaunchOptions): Promise<number> {
                 const shared = parseShareMarker(line)
                 if (!shared || !receipt) return false
                 void announceShare(shared.url, receipt, relayDomain, shared.verified, false)
+                if (options.open) openBrowser(teacherLink(shared.url, receipt.dataDir))
                 return true
               }
             : undefined,
