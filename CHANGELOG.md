@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.5.0](https://github.com/colloq-edu/colloq/compare/v0.4.1...v0.5.0) (2026-09-24)
+
+
+### Features
+
+* **pip:** wheels for macOS and Linux carry Node and node_modules, so only Docker is needed ([191c7bd](https://github.com/colloq-edu/colloq/commit/191c7bd07016ad0075b4af10fc35326c0851763f))
+
 ## [0.4.1](https://github.com/colloq-edu/colloq/compare/v0.4.0...v0.4.1) (2026-09-23)
 
 
