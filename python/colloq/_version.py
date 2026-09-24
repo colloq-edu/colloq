@@ -3,4 +3,4 @@
 # the end of the line), and scripts/pack.mts rewrites the file with the same
 # text when packing. Do not edit by hand: `make version` checks the number
 # against the root package.json.
-__version__ = "0.4.1"  # x-release-please-version
+__version__ = "0.5.0"  # x-release-please-version
