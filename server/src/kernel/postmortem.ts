@@ -27,7 +27,7 @@
  * cell".
  */
 
-import { formatNumber, getLocale, tr } from '@shared/i18n'
+import { formatNumber, tr } from '@shared/i18n'
 import { dockerRead, roomContainer, type KernelRole } from './pool.js'
 import { kernelBackend } from './runtime-client.js'
 
@@ -249,10 +249,9 @@ export function killedByMemory(reading: MemoryReading, seen: number | undefined)
 
 function humanBytes(value: number | null): string {
   if (value === null) return '—'
-  const english = getLocale() === 'en'
   const gib = value / 1024 ** 3
-  if (gib >= 1) return `${formatNumber(Math.round(gib * 10) / 10)} ${english ? 'GB' : 'ГБ'}`
-  return `${formatNumber(Math.round(value / 1024 ** 2))} ${english ? 'MB' : 'МБ'}`
+  if (gib >= 1) return tr('common.gigabytes', { size: formatNumber(Math.round(gib * 10) / 10) })
+  return tr('common.megabytes', { size: formatNumber(Math.round(value / 1024 ** 2)) })
 }
 
 /**

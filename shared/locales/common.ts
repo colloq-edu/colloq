@@ -16,6 +16,8 @@ export const commonMessages: MessageCatalog = {
   'common.environmentClose': { ru: 'Закрыть сведения об окружении', en: 'Close environment details' },
   'common.loadingApp': { ru: 'Загрузка Colloq', en: 'Loading Colloq' },
   'common.loading': { ru: 'Загрузка…', en: 'Loading…' },
+  'common.gigabytes': { ru: '{size} ГБ', en: '{size} GB' },
+  'common.megabytes': { ru: '{size} МБ', en: '{size} MB' },
   'common.agentSteps': { ru: 'Действий на запрос', en: 'Actions per request' },
   'common.agentStepsUnit': { ru: 'действий', en: 'actions' },
   'common.agentStepsNote': { ru: 'Сколько шагов — чтение, правка, запуск — оракул делает за один запрос в режиме «Сделать». 0 — без лимита.', en: 'How many steps — a read, an edit, a run — the oracle takes per request in Act mode. 0 means no limit.' },

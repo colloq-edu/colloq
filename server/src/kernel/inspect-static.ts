@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { formatNumber, tr } from '@shared/i18n'
 
 /**
  * Help for what the kernel does not have yet: a signature jedi read FROM THE
@@ -547,8 +548,9 @@ def _brief_of(value):
             try:
                 # Counting parameters walks the module list, not the data; for
                 # a seminar's networks that is hundreds of entries, not millions.
-                total = sum(p.numel() for p in value.parameters())
-                out['note'] = str(total) + ' параметров'
+                # The number, not a phrase: the kernel does not know the room's
+                # language, and the server words it (parseBrief).
+                out['params'] = int(sum(p.numel() for p in value.parameters()))
             except Exception:
                 pass
             return out
@@ -620,10 +622,10 @@ def _brief_of(value):
                 out = {'type': _type_name(value)}
                 # Is it fitted: by the traces of fitting in the object itself,
                 # attributes with a trailing underscore. No method is called.
-                fitted = any(
+                # A flag, not a word: the server says it in the room's language.
+                out['fitted'] = any(
                     k.endswith('_') and not k.startswith('__') for k in vars(value)
                 )
-                out['note'] = 'обучен' if fitted else 'не обучен'
                 return out
         except Exception:
             pass
@@ -969,6 +971,17 @@ export function parseBrief(raw: unknown): BriefValue | null {
   for (const key of ['dims', 'dtype', 'value', 'note'] as const) {
     const value = said[key]
     if (typeof value === 'string' && value !== '') out[key] = value
+  }
+  /*
+   * Facts the kernel reports without words, because it does not know the
+   * room's language: the size of a network and whether an estimator is fitted.
+   * The server says them in the language of the instance.
+   */
+  if (typeof said.params === 'number' && Number.isSafeInteger(said.params) && said.params >= 0) {
+    out.note = tr('server.brief.parameters', { count: said.params, n: formatNumber(said.params) })
+  }
+  if (typeof said.fitted === 'boolean') {
+    out.note = tr(said.fitted ? 'server.brief.fitted' : 'server.brief.notFitted')
   }
   return out
 }

@@ -1,4 +1,4 @@
-import { tr } from '@shared/i18n'
+import { tr, translate } from '@shared/i18n'
 import { appendActivity } from '../activity.js'
 import type { ActivityOutcome } from '@shared/activity'
 /**
@@ -1240,7 +1240,7 @@ async function runTool(
       console.error(`[session ${hands.sessionId}] could not flush files before the run:`, err)
     }
     const quoted = `'${wanted.replace(/'/g, `'\\''`)}'`
-    const command = `${runner === 'python' ? 'python -u' : 'bash'} ${quoted}; echo "[код выхода $?]"`
+    const command = `${runner === 'python' ? 'python -u' : 'bash'} ${quoted}; echo "[${tr(EXIT_CODE)} $?]"`
     // Snapshot of the tree BEFORE the run: the script edits the disk past the
     // tools, and that can only be named by comparing. See `sayMoved`.
     const treeWas = treePrint(hands.sessionId)
@@ -2681,7 +2681,7 @@ async function runInRoom(hands: Hands, command: string, signal?: AbortSignal): P
       else signal?.addEventListener('abort', onStop, { once: true })
     },
   )
-  const marker = /\[код выхода (\d+)\]/g
+  const marker = exitMarker()
   let exit: number | null = null
   for (const found of result.output.matchAll(marker)) exit = Number(found[1])
   return {
@@ -2690,6 +2690,20 @@ async function runInRoom(hands: Hands, command: string, signal?: AbortSignal): P
     finished: result.finished,
     cut: result.cut,
   }
+}
+
+/*
+ * The line a run prints after the command, "[exit code 0]": in the room's
+ * language, because the terminal is shared and the whole room reads it, and
+ * parsed back above to learn how the command ended. Both languages are
+ * accepted: the instance language can be switched while a command runs.
+ */
+const EXIT_CODE = 'server.oracle.exitCode'
+function exitMarker(): RegExp {
+  const labels = (['ru', 'en'] as const).map((language) =>
+    translate(language, EXIT_CODE).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+  )
+  return new RegExp(`\\[(?:${labels.join('|')}) (\\d+)\\]`, 'g')
 }
 
 /* ---------------------------------------------------------------- the turn */

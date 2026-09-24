@@ -290,7 +290,7 @@ server.on('upgrade', (req, socket, head) => {
         err instanceof Error ? (err.stack ?? err.message) : err,
       )
       try {
-        ws.close(1011, 'соединение не открылось')
+        ws.close(1011, tr('server.connectionDidNotOpen'))
       } catch {
         ws.terminate()
       }

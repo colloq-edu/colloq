@@ -42,6 +42,7 @@ import {
   INSPECT_MODULE,
   INSPECT_REPORT_EXPR,
 } from '../server/src/kernel/inspect-static.js'
+import { setLocaleResolver } from '../shared/i18n.js'
 
 /* ------------------------------------------------------------ import header */
 
@@ -407,6 +408,63 @@ test('DataFrame and Series: rows, columns, data type', { skip: HAS('pandas') ? f
   assert.equal(series?.note, 'a')
   // `df.shape` is an ordinary tuple, and it is answered as a tuple.
   assert.deepEqual(briefOf(setup, 'df.shape'), { type: 'tuple[int]', dims: '2' })
+})
+
+test('the kernel reports facts without words, and the server says them in the room language', () => {
+  // The kernel does not know the room's language: a network's size and an
+  // estimator's state come as a number and a flag, and parseBrief words them.
+  const brief = (said: object) => parseBrief(JSON.stringify({ found: true, brief: said }))
+  try {
+    setLocaleResolver(() => 'ru')
+    assert.deepEqual(brief({ type: 'Net', params: 1 }), { type: 'Net', note: '1 параметр' })
+    assert.deepEqual(brief({ type: 'Net', params: 22 }), { type: 'Net', note: '22 параметра' })
+    assert.deepEqual(brief({ type: 'Net', params: 5 }), { type: 'Net', note: '5 параметров' })
+    assert.deepEqual(brief({ type: 'LinearRegression', fitted: false }), { type: 'LinearRegression', note: 'не обучен' })
+    setLocaleResolver(() => 'en')
+    assert.deepEqual(brief({ type: 'Net', params: 1 }), { type: 'Net', note: '1 parameter' })
+    assert.deepEqual(brief({ type: 'Net', params: 1200 }), { type: 'Net', note: '1,200 parameters' })
+    assert.deepEqual(brief({ type: 'LinearRegression', fitted: true }), { type: 'LinearRegression', note: 'fitted' })
+    assert.deepEqual(brief({ type: 'LinearRegression', fitted: false }), { type: 'LinearRegression', note: 'not fitted' })
+    // Junk from the kernel is ignored, not printed.
+    assert.deepEqual(brief({ type: 'Net', params: -1 }), { type: 'Net' })
+    assert.deepEqual(brief({ type: 'Net', params: '12' }), { type: 'Net' })
+  } finally {
+    setLocaleResolver(() => 'ru')
+  }
+})
+
+test('a network and an estimator come out of the kernel as facts, not Russian words', {
+  skip: PYTHON ? false : 'no python3',
+}, () => {
+  // Stand-ins for torch.nn and sklearn.base: the branches run without the real
+  // libraries, which are not on every machine that runs these tests.
+  const torch = [
+    'import sys, types',
+    "torch = types.ModuleType('torch'); nn = types.ModuleType('torch.nn')",
+    'class Tensor: pass',
+    'class Parameter:',
+    '    def __init__(self, n): self.n = n',
+    '    def numel(self): return self.n',
+    'class Module:',
+    '    def parameters(self): return [Parameter(3), Parameter(19)]',
+    "torch.Tensor = Tensor; nn.Module = Module; torch.nn = nn",
+    "sys.modules['torch'] = torch; sys.modules['torch.nn'] = nn",
+    'class Net(Module): pass',
+    'net = Net()',
+  ].join('\n')
+  assert.deepEqual(briefOf(torch, 'net'), { type: 'Net', note: '22 параметра' })
+  const sklearn = [
+    'import sys, types',
+    "base = types.ModuleType('sklearn.base')",
+    'class BaseEstimator: pass',
+    'base.BaseEstimator = BaseEstimator',
+    "sys.modules['sklearn'] = types.ModuleType('sklearn'); sys.modules['sklearn.base'] = base",
+    'class LinearRegression(BaseEstimator): pass',
+    'model = LinearRegression()',
+    'trained = LinearRegression(); trained.coef_ = [1.0]',
+  ].join('\n')
+  assert.deepEqual(briefOf(sklearn, 'model'), { type: 'LinearRegression', note: 'не обучен' })
+  assert.deepEqual(briefOf(sklearn, 'trained'), { type: 'LinearRegression', note: 'обучен' })
 })
 
 test('an sklearn estimator says whether it is fitted — without calling methods', {

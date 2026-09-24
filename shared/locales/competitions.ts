@@ -458,6 +458,12 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Пересчитать нечего: файл {file} этой посылки уже убран с диска.',
     en: 'Nothing to rescore: this submission’s {file} has already been swept from disk.',
   },
+  // The teacher's column when a server restart cut a run off for the last time
+  // (server/src/competitions/store.ts · reclaimQueue).
+  'competitions.answer.restartAbandoned': {
+    ru: 'Прогон оборван перезапуском сервера (попыток: {attempts}).',
+    en: 'The run was cut off by a server restart (attempts: {attempts}).',
+  },
   'competitions.answer.killedByTeacher': {
     ru: 'Прогон прерван преподавателем.',
     en: 'The run was killed by the teacher.',

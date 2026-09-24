@@ -4,6 +4,7 @@ import { db } from '../db.js'
 import { invalidateCompetitionInputs } from '../competitions/store.js'
 import { DEPENDENCY_LIMITS, normalizeRequirements, requirementLineCount, dependencyActive, type DependencyBundle, type DependencyDraft, type DependencyPolicy, type EnvironmentRevision, type SubmissionEnvironment } from '@shared/dependencies'
 import type { PreparationProgress, PreparationResult } from './preparation-contract.js'
+import { dependencyMessage } from './messages.js'
 import { submissionsOpen, type CompetitionState } from '@shared/competitions'
 
 const id = () => randomUUID().replaceAll('-', '')
@@ -190,7 +191,7 @@ export function cancelBundle(key:string):DependencyBundle|null{
  return getBundle(key)
 }
 export function recoverPreparations():number{
- return db.prepare("UPDATE dependency_bundles SET state='failed',error_json=? WHERE state IN ('resolving','downloading','verifying')").run(JSON.stringify({code:'worker_restarted',message:'Подготовка прервалась при перезапуске сервера. Повторите подготовку.'})).changes
+ return db.prepare("UPDATE dependency_bundles SET state='failed',error_json=? WHERE state IN ('resolving','downloading','verifying')").run(JSON.stringify({code:'worker_restarted',message:dependencyMessage('worker_restarted')})).changes
 }
 export function lockOf(key:string):string|null{
  const row=db.prepare("SELECT lock_text FROM dependency_bundles WHERE id=? AND state='ready'").get(key) as Row|undefined;return row?.lock_text===null||!row?null:String(row.lock_text)

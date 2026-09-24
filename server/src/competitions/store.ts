@@ -26,6 +26,7 @@
  * `orphanedRuns` will find out.
  */
 import { randomInt, randomUUID } from 'node:crypto'
+import { tr } from '@shared/i18n'
 import { db } from '../db.js'
 import { entrantKeyDigest, newEntrantKey, sealEntrantKey, unsealEntrantKey } from './key.js'
 import { removeCompetition as removeCompetitionFiles, pruneSubmissions } from './storage.js'
@@ -1930,7 +1931,7 @@ export const reclaimQueue = db.transaction(
       deleteQueueRow.run(row.submissionId)
       updateSubmission(row.submissionId, {
         state: 'metricFailed',
-        teacherError: `Прогон оборван перезапуском сервера (попыток: ${row.attempts}).`,
+        teacherError: tr('competitions.answer.restartAbandoned', { attempts: row.attempts }),
         durationMs: row.startedAt === null ? null : at - row.startedAt,
       })
       abandoned.push(row)

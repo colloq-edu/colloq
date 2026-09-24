@@ -3754,5 +3754,33 @@ export const serverMessages: MessageCatalog = {
   "server.linkPreview.imageAlt": {
     "ru": "Экран входа Colloq: «Вы входите в…», поле для имени и кнопка «Войти на занятие»",
     "en": "Colloq join screen: “You are entering…”, a name field and a “Join the class” button"
+  },
+  "server.brief.parameters": {
+    "ru": {
+      "one": "{n} параметр",
+      "few": "{n} параметра",
+      "many": "{n} параметров",
+      "other": "{n} параметра"
+    },
+    "en": {
+      "one": "{n} parameter",
+      "other": "{n} parameters"
+    }
+  },
+  "server.brief.fitted": {
+    "ru": "обучен",
+    "en": "fitted"
+  },
+  "server.brief.notFitted": {
+    "ru": "не обучен",
+    "en": "not fitted"
+  },
+  "server.oracle.exitCode": {
+    "ru": "код выхода",
+    "en": "exit code"
+  },
+  "server.connectionDidNotOpen": {
+    "ru": "соединение не открылось",
+    "en": "the connection did not open"
   }
 }
